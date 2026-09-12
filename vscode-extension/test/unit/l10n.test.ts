@@ -196,51 +196,60 @@ test('l10n: usage context-pressure keys resolve in zh-cn', () => {
 	}
 });
 
-test('l10n: Efficiency Combined-filter keys resolve in English', () => {
-	// These label the three Combined-tab filter controls. A missing key here puts
-	// a raw `efficiency.combined.vendorLabel` next to a dropdown.
+test('l10n: every Efficiency Combined-filter key resolves in English', () => {
 	const expected: Record<string, string> = {
-		'efficiency.combined.vendorLabel': 'Model vendor',
-		'efficiency.combined.modelLabel': 'Model',
-		'efficiency.combined.editorLabel': 'Editor',
-		'efficiency.combined.optionAll': 'All',
-		'efficiency.combined.clearFilters': 'Clear filters',
-		'efficiency.combined.selectionAll': 'All editors, all vendors, all models',
+		"efficiency.combined.filtersLegend": "Filter the Combined chart",
+		"efficiency.combined.vendorLabel": "Model vendor",
+		"efficiency.combined.modelLabel": "Model",
+		"efficiency.combined.editorLabel": "Editor",
+		"efficiency.combined.optionAll": "All",
+		"efficiency.combined.clearFilters": "Clear filters",
+		"efficiency.combined.selectionAll": "All editors, all vendors, all models",
+		"efficiency.combined.empty": "No sessions match this combination in the last 12 weeks. Widen or clear the filters to see the chart again.",
+		"efficiency.combined.noActivity": "No AI activity recorded in the last 12 weeks, so there is nothing to chart yet.",
+		"efficiency.combined.chartLabel": "Indexed efficiency ratios and weekly lines-of-code output for the current selection",
+		"efficiency.combined.summaryCaption": "Combined chart values by week for the current selection",
+		"efficiency.combined.weekColumn": "Week",
+		"efficiency.combined.attribution": "Per-model and per-vendor numbers are attributed, not directly observed: token totals and counters are exact per model, while session duration, lines of code, applies, interactions and the session denominator are split by each model’s share of the session’s tokens. Cost is a Copilot-equivalent estimate for comparison across filters, not billed spend — the model vendor (who built the model) and the billing source (who charges for the call) are different things. Models we cannot place appear under Unclassified rather than being guessed at or dropped.",
 	};
-	for (const [key, english] of Object.entries(expected)) {
-		assert.equal(t(key), english, `English value for ${key}`);
+	for (const [key, text] of Object.entries(expected)) {
+		assert.equal(t(key), text, `English value for ${key}`);
 	}
-	assert.equal(t('efficiency.combined.selectionPart', 'Model vendor', 'Anthropic'), 'Model vendor: Anthropic');
-	assert.equal(
-		t('efficiency.combined.status', 'Model vendor: Anthropic', '6.5', '18', '9'),
-		'Model vendor: Anthropic — 6.5 session-equivalents and 18 edit turns across 9 active weeks.',
-	);
-	// The disclosure has to keep saying that vendor and billing source differ.
-	assert.match(t('efficiency.combined.attribution'), /attributed, not directly observed/);
-	assert.match(t('efficiency.combined.attribution'), /Unclassified/);
+	// Templated keys are asserted through their formatted output, so a
+	// reordered or dropped placeholder is caught rather than hidden.
+	assert.equal(t("efficiency.combined.lowSample", "a0", "a1"), "Low sample: this selection has fewer than a0 session-equivalents or fewer than a1 edit turns. Read the lines as a hint, not a conclusion.");
+	assert.equal(t("efficiency.combined.selectionPart", "a0", "a1"), "a0: a1");
+	assert.equal(t("efficiency.combined.status", "a0", "a1", "a2", "a3"), "a0 — a1 session-equivalents and a2 edit turns across a3 active weeks.");
+	assert.equal(t("efficiency.combined.statusEmpty", "a0"), "a0 — no matching activity in the last 12 weeks.");
 });
 
-test('l10n: Efficiency Combined-filter keys resolve in zh-cn', () => {
+test('l10n: every Efficiency Combined-filter key resolves in zh-cn', () => {
 	mock.setLanguage('zh-cn');
 	try {
 		const expected: Record<string, string> = {
-			'efficiency.combined.vendorLabel': '模型厂商',
-			'efficiency.combined.modelLabel': '模型',
-			'efficiency.combined.editorLabel': '编辑器',
-			'efficiency.combined.optionAll': '全部',
-			'efficiency.combined.clearFilters': '清除筛选',
-			'efficiency.combined.weekColumn': '周',
+			"efficiency.combined.filtersLegend": "筛选组合图表",
+			"efficiency.combined.vendorLabel": "模型厂商",
+			"efficiency.combined.modelLabel": "模型",
+			"efficiency.combined.editorLabel": "编辑器",
+			"efficiency.combined.optionAll": "全部",
+			"efficiency.combined.clearFilters": "清除筛选",
+			"efficiency.combined.selectionAll": "全部编辑器、全部厂商、全部模型",
+			"efficiency.combined.empty": "最近 12 周内没有会话符合此组合。请放宽或清除筛选条件以重新查看图表。",
+			"efficiency.combined.noActivity": "最近 12 周内没有记录到 AI 活动，因此暂无可绘制的图表。",
+			"efficiency.combined.chartLabel": "当前选择的指数化效率比率与每周代码行数产出",
+			"efficiency.combined.summaryCaption": "当前选择下按周列出的组合图表数值",
+			"efficiency.combined.weekColumn": "周",
+			"efficiency.combined.attribution": "按模型和厂商划分的数值是归因结果，而非直接观测：令牌总量和计数器按模型精确统计，而会话时长、代码行数、应用次数、交互次数以及会话分母则按各模型在会话令牌中的占比拆分。成本是用于跨筛选条件比较的 Copilot 等效估算值，并非实际账单支出——模型厂商（谁构建了模型）与计费来源（谁为该调用收费）是不同的概念。无法归类的模型会显示为 Unclassified，而不会被猜测归类或被丢弃。",
 		};
-		for (const [key, chinese] of Object.entries(expected)) {
-			assert.equal(t(key), chinese, `zh-cn value for ${key}`);
+		for (const [key, text] of Object.entries(expected)) {
+			assert.equal(t(key), text, `zh-cn value for ${key}`);
 		}
-		// The Chinese phrasing puts the week count first, so the placeholders are
-		// not in the English order — a plain concatenation would scramble them.
-		assert.equal(
-			t('efficiency.combined.status', '全部编辑器、全部厂商、全部模型', '6.5', '18', '9'),
-			'全部编辑器、全部厂商、全部模型 — 在 9 个活跃周内共 6.5 个会话当量和 18 次编辑轮次。',
-		);
-		assert.equal(t('efficiency.combined.lowSample', '5', '10'), '样本过少：此选择的会话当量少于 5 个，或编辑轮次少于 10 次。这些折线仅供参考，不能作为结论。');
+		// Templated keys are asserted through their formatted output, so a
+		// reordered or dropped placeholder is caught rather than hidden.
+		assert.equal(t("efficiency.combined.lowSample", "a0", "a1"), "样本过少：此选择的会话当量少于 a0 个，或编辑轮次少于 a1 次。这些折线仅供参考，不能作为结论。");
+		assert.equal(t("efficiency.combined.selectionPart", "a0", "a1"), "a0：a1");
+		assert.equal(t("efficiency.combined.status", "a0", "a1", "a2", "a3"), "a0 — 在 a3 个活跃周内共 a1 个会话当量和 a2 次编辑轮次。");
+		assert.equal(t("efficiency.combined.statusEmpty", "a0"), "a0 — 最近 12 周内没有匹配的活动。");
 	} finally {
 		mock.setLanguage('en');
 	}

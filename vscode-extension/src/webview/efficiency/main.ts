@@ -487,12 +487,25 @@ function renderValueTab(d: EfficiencyViewData): string {
  */
 const combinedFilter: CombinedFilter = { ...UNFILTERED_COMBINED };
 
+/**
+ * One series on the Combined chart. The lines-of-code entry carries `bar: true`:
+ * it is drawn as bars against its own axis, and it has to be in this one list so
+ * the screen-reader table cannot silently omit a dimension the chart shows.
+ */
+type CombinedSeries = { label: string; values: (number | null)[]; color: string; show: boolean; bar?: boolean };
+
 /** Control to re-focus after the next render, so keyboard focus survives a filter change. */
 let pendingFocusId: string | null = null;
 
-/** True when the host sent the filterable payload (older payloads have none). */
+/**
+ * True when the host sent the filterable payload (older payloads have none).
+ *
+ * An *empty* array is still a payload — it is what a user with no activity in
+ * the last 12 weeks gets — and it must render the explicit no-data state rather
+ * than fall back to a blank legacy canvas.
+ */
 function hasCombinedPayload(d: EfficiencyViewData): boolean {
-	return Array.isArray(d.combinedDaily) && d.combinedDaily.length > 0;
+	return Array.isArray(d.combinedDaily);
 }
 
 /** The weekly series the Combined chart should draw under the current selection. */
@@ -507,6 +520,13 @@ function facetSelectOptions(options: CombinedFacetOption[], label: (value: strin
 		{ value: COMBINED_FILTER_ALL, label: localize('efficiency.combined.optionAll') },
 		...options.map(o => ({ value: o.value, label: label(o.value) })),
 	];
+}
+
+/** True when no dimension is narrowed. */
+function isUnfiltered(): boolean {
+	return combinedFilter.vendor === COMBINED_FILTER_ALL
+		&& combinedFilter.model === COMBINED_FILTER_ALL
+		&& combinedFilter.editor === COMBINED_FILTER_ALL;
 }
 
 /** Human description of the active selection, or "all" when nothing is narrowed. */
@@ -528,15 +548,12 @@ function renderCombinedFilters(d: EfficiencyViewData): string {
 			<label for="${id}">${escapeHtml(localize(labelKey))}</label>
 			${selectHtml(id, options, selected)}
 		</span>`;
-	const unfiltered = combinedFilter.vendor === COMBINED_FILTER_ALL
-		&& combinedFilter.model === COMBINED_FILTER_ALL
-		&& combinedFilter.editor === COMBINED_FILTER_ALL;
 	return `
 		<div class="combined-filters" role="group" aria-label="${escapeHtml(localize('efficiency.combined.filtersLegend'))}">
 			${control('combined-vendor', 'efficiency.combined.vendorLabel', facetSelectOptions(facets.vendors, v => v), combinedFilter.vendor)}
 			${control('combined-model', 'efficiency.combined.modelLabel', facetSelectOptions(facets.models, getModelDisplayName), combinedFilter.model)}
 			${control('combined-editor', 'efficiency.combined.editorLabel', facetSelectOptions(facets.editors, v => v), combinedFilter.editor)}
-			<button type="button" id="combined-clear" class="combined-clear"${unfiltered ? ' disabled' : ''}>${escapeHtml(localize('efficiency.combined.clearFilters'))}</button>
+			<button type="button" id="combined-clear" class="combined-clear"${isUnfiltered() ? ' disabled' : ''}>${escapeHtml(localize('efficiency.combined.clearFilters'))}</button>
 		</div>`;
 }
 
@@ -544,7 +561,7 @@ function renderCombinedFilters(d: EfficiencyViewData): string {
  * Screen-reader equivalent of the canvas: the same weeks and the same series,
  * as a table. Without it the Combined chart is a picture with no content.
  */
-function combinedChartSummary(weekly: EfficiencyWeekPoint[], series: { label: string; values: (number | null)[]; show: boolean }[]): string {
+function combinedChartSummary(weekly: EfficiencyWeekPoint[], series: CombinedSeries[]): string {
 	const shown = series.filter(s => s.show);
 	const head = shown.map(s => `<th scope="col">${escapeHtml(s.label)}</th>`).join('');
 	const rows = weekly.map((w, i) => `
@@ -569,15 +586,19 @@ function renderCombinedTab(d: EfficiencyViewData): string {
 	const status = `
 		<p class="combined-status" id="combined-status" role="status" aria-live="polite">${escapeHtml(
 		summary.empty
-			? localizeFormat('efficiency.combined.statusEmpty', combinedSelectionText())
+			? (isUnfiltered()
+				? localize('efficiency.combined.noActivity')
+				: localizeFormat('efficiency.combined.statusEmpty', combinedSelectionText()))
 			: localizeFormat('efficiency.combined.status', combinedSelectionText(), summary.sessions.toFixed(1), String(Math.round(summary.editTurns)), String(summary.activeWeeks)),
 	)}</p>`;
 	if (summary.empty) {
-		return `${note}${renderCombinedFilters(d)}${status}
-			<div class="combined-empty">
-				<p>${escapeHtml(localize('efficiency.combined.empty'))}</p>
-				<button type="button" id="combined-clear-empty" class="combined-clear">${escapeHtml(localize('efficiency.combined.clearFilters'))}</button>
-			</div>`;
+		// With nothing selected there is nothing to clear, and offering the button
+		// anyway would be a control that visibly does nothing.
+		const body = isUnfiltered()
+			? `<p>${escapeHtml(localize('efficiency.combined.noActivity'))}</p>`
+			: `<p>${escapeHtml(localize('efficiency.combined.empty'))}</p>
+				<button type="button" id="combined-clear-empty" class="combined-clear">${escapeHtml(localize('efficiency.combined.clearFilters'))}</button>`;
+		return `${note}${renderCombinedFilters(d)}${status}<div class="combined-empty">${body}</div>`;
 	}
 	const caution = summary.lowSample
 		? `<p class="combined-caution">${escapeHtml(localizeFormat('efficiency.combined.lowSample', String(MIN_COMBINED_SESSION_EQUIVALENTS), String(MIN_COMBINED_EDIT_TURNS)))}</p>`
@@ -1158,13 +1179,14 @@ function indexTo100(values: (number | null)[]): (number | null)[] {
  * payload-wide `has*` flags, so a filtered selection that carries no LOC or no
  * measurable retry rate drops those lines instead of drawing an empty axis.
  */
-function combinedSeries(d: EfficiencyViewData, weekly: EfficiencyWeekPoint[]): { label: string; values: (number | null)[]; color: string; show: boolean }[] {
+function combinedSeries(d: EfficiencyViewData, weekly: EfficiencyWeekPoint[]): CombinedSeries[] {
 	return [
 		{ label: 'Cost per 1K lines (index)', values: indexTo100(weekly.map(w => w.costPerKloc)), color: cssVar('--vscode-charts-red', '#fb7185'), show: weekly.some(w => w.costPerKloc !== null) },
 		{ label: 'Tokens per session (index)', values: indexTo100(weekly.map(w => w.tokensPerSession)), color: cssVar('--vscode-charts-blue', '#60a5fa'), show: true },
 		{ label: 'Turns per session (index)', values: indexTo100(weekly.map(w => w.turnsPerSession)), color: cssVar('--vscode-charts-purple', '#c37bff'), show: true },
 		{ label: 'Active min per session (index)', values: indexTo100(weekly.map(w => w.activeMinutesPerSession)), color: cssVar('--vscode-charts-yellow', '#fbbf24'), show: weekly.some(w => w.activeMinutesPerSession !== null) },
 		{ label: 'Retry rate (index)', values: indexTo100(weekly.map(w => w.retryRate)), color: cssVar('--vscode-charts-orange', '#ff9f40'), show: d.hasRetry && weekly.some(w => w.retryRate !== null) },
+		{ label: 'Lines changed (output)', values: weekly.map(w => w.loc), color: cssVar('--vscode-charts-green', '#4ade80'), show: weekly.some(w => w.loc > 0), bar: true },
 	];
 }
 
@@ -1178,8 +1200,9 @@ async function drawCombinedChart(d: EfficiencyViewData): Promise<void> {
 	const labels = weekly.map(w => w.label);
 	const fg = cssVar('--vscode-descriptionForeground', '#999');
 	const grid = cssVar('--vscode-widget-border', 'rgba(128,128,128,0.2)');
-	const hasLoc = weekly.some(w => w.loc > 0);
-	const datasets: object[] = combinedSeries(d, weekly).filter(l => l.show).map(l => ({
+	const shown = combinedSeries(d, weekly).filter(l => l.show);
+	const locSeries = shown.find(l => l.bar);
+	const datasets: object[] = shown.filter(l => !l.bar).map(l => ({
 		type: 'line' as const,
 		label: l.label,
 		data: l.values,
@@ -1190,13 +1213,14 @@ async function drawCombinedChart(d: EfficiencyViewData): Promise<void> {
 		pointRadius: 2,
 		yAxisID: 'y',
 	}));
-	if (hasLoc) {
+	const hasLoc = locSeries !== undefined;
+	if (locSeries) {
 		datasets.push({
 			type: 'bar' as const,
-			label: 'Lines changed (output)',
-			data: weekly.map(w => w.loc),
+			label: locSeries.label,
+			data: locSeries.values,
 			backgroundColor: 'rgba(74, 222, 128, 0.35)',
-			borderColor: cssVar('--vscode-charts-green', '#4ade80'),
+			borderColor: locSeries.color,
 			borderWidth: 1,
 			yAxisID: 'yLoc',
 		});

@@ -37,7 +37,7 @@ which collapses the id variants that all mean the same model:
 
 A model whose id matches nothing we recognize — an internal or freshly released
 model — is filed under **Unclassified** and stays selectable. Sessions that name
-no model at all land there too, under the `unknown` model id — including on a day
+no model at all land there too, under the `Unattributed` model id — including on a day
 where the same editor also ran sessions that *did* name a model. That day's
 model-less remainder is tracked separately as `editorUnattributed`, so it is not
 quietly folded into whichever models happened to be named alongside it. Nothing
@@ -76,11 +76,23 @@ classes of value:
 
 Token share is the existing contract the Models tab already uses: a session that
 spent 60% of its tokens on model A and 40% on model B contributes 0.6 and 0.4
-"session-equivalents" respectively, and its duration and lines of code are split
-the same way. That is what makes the slices additive — summing every model slice
-reproduces the all-model totals, with a mixed-model session counted once, not
-once per model. A per-model chart built by re-filtering whole sessions would
-double-count exactly those sessions.
+"session-equivalents" respectively. That is what makes the slices additive —
+summing every model slice reproduces the all-model totals, with a mixed-model
+session counted once, not once per model. A per-model chart built by re-filtering
+whole sessions would double-count exactly those sessions.
+
+Two grains of token share are in play, and the difference matters:
+
+| Quantity | Split by |
+|---|---|
+| Duration, applies, code blocks, edit turns, retries | **Each session's own** model mix, on its last active day |
+| Sessions, interactions, lines of code, tokens, cost | The **editor-day's aggregate** model mix |
+
+The second row is an approximation. Daily stats carry no per-session breakdown of
+those quantities, so a day where one editor ran two sessions with *different*
+model mixes splits them by the day's blended mix rather than per session — a
+model can be credited with a share of lines another model produced that day.
+Totals stay exact either way; only the split within an editor-day is affected.
 
 Whole-session signals (duration, edit turns, retries, applies, code blocks) land
 on the session's **last active day**, the same convention the unfiltered trends
@@ -108,6 +120,9 @@ asserted directly in `vscode-extension/test/unit/efficiencyAnalysis.test.ts`.
   split across both.
 - Token share is a proxy for effort, not a measurement of it. A model that
   produced the decisive edit in few tokens is under-credited.
+- Sessions, interactions and lines of code are split by the editor-day's blended
+  model mix rather than per session (see above). Attributing them per session
+  would need an `editor × model` breakdown carried through daily aggregation.
 - Anonymous or unrecognized models are grouped, not identified: two different
   unknown models both appear under Unclassified as distinct model ids, but their
   vendor is not resolved.

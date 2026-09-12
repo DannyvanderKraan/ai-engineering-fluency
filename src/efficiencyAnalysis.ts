@@ -1468,7 +1468,9 @@ function canonicalShares(raw: { [model: string]: number } | undefined): Map<stri
 	let total = 0;
 	for (const [model, value] of Object.entries(raw ?? {})) {
 		if (!(value > 0)) { continue; }
-		const canonical = getCanonicalModelId(model);
+		// The no-model marker is not a model id and must not be canonicalized —
+		// doing so would lowercase it into an ordinary (and collidable) value.
+		const canonical = model === UNKNOWN_MODEL_ID ? UNKNOWN_MODEL_ID : getCanonicalModelId(model);
 		byModel.set(canonical, (byModel.get(canonical) ?? 0) + value);
 		total += value;
 	}

@@ -75,6 +75,7 @@ export interface WebviewLocalization {
 	'efficiency.combined.status': string;
 	'efficiency.combined.statusEmpty': string;
 	'efficiency.combined.empty': string;
+	'efficiency.combined.noActivity': string;
 	'efficiency.combined.lowSample': string;
 	'efficiency.combined.chartLabel': string;
 	'efficiency.combined.summaryCaption': string;
@@ -147,6 +148,7 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'efficiency.combined.status': "{0} — {1} session-equivalents and {2} edit turns across {3} active weeks.",
 	'efficiency.combined.statusEmpty': "{0} — no matching activity in the last 12 weeks.",
 	'efficiency.combined.empty': "No sessions match this combination in the last 12 weeks. Widen or clear the filters to see the chart again.",
+	'efficiency.combined.noActivity': "No AI activity recorded in the last 12 weeks, so there is nothing to chart yet.",
 	'efficiency.combined.lowSample': "Low sample: this selection has fewer than {0} session-equivalents or fewer than {1} edit turns. Read the lines as a hint, not a conclusion.",
 	'efficiency.combined.chartLabel': "Indexed efficiency ratios and weekly lines-of-code output for the current selection",
 	'efficiency.combined.summaryCaption': "Combined chart values by week for the current selection",

@@ -238,6 +238,7 @@
   "efficiency.combined.status": "{0} — 在 {3} 个活跃周内共 {1} 个会话当量和 {2} 次编辑轮次。",
   "efficiency.combined.statusEmpty": "{0} — 最近 12 周内没有匹配的活动。",
   "efficiency.combined.empty": "最近 12 周内没有会话符合此组合。请放宽或清除筛选条件以重新查看图表。",
+  "efficiency.combined.noActivity": "最近 12 周内没有记录到 AI 活动，因此暂无可绘制的图表。",
   "efficiency.combined.lowSample": "样本过少：此选择的会话当量少于 {0} 个，或编辑轮次少于 {1} 次。这些折线仅供参考，不能作为结论。",
   "efficiency.combined.chartLabel": "当前选择的指数化效率比率与每周代码行数产出",
   "efficiency.combined.summaryCaption": "当前选择下按周列出的组合图表数值",

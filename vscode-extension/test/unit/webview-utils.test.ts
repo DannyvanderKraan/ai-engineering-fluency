@@ -161,6 +161,23 @@ test('getCanonicalModelId: sessions that name no model get the unknown identity'
 	assert.equal(getCanonicalModelId('   '), UNKNOWN_MODEL_ID);
 });
 
+test('getCanonicalModelId: the no-model marker cannot be produced by a real model id', () => {
+	// Canonicalization lowercases everything it returns, so a marker carrying a
+	// capital letter is unreachable — which is the point: a custom endpoint's
+	// free-text model part passes straight through.
+	assert.notEqual(UNKNOWN_MODEL_ID, UNKNOWN_MODEL_ID.toLowerCase(), 'the marker needs a capital letter to stay unreachable');
+	assert.notEqual(getCanonicalModelId('customendpoint/Acme/unknown'), UNKNOWN_MODEL_ID);
+	assert.notEqual(getCanonicalModelId('Unattributed'), UNKNOWN_MODEL_ID);
+	assert.equal(getCanonicalModelId(''), UNKNOWN_MODEL_ID);
+});
+
+test('getCanonicalModelId: dash and dot version spellings collapse regardless of pricing', () => {
+	// The candidate list is scanned most-normalized-first, so which spellings the
+	// pricing catalog happens to carry cannot split one model into two.
+	assert.equal(getCanonicalModelId('claude-sonnet-4-6'), getCanonicalModelId('claude-sonnet-4.6'));
+	assert.equal(getCanonicalModelId('copilot/claude-sonnet-4-6'), getCanonicalModelId('claude-sonnet-4.6'));
+});
+
 test('getModelVendor: classifies the model maker from the model id', () => {
 	assert.equal(getModelVendor('claude-sonnet-4.5'), 'Anthropic');
 	assert.equal(getModelVendor('copilot/claude-opus-4-8'), 'Anthropic');

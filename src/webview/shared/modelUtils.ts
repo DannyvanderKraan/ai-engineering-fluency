@@ -139,8 +139,16 @@ export function getModelDisplayName(model: string): string {
 // Canonical model identity and underlying model vendor
 // ---------------------------------------------------------------------------
 
-/** Canonical id standing in for "this usage names no model". */
-export const UNKNOWN_MODEL_ID = 'unknown';
+/**
+ * Canonical id standing in for "this usage names no model".
+ *
+ * The capital letter is load-bearing: {@link getCanonicalModelId} lowercases
+ * everything it returns, so no real model id can ever canonicalize onto this
+ * marker. A lowercase word could — a custom endpoint's free-text model part
+ * passes straight through, so `customendpoint/Acme/unknown` really would produce
+ * `unknown` and become indistinguishable from model-less activity.
+ */
+export const UNKNOWN_MODEL_ID = 'Unattributed';
 
 /**
  * Vendor bucket for models we cannot place. Deliberately *not* a guess: an
@@ -168,9 +176,14 @@ export function getCanonicalModelId(model: string): string {
 	// keep its wrapper and never meet plain `claude-opus-4.8`.
 	const raw = (model ?? '').trim().toLowerCase();
 	if (!raw) { return UNKNOWN_MODEL_ID; }
+	// Most-normalized candidate first. `getModelLookupCandidates` lists the raw
+	// spelling before its dash-to-dot variant, so scanning forwards would hand
+	// `claude-sonnet-4-6` and `claude-sonnet-4.6` different canonical ids the day
+	// the pricing catalog happens to carry both spellings — the alias collapse
+	// this function promises has to be independent of what pricing knows.
 	const candidates = getModelLookupCandidates(raw);
-	for (const candidate of candidates) {
-		if (_modelNames[candidate]) { return candidate.toLowerCase(); }
+	for (let i = candidates.length - 1; i >= 0; i--) {
+		if (_modelNames[candidates[i]]) { return candidates[i].toLowerCase(); }
 	}
 	const fallback = candidates.length > 0 ? candidates[candidates.length - 1] : raw;
 	return decodeSegment(fallback).toLowerCase();

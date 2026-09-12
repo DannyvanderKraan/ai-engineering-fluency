@@ -274,7 +274,10 @@ async function exerciseControl(page, control) {
     if (control.options) {
       const next = control.options.find((value) => value !== control.selectedValue);
       if (next === undefined) {
-        return { status: 'skipped', reason: 'select has no other option to pick' };
+        // Nothing else to pick: inert by design, not a tag that went stale. The
+        // difference matters to the deep crawl, which retries stale tags on the
+        // next pass and would otherwise stop here on every pass.
+        return { status: 'noop-selected', inert: true, reason: 'select has no other option to pick' };
       }
       await locator.selectOption(next, { timeout: 1500, noWaitAfter: true });
     } else {

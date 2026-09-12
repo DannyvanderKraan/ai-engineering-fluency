@@ -4224,6 +4224,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'efficiency.combined.status': l10n.t('efficiency.combined.status'),
 			'efficiency.combined.statusEmpty': l10n.t('efficiency.combined.statusEmpty'),
 			'efficiency.combined.empty': l10n.t('efficiency.combined.empty'),
+			'efficiency.combined.noActivity': l10n.t('efficiency.combined.noActivity'),
 			'efficiency.combined.lowSample': l10n.t('efficiency.combined.lowSample'),
 			'efficiency.combined.chartLabel': l10n.t('efficiency.combined.chartLabel'),
 			'efficiency.combined.summaryCaption': l10n.t('efficiency.combined.summaryCaption'),
@@ -4419,7 +4420,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			if (dayKey < cutoffUtcStartKey) { continue; }
 			const dayTokens = (dayRollup.actualTokens > 0 ? dayRollup.actualTokens : dayRollup.tokens);
 			const dailyEntry = this.getOrCreateDailyEntry(dailyStatsMap, dayKey);
-			this.addUsageToDailyEntry(dailyEntry, dayTokens, dayRollup.interactions, editorType, repository, dayRollup.modelUsage, dayRollup.taskCategoryShares, dayRollup.primaryTaskCategory);
+			this.addUsageToDailyEntry(dailyEntry, dayTokens, dayRollup.interactions, editorType, repository, dayRollup.modelUsage, dayRollup.taskCategoryShares, dayRollup.primaryTaskCategory, this.sessionNamesAnyModel(sessionData));
 			if (!lastDayKey || dayKey > lastDayKey) { lastDayKey = dayKey; }
 		}
 		if (lastDayKey) {
@@ -4440,11 +4441,21 @@ class CopilotTokenTracker implements vscode.Disposable {
 		const dateKey = toLocalDayKey(lastActivity);
 		if (dateKey < cutoffUtcStartKey) { return; }
 		const dailyEntry = this.getOrCreateDailyEntry(dailyStatsMap, dateKey);
-		this.addUsageToDailyEntry(dailyEntry, tokens, sessionData.interactions, editorType, repository, sessionData.modelUsage, sessionData.taskCategoryShares, sessionData.taskCategory);
+		this.addUsageToDailyEntry(dailyEntry, tokens, sessionData.interactions, editorType, repository, sessionData.modelUsage, sessionData.taskCategoryShares, sessionData.taskCategory, this.sessionNamesAnyModel(sessionData));
 		this.addModelEfficiencyToDailyEntry(dailyEntry, sessionData);
 		if ((sessionData.linesAdded ?? 0) + (sessionData.linesRemoved ?? 0) > 0) {
 			this.addLocToDailyEntry(dailyEntry, sessionData.linesAdded ?? 0, sessionData.linesRemoved ?? 0, editorType, repository, sessionData.languageUsage);
 		}
+	}
+
+	/**
+	 * Whether a session names a model anywhere — token usage or per-model turn
+	 * counters. Mirrors `computeModelTokenShares`'s fallback order, so a session
+	 * it can attribute is never also recorded as unattributed.
+	 */
+	private sessionNamesAnyModel(sessionData: SessionFileCache): boolean {
+		return Object.keys(sessionData.modelUsage ?? {}).length > 0
+			|| Object.keys(sessionData.usageAnalysis?.modelEfficiency ?? {}).length > 0;
 	}
 
 	/**
@@ -4485,7 +4496,8 @@ class CopilotTokenTracker implements vscode.Disposable {
 		repository: string,
 		modelUsage: any,
 		taskCategoryShares?: TaskCategoryBreakdown,
-		primaryTaskCategory?: TaskCategory
+		primaryTaskCategory?: TaskCategory,
+		sessionNamesModel = false
 	): void {
 		entry.tokens += tokens;
 		entry.sessions += 1;
@@ -4508,9 +4520,12 @@ class CopilotTokenTracker implements vscode.Disposable {
 		for (const model of Object.keys(modelUsage)) {
 			entry.editorModelUsage[editorType][model]!.sessions += 1;
 		}
-		if (Object.keys(modelUsage).length === 0) {
-			// No model named at all: track it separately so per-model views can show
-			// it as unattributed rather than lose it behind the day's named models.
+		if (Object.keys(modelUsage).length === 0 && !sessionNamesModel) {
+			// No model named *anywhere* in the session: track it separately so
+			// per-model views can show it as unattributed rather than lose it behind
+			// the day's named models. An empty `modelUsage` alone is not enough —
+			// `computeModelTokenShares` falls back to the per-model turn counters, so
+			// a session with those does get attributed and must not be counted here.
 			if (!entry.editorUnattributed) { entry.editorUnattributed = {}; }
 			if (!entry.editorUnattributed[editorType]) { entry.editorUnattributed[editorType] = { tokens: 0, sessions: 0 }; }
 			entry.editorUnattributed[editorType].tokens += tokens;
