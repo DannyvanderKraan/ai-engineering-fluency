@@ -404,6 +404,44 @@ test('Mistral Cloud tab: a mistralCloudSessionsResult message rerenders the tab 
 	assert.ok(rendered?.includes('My beta conversation'), `expected the fetched conversation name, got: ${rendered}`);
 });
 
+test('Mistral Cloud tab: a status update reporting the key removed clears a previously cached result', async () => {
+	await preloadBundle();
+	const harness = bootWebviewUnsettled(buildInitialData({ mistralCloudSessionsStatus: { apiKeyConfigured: true } }));
+	await harness.settle();
+
+	harness.post({
+		command: 'mistralCloudSessionsResult',
+		result: {
+			conversations: [{
+				id: 'conv-123', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z',
+				agentId: 'agent-1', name: 'Old account conversation', description: null, agentVersion: '1',
+			}],
+			totalCount: 1,
+			authenticated: true,
+			fetchedAt: '2026-01-02T00:00:00Z',
+			error: '',
+		},
+	});
+	await harness.settle();
+	assert.ok(harness.text('#tab-mistral-cloud')?.includes('Old account conversation'));
+
+	// A later status refresh (e.g. from backendStorageInfoLoaded, sent on every diagnostics load)
+	// reports the key was removed, possibly from another window. The stale cached result must not
+	// linger and keep showing the old account's conversations with the Refresh/Remove buttons.
+	harness.post({
+		command: 'backendStorageInfoLoaded',
+		backendStorageInfo: configuredBackendStorageInfo(),
+		githubAuth: { authenticated: false },
+		mistralCloudSessionsStatus: { apiKeyConfigured: false },
+	});
+	await harness.settle();
+
+	const rendered = harness.text('#tab-mistral-cloud');
+	assert.ok(!rendered?.includes('Old account conversation'), `expected the stale conversation to be cleared, got: ${rendered}`);
+	assert.ok(harness.window.document.getElementById('btn-mistral-connect'), 'expected the Connect button to reappear');
+	assert.equal(harness.window.document.getElementById('btn-mistral-refresh'), null, 'Refresh must not remain after the key is reported removed');
+});
+
 test('Mistral Cloud tab: an error result rerenders the tab with the error box, not stale success state', async () => {
 	await preloadBundle();
 	const harness = bootWebviewUnsettled(buildInitialData({ mistralCloudSessionsStatus: { apiKeyConfigured: true } }));

@@ -157,6 +157,12 @@ function normalizeConversation(entry: unknown): MistralCloudConversation | undef
 /** Result of the listing call, before being shaped into `MistralCloudSessionsResult`. */
 export interface MistralListResult {
   conversations?: MistralCloudConversation[];
+  /**
+   * Number of entries the API actually returned for this page, before any were dropped for being
+   * malformed/id-less. Used as the "was this the last page" signal instead of `conversations`'
+   * length, since a page can be full on the wire but come up short after filtering.
+   */
+  rawCount?: number;
   totalCount?: number;
   statusCode?: number;
   error?: string;
@@ -176,11 +182,14 @@ export async function listMistralConversations(
   const result = await requestMistralJson(path, apiKey, options.requestFn);
   if (result.error) { return { error: result.error, statusCode: result.statusCode }; }
   const body = result.body;
-  // The API may return either a bare array or an object envelope; tolerate both. Entries are
-  // `unknown` (not assumed to be objects) since a beta endpoint may include a malformed entry.
+  // The API may return a bare array, or an object envelope keyed `conversations` (the documented
+  // shape) or `data`; tolerate all three. Entries are `unknown` (not assumed to be objects) since
+  // a beta endpoint may include a malformed entry.
   const rawList: unknown[] = Array.isArray(body)
     ? body
-    : Array.isArray(body?.data) ? body.data : [];
+    : Array.isArray(body?.conversations)
+      ? body.conversations
+      : Array.isArray(body?.data) ? body.data : [];
   const conversations: MistralCloudConversation[] = [];
   for (const raw of rawList) {
     const conv = normalizeConversation(raw);
@@ -188,6 +197,7 @@ export async function listMistralConversations(
   }
   return {
     conversations,
+    rawCount: rawList.length,
     totalCount: typeof body?.total === 'number' ? body.total : conversations.length,
     statusCode: result.statusCode,
   };
@@ -206,34 +216,44 @@ function computeEffectiveTotal(fetchedCount: number, apiTotal: number | undefine
 
 /**
  * Fetch every page of conversations, up to `MAX_PAGES`, aggregating them into one listing. Stops
- * as soon as a page comes back shorter than the requested page size (the API's usual signal that
- * it was the last page). A page-level error after at least one successful page keeps the pages
- * already gathered instead of discarding them; an error on the very first page still propagates,
- * matching the previous single-page behavior.
+ * as soon as a page's raw entry count (before any are dropped for being malformed/id-less) comes
+ * back shorter than the requested page size (the API's usual signal that it was the last page) —
+ * using the *normalized* count here would misfire and truncate the listing early whenever a full
+ * page happened to contain even one malformed entry. A page-level error after at least one
+ * successful page keeps the pages already gathered, surfaced via `partialError` so the caller
+ * knows the listing did not finish; an error on the very first page still propagates as a hard
+ * failure, matching the previous single-page behavior.
  */
 async function listAllMistralConversations(
   apiKey: string,
   options: { pageSize?: number; requestFn?: MistralRequestFn } = {},
-): Promise<MistralListResult> {
+): Promise<MistralListResult & { partialError?: string }> {
   const pageSize = Math.min(Math.max(options.pageSize ?? DEFAULT_PAGE_SIZE, 1), 100);
   const conversations: MistralCloudConversation[] = [];
   let totalCount: number | undefined;
   let statusCode: number | undefined;
   let hitPageCap = false;
+  let partialError: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
     const pageResult = await listMistralConversations(apiKey, { pageSize, page, requestFn: options.requestFn });
     if (pageResult.error) {
       if (page === 0) { return { error: pageResult.error, statusCode: pageResult.statusCode }; }
+      partialError = `Refresh stopped after page ${page + 1}: ${pageResult.error}`;
       break;
     }
     statusCode = pageResult.statusCode;
     const pageConversations = pageResult.conversations ?? [];
     conversations.push(...pageConversations);
     if (typeof pageResult.totalCount === 'number') { totalCount = pageResult.totalCount; }
-    if (pageConversations.length < pageSize) { break; }
+    if ((pageResult.rawCount ?? pageConversations.length) < pageSize) { break; }
     if (page === MAX_PAGES - 1) { hitPageCap = true; }
   }
-  return { conversations, totalCount: computeEffectiveTotal(conversations.length, totalCount, hitPageCap), statusCode };
+  return {
+    conversations,
+    totalCount: computeEffectiveTotal(conversations.length, totalCount, hitPageCap),
+    statusCode,
+    partialError,
+  };
 }
 
 /**
@@ -271,7 +291,10 @@ export async function collectMistralCloudSessions(
       totalCount: list.totalCount ?? 0,
       authenticated: true,
       fetchedAt,
-      error: '',
+      // A later page can fail after earlier pages already succeeded (listAllMistralConversations
+      // keeps what it fetched rather than discarding it); surface that as a partial-listing error
+      // so the UI doesn't present an incomplete result as a complete one.
+      error: list.partialError ?? '',
     };
   } catch (e) {
     return {

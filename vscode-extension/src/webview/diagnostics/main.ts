@@ -3414,8 +3414,8 @@ function triggerTtftAnalysis(): void {
 }
 
 function renderMistralConversationRow(c: MistralCloudConversation): string {
-  const created = c.createdAt ? new Date(c.createdAt).toLocaleString() : "—";
-  const updated = c.updatedAt ? new Date(c.updatedAt).toLocaleString() : "—";
+  const created = c.createdAt ? escapeHtml(new Date(c.createdAt).toLocaleString()) : "—";
+  const updated = c.updatedAt ? escapeHtml(new Date(c.updatedAt).toLocaleString()) : "—";
   const name = c.name || localize("mistral.table.untitled");
   const desc = c.description || "";
   const descCell = desc
@@ -3548,7 +3548,12 @@ function handleMistralCloudSessionsStatus(message: DiagMessage): void {
   const status = message.mistralCloudSessionsStatus as { apiKeyConfigured: boolean } | undefined;
   if (!status) { return; }
   currentMistralApiKeyConfigured = !!status.apiKeyConfigured;
-  if (!currentMistralApiKeyConfigured && !currentMistralCloudSessions) {
+  // Always reset the cached result when the key isn't configured — not just when there is no
+  // cached result yet. Otherwise a prior successful (authenticated: true) result lingers and
+  // renderMistralCloudTab's `apiKeyConfigured || result?.authenticated` keeps showing the old
+  // account's conversations and the Refresh/Remove buttons after a status refresh reports the key
+  // was removed (e.g. from another window), instead of falling back to the Connect state.
+  if (!currentMistralApiKeyConfigured) {
     currentMistralCloudSessions = { conversations: [], totalCount: 0, authenticated: false, fetchedAt: "", error: "" };
   }
   rerenderMistralCloudTab();

@@ -245,7 +245,7 @@ test('collectMistralCloudSessions: stops at a bounded page cap instead of pagina
 	assert.ok(result.totalCount > result.conversations.length, 'expected the total to signal truncation');
 });
 
-test('collectMistralCloudSessions: a later-page failure keeps the pages already fetched', async () => {
+test('collectMistralCloudSessions: a later-page failure keeps the pages already fetched but reports it as incomplete', async () => {
 	const page0 = Array.from({ length: 100 }, (_, i) => conv(`p0-${i}`));
 	const requestFn = (((opts: any, callback: (res: http.IncomingMessage) => void) => {
 		const query = new URLSearchParams((opts.path as string).split('?')[1] ?? '');
@@ -261,6 +261,28 @@ test('collectMistralCloudSessions: a later-page failure keeps the pages already 
 	const result = await collectMistralCloudSessions('key', { requestFn });
 	assert.equal(result.authenticated, true, 'a later-page failure should not discard the already-fetched first page');
 	assert.equal(result.conversations.length, 100);
+	// The listing didn't finish — the UI must not present this partial result as complete.
+	assert.notEqual(result.error, '', 'expected a non-empty error signaling the listing is incomplete');
+	assert.match(result.error, /HTTP 500/);
+});
+
+test('listMistralConversations: accepts the documented { conversations: [...] } envelope', async () => {
+	const body = { conversations: [conv('c1')], total: 1 };
+	const result = await listMistralConversations('key', { requestFn: makeRequestFn(makeResponse(body)) });
+	assert.equal(result.conversations?.length, 1);
+	assert.equal(result.conversations![0].id, 'c1');
+	assert.equal(result.totalCount, 1);
+});
+
+test('collectMistralCloudSessions: a malformed entry on a full page does not truncate pagination early', async () => {
+	// The raw page has exactly `pageSize` entries, but one is id-less and gets filtered out by
+	// normalizeConversation — so the *normalized* count (99) is less than pageSize (100) even
+	// though the API page itself was full and a next page exists.
+	const page0 = [...Array.from({ length: 99 }, (_, i) => conv(`p0-${i}`)), { created_at: '', updated_at: '', agent_id: 'a' }];
+	const page1 = [conv('p1-0')];
+	const result = await collectMistralCloudSessions('key', { requestFn: makePagedRequestFn([page0, page1]) });
+	assert.equal(result.conversations.length, 100, 'expected page1 to still be fetched despite the malformed entry on page0');
+	assert.ok(result.conversations.some((c) => c.id === 'p1-0'), 'expected the second page\'s conversation to be present');
 });
 
 test('requestMistralJson: builds a Bearer-auth GET request to api.mistral.ai', async () => {

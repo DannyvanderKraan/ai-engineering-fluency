@@ -10793,10 +10793,20 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     try {
       await this.context.secrets.store(MISTRAL_API_KEY_SECRET, key);
       this.log('Mistral API key stored.');
+      // Drop the previous key's cached listing now, synchronously with the store: otherwise it
+      // stays around until the refresh below resolves, and closing/reopening the panel during
+      // that window would have sendBackendStorageInfoEarly rehydrate the old account's
+      // conversations under the newly-entered key.
+      this._lastMistralCloudSessions = undefined;
       await this.diagHandleRefreshMistralCloudSessions();
     } catch (error) {
       this.error('Failed to store Mistral API key:', error);
       vscode.window.showErrorMessage(l10n.t('mistral.error.storeFailed'));
+      // The webview disabled Connect while this was in flight; without a terminal message here it
+      // would stay disabled forever since the store failed before any refresh could send one.
+      if (this.diagnosticsPanel && this.isPanelOpen(this.diagnosticsPanel)) {
+        this.diagnosticsPanel.webview.postMessage({ command: 'mistralCloudPromptCancelled' });
+      }
     }
   }
 
@@ -10845,6 +10855,20 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     return status;
   }
 
+  /**
+   * BETA: post a terminal error result when a post-fetch key check couldn't be confirmed (a
+   * transient SecretStorage read failure, not a genuine key change). The webview already has the
+   * interim "loading" marker up, so it needs a terminal message either way to re-enable Refresh.
+   */
+  private postMistralKeyCheckFailedResult(): void {
+    if (this.diagnosticsPanel && this.isPanelOpen(this.diagnosticsPanel)) {
+      this.diagnosticsPanel.webview.postMessage({
+        command: 'mistralCloudSessionsResult',
+        result: { ...this.buildEmptyMistralCloudSessionsResult(), error: l10n.t('mistral.error.keyCheckFailed') },
+      });
+    }
+  }
+
   /** BETA: fetch Mistral cloud conversations and post the result to the diagnostics webview. */
   private async diagHandleRefreshMistralCloudSessions(): Promise<void> {
     if (!this.diagnosticsPanel || !this.isPanelOpen(this.diagnosticsPanel)) { return; }
@@ -10863,8 +10887,14 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     // key" clicked mid-refresh) — discard a now-stale result instead of repopulating the UI with
     // data fetched under a key that is no longer the configured one.
     let currentKey: string | undefined;
-    try { currentKey = await this.context.secrets.get(MISTRAL_API_KEY_SECRET); } catch { currentKey = undefined; }
-    if (generation !== this._mistralCloudRefreshGeneration || currentKey !== apiKey) { return; }
+    let currentKeyReadFailed = false;
+    try { currentKey = await this.context.secrets.get(MISTRAL_API_KEY_SECRET); } catch { currentKeyReadFailed = true; }
+    if (generation !== this._mistralCloudRefreshGeneration) { return; }
+    if (currentKeyReadFailed) {
+      this.postMistralKeyCheckFailedResult();
+      return;
+    }
+    if (currentKey !== apiKey) { return; }
     this._lastMistralCloudSessions = result;
     if (this.diagnosticsPanel && this.isPanelOpen(this.diagnosticsPanel)) {
       this.diagnosticsPanel.webview.postMessage({ command: 'mistralCloudSessionsResult', result });
@@ -12027,8 +12057,10 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     const githubAuthStatus = this.getGitHubAuthStatus();
     // BETA: sent early (rather than only in the later diagnosticDataLoaded message) so a user with
     // an existing key doesn't briefly see "No API key configured" and a Connect button while the
-    // full diagnostics scan is still running.
-    const mistralCloudSessionsStatus = await this.getMistralCloudSessionsStatus();
+    // full diagnostics scan is still running. Generation-guarded (see
+    // getFreshMistralCloudSessionsStatus) so a set/clear landing while this read is in flight can't
+    // win a race against that handler's own, more current, status message.
+    const mistralCloudSessionsStatus = await this.getFreshMistralCloudSessionsStatus();
     if (this.isPanelOpen(panel)) {
       panel.webview.postMessage({
         command: "backendStorageInfoLoaded",

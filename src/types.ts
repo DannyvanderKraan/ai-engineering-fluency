@@ -1476,14 +1476,21 @@ export interface MistralCloudConversation {
  * is configured (or the user declined to provide one) — callers should show the connect UI.
  */
 export interface MistralCloudSessionsResult {
-  /** Conversations (newest first), capped to `pageSize`. */
+  /**
+   * Conversations (newest first), aggregated across every page fetched (see
+   * `mistralCloudSessionsService.ts`'s bounded pagination) — not limited to a single page.
+   */
   conversations: MistralCloudConversation[];
   /** Total conversations reported by the listing, when the API returns it. */
   totalCount: number;
-  /** True when an API key is configured and the listing call succeeded. */
+  /** True when an API key is configured and the listing call succeeded (even partially). */
   authenticated: boolean;
   /** ISO timestamp of the fetch; empty when never fetched. */
   fetchedAt: string;
-  /** Error message when the fetch failed (auth, network, API error). Empty on success. */
+  /**
+   * Error message when the fetch failed (auth, network, API error), or when a later page failed
+   * mid-pagination — in that case `conversations` still holds the pages fetched before the
+   * failure, and this describes why the listing is incomplete. Empty on a fully successful fetch.
+   */
   error: string;
 }
