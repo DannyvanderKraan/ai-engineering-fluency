@@ -3,6 +3,8 @@ import * as assert from 'node:assert/strict';
 
 import * as vscode from 'vscode';
 import { t } from '../../src/l10n';
+import englishBundle from '../../package.nls.json';
+import zhCnBundle from '../../package.nls.zh-cn.json';
 
 const mock = (vscode as any).__mock;
 
@@ -296,5 +298,111 @@ test('l10n: log viewer summary card labels resolve in zh-cn', () => {
 		}
 	} finally {
 		mock.setLanguage('en');
+	}
+});
+
+test('l10n: Efficiency horizon and week drill-down labels resolve in English', () => {
+	const expected: Record<string, string> = {
+		'efficiency.horizon.label': 'Horizon',
+		'efficiency.horizon.hint': 'Applies to the weekly charts on this page. Month vs Month and Cost Attribution keep their own fixed windows.',
+		'efficiency.horizon.loading': 'Loading the wider horizon…',
+		'efficiency.week.label': 'Selected week',
+		'efficiency.week.none': 'No week selected',
+		'efficiency.week.hint': 'You can also click a point on a chart.',
+		'efficiency.week.detailHeading': 'Selected week detail',
+		'efficiency.week.empty': 'No week selected. Pick one above — or click a point on a chart — to see the raw volume behind it.',
+		'efficiency.week.rawHeading': 'Raw volume',
+		'efficiency.week.sessions': 'Sessions',
+		'efficiency.week.tokens': 'Tokens',
+		'efficiency.week.turns': 'Turns',
+		'efficiency.week.loc': 'Lines changed',
+		'efficiency.week.cost': 'Estimated cost',
+		'efficiency.week.ratiosHeading': 'Derived ratios',
+		'efficiency.week.colMetric': 'Metric',
+		'efficiency.week.colValue': 'This week',
+		'efficiency.week.colPrior': 'Prior week',
+		'efficiency.week.colChange': 'Change',
+		'efficiency.week.priorIs': 'Prior week: {0}',
+		'efficiency.week.noPrior': 'No prior week inside the selected horizon.',
+		'efficiency.week.coverageHeading': 'Data coverage',
+		'efficiency.week.skillsHeading': 'Skill invocations this week',
+		'efficiency.week.colSkill': 'Skill',
+		'efficiency.week.colCalls': 'Invocations',
+		'efficiency.week.colShare': 'Share',
+		'efficiency.week.noSkills': 'No skill invocations were recorded in this week.',
+		'efficiency.week.modelHeading': 'Selected model and week',
+		'efficiency.week.modelUnused': '{0} was not used in this week, so every metric below is unavailable rather than zero.',
+		'efficiency.week.caveatsHeading': 'Read with care',
+		'efficiency.week.unavailable': 'Unavailable',
+		'efficiency.deltas.showTrend': 'Show weekly trend',
+		'efficiency.deltas.noTrend': 'No weekly equivalent — this card compares whole calendar months.',
+		'efficiency.attribution.showModel': 'Inspect this model',
+		'efficiency.week.better': 'better',
+		'efficiency.week.worse': 'worse',
+		'efficiency.week.partialChip': 'Partial week',
+	};
+	for (const [key, english] of Object.entries(expected)) {
+		assert.equal(t(key), english, `English value for ${key}`);
+	}
+});
+
+test('l10n: Efficiency horizon and week drill-down labels resolve in zh-cn', () => {
+	mock.setLanguage('zh-cn');
+	try {
+		const expected: Record<string, string> = {
+			'efficiency.horizon.label': '时间范围',
+			'efficiency.horizon.hint': '仅作用于本页的周度图表。“月度对比”和“成本归因”保留各自固定的时间窗口。',
+			'efficiency.horizon.loading': '正在加载更长的时间范围…',
+			'efficiency.week.label': '选定周',
+			'efficiency.week.none': '未选择任何周',
+			'efficiency.week.hint': '也可以点击图表上的数据点。',
+			'efficiency.week.detailHeading': '选定周详情',
+			'efficiency.week.empty': '尚未选择周。请在上方选择，或点击图表上的数据点，以查看其背后的原始数据。',
+			'efficiency.week.rawHeading': '原始用量',
+			'efficiency.week.sessions': '会话数',
+			'efficiency.week.tokens': '令牌数',
+			'efficiency.week.turns': '轮次',
+			'efficiency.week.loc': '变更行数',
+			'efficiency.week.cost': '预估成本',
+			'efficiency.week.ratiosHeading': '派生比率',
+			'efficiency.week.colMetric': '指标',
+			'efficiency.week.colValue': '本周',
+			'efficiency.week.colPrior': '上一周',
+			'efficiency.week.colChange': '变化',
+			'efficiency.week.priorIs': '上一周：{0}',
+			'efficiency.week.noPrior': '选定时间范围内没有上一周可供比较。',
+			'efficiency.week.coverageHeading': '数据覆盖情况',
+			'efficiency.week.skillsHeading': '本周技能调用',
+			'efficiency.week.colSkill': '技能',
+			'efficiency.week.colCalls': '调用次数',
+			'efficiency.week.colShare': '占比',
+			'efficiency.week.noSkills': '本周没有记录到任何技能调用。',
+			'efficiency.week.modelHeading': '选定模型与周',
+			'efficiency.week.modelUnused': '{0} 在本周未被使用，因此下方各项指标为不可用，而非零。',
+			'efficiency.week.caveatsHeading': '请谨慎解读',
+			'efficiency.week.unavailable': '不可用',
+			'efficiency.deltas.showTrend': '查看周度趋势',
+			'efficiency.deltas.noTrend': '没有对应的周度指标 — 此卡片比较的是完整自然月。',
+			'efficiency.attribution.showModel': '查看该模型',
+			'efficiency.week.better': '更好',
+			'efficiency.week.worse': '更差',
+			'efficiency.week.partialChip': '未完整的周',
+		};
+		for (const [key, chinese] of Object.entries(expected)) {
+			assert.equal(t(key), chinese, `zh-cn value for ${key}`);
+		}
+	} finally {
+		mock.setLanguage('en');
+	}
+});
+
+test('l10n: every Efficiency drill-down key has a zh-cn translation distinct from the English text', () => {
+	const english = englishBundle as Record<string, string>;
+	const chinese = zhCnBundle as Record<string, string>;
+	const keys = Object.keys(english).filter(k => k.startsWith('efficiency.'));
+	assert.ok(keys.length >= 30, `expected the drill-down keys to be present, found ${keys.length}`);
+	for (const key of keys) {
+		assert.ok(Object.prototype.hasOwnProperty.call(chinese, key), `zh-cn is missing ${key}`);
+		assert.notEqual(chinese[key], english[key], `${key} was never translated`);
 	}
 });

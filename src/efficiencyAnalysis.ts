@@ -48,6 +48,39 @@ function fmtWeekLabel(monday: Date): string {
 }
 
 // ---------------------------------------------------------------------------
+// Trend horizons
+// ---------------------------------------------------------------------------
+
+/** Selectable horizon for every weekly series on the Efficiency view. */
+export type EfficiencyTrendRangeId = '12w' | '26w' | '52w';
+
+export interface EfficiencyTrendRange {
+	id: EfficiencyTrendRangeId;
+	/** Number of trailing weeks the horizon covers, including the current partial week. */
+	weeks: number;
+	/** Human label for the selector, e.g. "26 weeks". */
+	label: string;
+}
+
+/**
+ * The horizons the weekly charts can be zoomed to. Deliberately bounded: these
+ * three are the ones the retained daily/session data can serve without turning
+ * the view into an open-ended date-range picker.
+ */
+export const EFFICIENCY_TREND_RANGES: readonly EfficiencyTrendRange[] = [
+	{ id: '12w', weeks: 12, label: '12 weeks' },
+	{ id: '26w', weeks: 26, label: '26 weeks' },
+	{ id: '52w', weeks: 52, label: '52 weeks' },
+];
+
+export const DEFAULT_EFFICIENCY_TREND_RANGE: EfficiencyTrendRangeId = '12w';
+
+/** Resolves any value (including a message from the webview) to a supported horizon, defaulting to 12 weeks. */
+export function resolveTrendRange(id: unknown): EfficiencyTrendRange {
+	return EFFICIENCY_TREND_RANGES.find(r => r.id === id) ?? EFFICIENCY_TREND_RANGES[0];
+}
+
+// ---------------------------------------------------------------------------
 // Weekly efficiency trends
 // ---------------------------------------------------------------------------
 
@@ -109,7 +142,7 @@ export interface EfficiencyWeekPoint {
 	editTurns: number;
 }
 
-const DEFAULT_TREND_WEEKS = 12;
+const DEFAULT_TREND_WEEKS = EFFICIENCY_TREND_RANGES[0].weeks;
 /** Minimum edit turns in a week before its retry rate is considered meaningful. */
 const MIN_EDIT_TURNS_PER_WEEK = 5;
 
@@ -208,6 +241,288 @@ export function buildEfficiencyTrends(
 			durationSessions: w.durationSessions,
 			editTurns: w.editTurns,
 		}));
+}
+
+// ---------------------------------------------------------------------------
+// Selected-week drill-down
+// ---------------------------------------------------------------------------
+
+/** Which direction of movement reads as favourable. `none` means the metric carries no judgement. */
+export type WeekDetailDirection = 'up' | 'down' | 'none';
+
+/** Inclusive local calendar bounds of one week, plus how much of it has happened. */
+export interface WeekBounds {
+	/** Monday, YYYY-MM-DD. */
+	startKey: string;
+	/** Sunday, YYYY-MM-DD. */
+	endKey: string;
+	/** Concrete span, e.g. "Jun 2 – Jun 8, 2026". */
+	rangeLabel: string;
+	/** True while the week is still running — its raw totals are not comparable with a full week's. */
+	isPartial: boolean;
+	/** Days of the week already elapsed, 0..7. */
+	elapsedDays: number;
+}
+
+/** Resolves a Monday week key into its inclusive local calendar bounds relative to `now`. */
+export function getWeekBounds(weekKey: string, now: Date): WeekBounds {
+	const monday = new Date(`${weekKey}T00:00:00`);
+	const sunday = new Date(monday);
+	sunday.setDate(monday.getDate() + 6);
+	// Compare UTC-normalized calendar days so a DST shift inside the week cannot
+	// round the elapsed-day count up or down.
+	const asUtcDay = (d: Date): number => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+	const elapsed = Math.floor((asUtcDay(now) - asUtcDay(monday)) / 86_400_000) + 1;
+	const elapsedDays = Math.max(0, Math.min(7, elapsed));
+	const startKey = fmtKey(monday);
+	const endKey = fmtKey(sunday);
+	return { startKey, endKey, rangeLabel: formatDateRangeLabel(startKey, endKey), isPartial: elapsedDays < 7, elapsedDays };
+}
+
+/** One metric of a selected week, next to the same metric in the previous week. */
+export interface WeekDetailMetric {
+	id: string;
+	label: string;
+	/** What the metric means, so the detail region never has to be read against the chart legend. */
+	description: string;
+	/** The selected week's value; null when the metric is unavailable — never zero-filled. */
+	value: number | null;
+	/** The previous week's value, or null when there is no comparable prior week. */
+	prior: number | null;
+	deltaPct: number | null;
+	unit: DeltaUnit;
+	goodDirection: WeekDetailDirection;
+	improved: boolean | null;
+	/** Why `value` is null; null when the metric is available. */
+	unavailableReason: string | null;
+}
+
+const NO_SESSIONS_REASON = 'No sessions were recorded in this week.';
+
+type WeekMetricSpec = {
+	id: string;
+	label: string;
+	description: string;
+	unit: DeltaUnit;
+	goodDirection: WeekDetailDirection;
+	pick: (w: EfficiencyWeekPoint) => number | null;
+	reason: (w: EfficiencyWeekPoint) => string;
+};
+
+const WEEK_DETAIL_SPECS: WeekMetricSpec[] = [
+	{
+		id: 'cost-per-kloc', label: 'Cost per 1K lines changed', unit: 'currency', goodDirection: 'down',
+		description: 'Estimated cost divided by lines added + removed in this week.',
+		pick: w => w.costPerKloc,
+		reason: w => (w.sessions === 0 ? NO_SESSIONS_REASON : 'No lines-of-code data was recorded for this week.'),
+	},
+	{
+		id: 'tokens-per-session', label: 'Tokens per session', unit: 'tokens', goodDirection: 'down',
+		description: 'Total tokens divided by the sessions observed in this week.',
+		pick: w => w.tokensPerSession,
+		reason: () => NO_SESSIONS_REASON,
+	},
+	{
+		id: 'turns-per-session', label: 'Turns per session', unit: 'ratio', goodDirection: 'down',
+		description: 'User requests per session in this week.',
+		pick: w => w.turnsPerSession,
+		reason: () => NO_SESSIONS_REASON,
+	},
+	{
+		id: 'active-minutes', label: 'Active minutes per session', unit: 'minutes', goodDirection: 'down',
+		description: 'Net working time per session, excluding idle gaps.',
+		pick: w => w.activeMinutesPerSession,
+		reason: () => 'No session in this week carried net active-duration data.',
+	},
+	{
+		id: 'retry-rate', label: 'Edit retry rate', unit: 'percent', goodDirection: 'down',
+		description: 'Edit retries divided by edit turns across this week’s sessions.',
+		pick: w => w.retryRate,
+		reason: w => `Only ${w.editTurns} edit turn${w.editTurns === 1 ? '' : 's'} this week — below the ${MIN_EDIT_TURNS_PER_WEEK} needed before a retry rate is shown.`,
+	},
+	{
+		id: 'apply-rate', label: 'Apply rate', unit: 'percent', goodDirection: 'up',
+		description: 'Applied code blocks divided by the code blocks shown.',
+		pick: w => w.applyRate,
+		reason: () => 'No apply-button data in this week (agent and CLI sessions apply edits directly).',
+	},
+	{
+		id: 'loc-per-dollar', label: 'Lines changed per dollar', unit: 'ratio', goodDirection: 'up',
+		description: 'Output per unit of estimated spend — the inverse of cost per 1K lines.',
+		pick: w => w.locPerDollar,
+		reason: w => (w.cost > 0 ? 'No lines-of-code data was recorded for this week.' : 'No estimated cost for this week.'),
+	},
+];
+
+/** The selected week of the efficiency trends, with its raw volume, ratios and data-coverage notes. */
+export interface EfficiencyWeekDetail extends WeekBounds {
+	weekKey: string;
+	label: string;
+	sessions: number;
+	tokens: number;
+	cost: number;
+	loc: number;
+	interactions: number;
+	/** The preceding week inside the same horizon, when there is one. */
+	priorWeekKey: string | null;
+	priorLabel: string | null;
+	metrics: WeekDetailMetric[];
+	/** Sample-size and coverage notes: what the numbers above are and are not backed by. */
+	coverageNotes: string[];
+}
+
+function weekCoverageNotes(w: EfficiencyWeekPoint, bounds: WeekBounds): string[] {
+	const notes: string[] = [
+		bounds.isPartial
+			? `Partial week: ${bounds.elapsedDays} of 7 days elapsed, so the raw totals are lower than a full week by construction. The ratios stay comparable.`
+			: 'Complete week: all 7 days are included.',
+	];
+	if (w.sessions === 0) { notes.push(NO_SESSIONS_REASON); }
+	notes.push(`${w.durationSessions} of ${w.sessions} session${w.sessions === 1 ? '' : 's'} carried net active-duration data.`);
+	notes.push(w.editTurns >= MIN_EDIT_TURNS_PER_WEEK
+		? `${w.editTurns} edit turns back the retry rate.`
+		: `${w.editTurns} edit turn${w.editTurns === 1 ? '' : 's'} — below the ${MIN_EDIT_TURNS_PER_WEEK} needed before a retry rate is shown.`);
+	return notes;
+}
+
+function weekDetailMetric(spec: WeekMetricSpec, week: EfficiencyWeekPoint, prior: EfficiencyWeekPoint | null): WeekDetailMetric {
+	const value = spec.pick(week);
+	const priorValue = prior ? spec.pick(prior) : null;
+	const { deltaPct, improved } = changeAgainstBaseline(priorValue, value, spec.goodDirection);
+	return {
+		id: spec.id,
+		label: spec.label,
+		description: spec.description,
+		value,
+		prior: priorValue,
+		deltaPct,
+		unit: spec.unit,
+		goodDirection: spec.goodDirection,
+		improved,
+		unavailableReason: value === null ? spec.reason(week) : null,
+	};
+}
+
+/**
+ * Serializable detail for one week of {@link buildEfficiencyTrends} output:
+ * the raw volume behind the point, every derived ratio (null when unavailable,
+ * never zero-filled), the change against the previous week in the same
+ * horizon, and notes on what the week's sample supports.
+ *
+ * Returns null when `weekKey` is not part of the series — a selection left over
+ * from a wider horizon must not silently resolve to a different week.
+ */
+export function buildEfficiencyWeekDetail(
+	weeks: EfficiencyWeekPoint[],
+	weekKey: string,
+	now: Date,
+): EfficiencyWeekDetail | null {
+	const index = weeks.findIndex(w => w.weekKey === weekKey);
+	if (index < 0) { return null; }
+	const week = weeks[index];
+	const prior = index > 0 ? weeks[index - 1] : null;
+	const bounds = getWeekBounds(week.weekKey, now);
+	return {
+		...bounds,
+		weekKey: week.weekKey,
+		label: week.label,
+		sessions: week.sessions,
+		tokens: week.tokens,
+		cost: week.cost,
+		loc: week.loc,
+		interactions: week.interactions,
+		priorWeekKey: prior?.weekKey ?? null,
+		priorLabel: prior?.label ?? null,
+		metrics: WEEK_DETAIL_SPECS.map(spec => weekDetailMetric(spec, week, prior)),
+		coverageNotes: weekCoverageNotes(week, bounds),
+	};
+}
+
+/** One skill's invocations inside the selected week. */
+export interface SkillWeekDetailEntry {
+	skill: string;
+	calls: number;
+	/** Invocations of the same skill in the previous week; null when there is no prior week. */
+	priorCalls: number | null;
+	/** Share of the week's invocations, 0..1; null when the week had none. */
+	share: number | null;
+}
+
+/** The selected week of the Tools & Skills trends. */
+export interface SkillWeekDetail extends WeekBounds {
+	weekKey: string;
+	label: string;
+	totalCalls: number;
+	skillSessions: number;
+	trackedSessions: number;
+	skillShare: number | null;
+	priorWeekKey: string | null;
+	priorLabel: string | null;
+	metrics: WeekDetailMetric[];
+	skills: SkillWeekDetailEntry[];
+	coverageNotes: string[];
+}
+
+/**
+ * Serializable detail for one week of {@link buildSkillUsageTrends} output.
+ * Skill adoption is deliberately reported without a good/bad direction: more
+ * invocations is neither an improvement nor a regression on its own.
+ */
+export function buildSkillWeekDetail(
+	trends: SkillUsageTrends,
+	weekKey: string,
+	now: Date,
+): SkillWeekDetail | null {
+	const index = trends.weeks.findIndex(w => w.weekKey === weekKey);
+	if (index < 0) { return null; }
+	const week = trends.weeks[index];
+	const prior = index > 0 ? trends.weeks[index - 1] : null;
+	const bounds = getWeekBounds(week.weekKey, now);
+	const callsChange = changeAgainstBaseline(prior ? prior.totalCalls : null, week.totalCalls, 'none');
+	const shareChange = changeAgainstBaseline(prior ? prior.skillShare : null, week.skillShare, 'none');
+	const metrics: WeekDetailMetric[] = [
+		{
+			id: 'skill-calls', label: 'Skill invocations', description: 'Agent-skill invocations across this week’s sessions.',
+			value: week.totalCalls, prior: prior ? prior.totalCalls : null, deltaPct: callsChange.deltaPct,
+			unit: 'count', goodDirection: 'none', improved: null,
+			unavailableReason: null,
+		},
+		{
+			id: 'skill-share', label: 'Sessions using a skill', description: 'Share of this week’s tracked sessions that invoked at least one skill.',
+			value: week.skillShare, prior: prior ? prior.skillShare : null, deltaPct: shareChange.deltaPct,
+			unit: 'percent', goodDirection: 'none', improved: null,
+			unavailableReason: week.skillShare === null ? 'No sessions were tracked in this week.' : null,
+		},
+	];
+	const skills: SkillWeekDetailEntry[] = Object.entries(week.byName)
+		.map(([skill, calls]) => ({
+			skill,
+			calls,
+			priorCalls: prior ? (prior.byName[skill] ?? 0) : null,
+			share: week.totalCalls > 0 ? calls / week.totalCalls : null,
+		}))
+		.sort((a, b) => b.calls - a.calls);
+	const coverageNotes: string[] = [
+		bounds.isPartial
+			? `Partial week: ${bounds.elapsedDays} of 7 days elapsed, so invocation counts are lower than a full week by construction.`
+			: 'Complete week: all 7 days are included.',
+		`${week.skillSessions} of ${week.trackedSessions} tracked session${week.trackedSessions === 1 ? '' : 's'} invoked at least one skill.`,
+		'Skill detection depends on the editor writing slash-command or skill markers into its session log; editors that do not are counted as tracked sessions with no skills.',
+	];
+	return {
+		...bounds,
+		weekKey: week.weekKey,
+		label: week.label,
+		totalCalls: week.totalCalls,
+		skillSessions: week.skillSessions,
+		trackedSessions: week.trackedSessions,
+		skillShare: week.skillShare,
+		priorWeekKey: prior?.weekKey ?? null,
+		priorLabel: prior?.label ?? null,
+		metrics,
+		skills,
+		coverageNotes,
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -364,7 +679,7 @@ export function splitTrailingWindows(dailyStats: DailyTokenStats[], now: Date): 
 // Period delta cards
 // ---------------------------------------------------------------------------
 
-export type DeltaUnit = 'ratio' | 'percent' | 'minutes' | 'tokens' | 'currency';
+export type DeltaUnit = 'ratio' | 'percent' | 'minutes' | 'tokens' | 'currency' | 'count';
 
 /** One month-over-month delta card. `prev`/`cur` are null when the metric is unavailable in that period. */
 export interface EfficiencyDelta {
@@ -422,6 +737,22 @@ function periodTurnsPerSession(p: UsageAnalysisPeriod): number | null {
 	return c && p.sessions > 0 ? c.avgTurnsPerSession : null;
 }
 
+/**
+ * Percent change of `cur` against `prev`, plus whether it moved in the
+ * favourable direction. Both are null when either side is unavailable or the
+ * baseline is zero — a missing metric never becomes a zero.
+ */
+function changeAgainstBaseline(
+	prev: number | null,
+	cur: number | null,
+	goodDirection: WeekDetailDirection,
+): { deltaPct: number | null; improved: boolean | null } {
+	if (prev === null || cur === null || prev === 0) { return { deltaPct: null, improved: null }; }
+	const deltaPct = ((cur - prev) / Math.abs(prev)) * 100;
+	if (goodDirection === 'none' || Math.abs(deltaPct) < 0.05) { return { deltaPct, improved: null }; }
+	return { deltaPct, improved: goodDirection === 'down' ? cur < prev : cur > prev };
+}
+
 function makeDelta(
 	id: string,
 	label: string,
@@ -431,14 +762,7 @@ function makeDelta(
 	unit: DeltaUnit,
 	goodDirection: 'up' | 'down',
 ): EfficiencyDelta {
-	let deltaPct: number | null = null;
-	let improved: boolean | null = null;
-	if (prev !== null && cur !== null && prev !== 0) {
-		deltaPct = ((cur - prev) / Math.abs(prev)) * 100;
-		if (Math.abs(deltaPct) >= 0.05) {
-			improved = goodDirection === 'down' ? cur < prev : cur > prev;
-		}
-	}
+	const { deltaPct, improved } = changeAgainstBaseline(prev, cur, goodDirection);
 	return { id, label, description, prev, cur, unit, goodDirection, deltaPct, improved };
 }
 
@@ -1180,22 +1504,37 @@ function taskMixDivergence(a: { [c: string]: number }, b: { [c: string]: number 
 	return divergence / 2;
 }
 
-function buildCaveats(a: ModelPeriodMetrics, b: ModelPeriodMetrics): string[] {
+/** True when a profile leans on sessions that mixed several models, so its session-level splits are approximate. */
+function isMixedModelHeavy(side: ModelPeriodMetrics): boolean {
+	return side.sessions > side.sessionShare * 1.5;
+}
+
+const MIXED_MODEL_CAVEAT = 'Much of this usage comes from sessions that mixed several models; duration and lines-of-code are split by token share and are therefore approximate.';
+
+/**
+ * Sample-floor caveats for one profile. Shared by the head-to-head comparison
+ * and the selected-week drill-down so both state the same floors in the same
+ * words.
+ */
+function modelSampleCaveats(side: ModelPeriodMetrics): string[] {
 	const caveats: string[] = [];
-	for (const side of [a, b]) {
-		if (!side.sampleSufficient) {
-			caveats.push(`${side.displayName} (${side.periodLabel}) has only ${side.sessionShare.toFixed(1)} session equivalents — below the ${MIN_SESSION_SHARE_FOR_COMPARE} needed for reliable per-session ratios.`);
-		}
-		if (!side.editSampleSufficient) {
-			caveats.push(`${side.displayName} (${side.periodLabel}) has only ${side.editTurns} edit turns — below the ${MIN_EDIT_TURNS_FOR_COMPARE} needed for reliable retry and one-shot rates.`);
-		}
+	if (!side.sampleSufficient) {
+		caveats.push(`${side.displayName} (${side.periodLabel}) has only ${side.sessionShare.toFixed(1)} session equivalents — below the ${MIN_SESSION_SHARE_FOR_COMPARE} needed for reliable per-session ratios.`);
 	}
+	if (!side.editSampleSufficient) {
+		caveats.push(`${side.displayName} (${side.periodLabel}) has only ${side.editTurns} edit turns — below the ${MIN_EDIT_TURNS_FOR_COMPARE} needed for reliable retry and one-shot rates.`);
+	}
+	return caveats;
+}
+
+function buildCaveats(a: ModelPeriodMetrics, b: ModelPeriodMetrics): string[] {
+	const caveats: string[] = [...modelSampleCaveats(a), ...modelSampleCaveats(b)];
 	const divergence = taskMixDivergence(a.taskMix, b.taskMix);
 	if (divergence >= TASK_MIX_DIVERGENCE_THRESHOLD) {
 		caveats.push(`The two sides did different kinds of work (${Math.round(divergence * 100)}% task-mix difference), so part of the gap may reflect the tasks rather than the models.`);
 	}
-	if (a.sessions > a.sessionShare * 1.5 || b.sessions > b.sessionShare * 1.5) {
-		caveats.push('Much of this usage comes from sessions that mixed several models; duration and lines-of-code are split by token share and are therefore approximate.');
+	if (isMixedModelHeavy(a) || isMixedModelHeavy(b)) {
+		caveats.push(MIXED_MODEL_CAVEAT);
 	}
 	return caveats;
 }
@@ -1211,51 +1550,205 @@ function buildVerdict(rows: ModelComparisonRow[]): ModelComparison['verdict'] {
 	return { winner, wins };
 }
 
+/** Which sample floor in {@link computeModelPeriodMetrics} gates a metric. */
+type ModelMetricGate = 'sessions' | 'edits' | 'none';
+
+/**
+ * The catalogue of comparable model metrics: one definition per metric, shared
+ * by the head-to-head comparison and the selected model/week drill-down so both
+ * name and describe a metric identically.
+ */
+interface ModelMetricSpec {
+	id: ModelComparisonMetricId;
+	label: string;
+	description: string;
+	unit: DeltaUnit;
+	goodDirection: 'up' | 'down';
+	gate: ModelMetricGate;
+	pick: (m: ModelPeriodMetrics) => number | null;
+}
+
+const MODEL_METRIC_SPECS: ModelMetricSpec[] = [
+	{
+		id: 'cost-per-edit-turn', label: 'Cost per edit turn', unit: 'currency', goodDirection: 'down', gate: 'edits',
+		description: 'What one round of file edits actually costs. The headline efficiency number.',
+		pick: m => m.costPerEditTurn,
+	},
+	{
+		id: 'cost-per-session', label: 'Cost per session', unit: 'currency', goodDirection: 'down', gate: 'sessions',
+		description: 'Average spend per session, at provider rates.',
+		pick: m => m.costPerSession,
+	},
+	{
+		id: 'cost-per-kloc', label: 'Cost per 1000 lines changed', unit: 'currency', goodDirection: 'down', gate: 'sessions',
+		description: 'Spend per unit of code actually shipped.',
+		pick: m => m.costPerKloc,
+	},
+	{
+		id: 'dollars-per-mtokens', label: 'Cost per million tokens', unit: 'currency', goodDirection: 'down', gate: 'none',
+		description: 'The raw price of the model, before any behavioural differences.',
+		pick: m => m.dollarsPerMTokens,
+	},
+	{
+		id: 'tokens-per-edit-turn', label: 'Tokens per edit turn', unit: 'tokens', goodDirection: 'down', gate: 'edits',
+		description: 'How much context the model burns to make one round of edits.',
+		pick: m => m.tokensPerEditTurn,
+	},
+	{
+		id: 'tokens-per-session', label: 'Tokens per session', unit: 'tokens', goodDirection: 'down', gate: 'sessions',
+		description: 'Total token appetite per session.',
+		pick: m => m.tokensPerSession,
+	},
+	{
+		id: 'one-shot-rate', label: 'One-shot edit rate', unit: 'percent', goodDirection: 'up', gate: 'edits',
+		description: 'Share of edit turns finished with no retries and no self-corrections. Higher is better.',
+		pick: m => m.oneShotRate,
+	},
+	{
+		id: 'retry-rate', label: 'Edit retry rate', unit: 'ratio', goodDirection: 'down', gate: 'edits',
+		description: 'Retries per edit turn — how often an edit fails and is immediately re-attempted.',
+		pick: m => m.retryRate,
+	},
+	{
+		id: 'self-correction-rate', label: 'Self-correction rate', unit: 'ratio', goodDirection: 'down', gate: 'edits',
+		description: 'How often the model goes back to fix its own earlier edit in the same turn.',
+		pick: m => m.selfCorrectionRate,
+	},
+	{
+		id: 'cache-read-share', label: 'Cache read share', unit: 'percent', goodDirection: 'up', gate: 'none',
+		description: 'Share of input tokens served from the prompt cache. Higher is cheaper.',
+		pick: m => m.cacheReadShare,
+	},
+	{
+		id: 'active-minutes-per-session', label: 'Active minutes per session', unit: 'minutes', goodDirection: 'down', gate: 'none',
+		description: 'Net working time per session, excluding idle gaps.',
+		pick: m => m.activeMinutesPerSession,
+	},
+	{
+		id: 'apply-rate', label: 'Apply rate', unit: 'percent', goodDirection: 'up', gate: 'none',
+		description: 'Share of suggested code blocks actually applied — does the output stick?',
+		pick: m => m.applyRate,
+	},
+];
+
 /**
  * Compares two efficiency profiles metric by metric. Rows whose denominators
  * fell below the sample floor arrive as nulls (the view renders them as "—"),
  * and `caveats` explains anything that should temper the conclusion.
  */
 export function compareModels(a: ModelPeriodMetrics, b: ModelPeriodMetrics): ModelComparison {
-	const rows: ModelComparisonRow[] = [
-		comparisonRow('cost-per-edit-turn', 'Cost per edit turn',
-			'What one round of file edits actually costs. The headline efficiency number.',
-			a.costPerEditTurn, b.costPerEditTurn, 'currency', 'down'),
-		comparisonRow('cost-per-session', 'Cost per session',
-			'Average spend per session, at provider rates.',
-			a.costPerSession, b.costPerSession, 'currency', 'down'),
-		comparisonRow('cost-per-kloc', 'Cost per 1000 lines changed',
-			'Spend per unit of code actually shipped.',
-			a.costPerKloc, b.costPerKloc, 'currency', 'down'),
-		comparisonRow('dollars-per-mtokens', 'Cost per million tokens',
-			'The raw price of the model, before any behavioural differences.',
-			a.dollarsPerMTokens, b.dollarsPerMTokens, 'currency', 'down'),
-		comparisonRow('tokens-per-edit-turn', 'Tokens per edit turn',
-			'How much context the model burns to make one round of edits.',
-			a.tokensPerEditTurn, b.tokensPerEditTurn, 'tokens', 'down'),
-		comparisonRow('tokens-per-session', 'Tokens per session',
-			'Total token appetite per session.',
-			a.tokensPerSession, b.tokensPerSession, 'tokens', 'down'),
-		comparisonRow('one-shot-rate', 'One-shot edit rate',
-			'Share of edit turns finished with no retries and no self-corrections. Higher is better.',
-			a.oneShotRate, b.oneShotRate, 'percent', 'up'),
-		comparisonRow('retry-rate', 'Edit retry rate',
-			'Retries per edit turn — how often an edit fails and is immediately re-attempted.',
-			a.retryRate, b.retryRate, 'ratio', 'down'),
-		comparisonRow('self-correction-rate', 'Self-correction rate',
-			'How often the model goes back to fix its own earlier edit in the same turn.',
-			a.selfCorrectionRate, b.selfCorrectionRate, 'ratio', 'down'),
-		comparisonRow('cache-read-share', 'Cache read share',
-			'Share of input tokens served from the prompt cache. Higher is cheaper.',
-			a.cacheReadShare, b.cacheReadShare, 'percent', 'up'),
-		comparisonRow('active-minutes-per-session', 'Active minutes per session',
-			'Net working time per session, excluding idle gaps.',
-			a.activeMinutesPerSession, b.activeMinutesPerSession, 'minutes', 'down'),
-		comparisonRow('apply-rate', 'Apply rate',
-			'Share of suggested code blocks actually applied — does the output stick?',
-			a.applyRate, b.applyRate, 'percent', 'up'),
-	];
+	const rows: ModelComparisonRow[] = MODEL_METRIC_SPECS.map(spec =>
+		comparisonRow(spec.id, spec.label, spec.description, spec.pick(a), spec.pick(b), spec.unit, spec.goodDirection));
 	return { a, b, rows, caveats: buildCaveats(a, b), verdict: buildVerdict(rows) };
+}
+
+// ---------------------------------------------------------------------------
+// Selected model/week drill-down
+// ---------------------------------------------------------------------------
+
+/** The selected model and week on the Models tab. */
+export interface ModelWeekDetail extends WeekBounds {
+	weekKey: string;
+	label: string;
+	model: string;
+	displayName: string;
+	/** The week's profile; null when the model was not used that week (a gap, never a zero). */
+	metrics: ModelPeriodMetrics | null;
+	/** The previous week's profile for the same model, when there is one. */
+	prior: ModelPeriodMetrics | null;
+	priorWeekKey: string | null;
+	priorLabel: string | null;
+	rows: WeekDetailMetric[];
+	/** Sample-floor, task-mix and mixed-model-session caveats for this week. */
+	caveats: string[];
+}
+
+/** Why one model metric is unavailable for the selected week, in the same terms as the sample floors. */
+function modelWeekUnavailableReason(spec: ModelMetricSpec, metrics: ModelPeriodMetrics | null, displayName: string): string {
+	if (!metrics) { return `${displayName} was not used in this week.`; }
+	if (spec.gate === 'edits' && !metrics.editSampleSufficient) {
+		return `Only ${metrics.editTurns} edit turn${metrics.editTurns === 1 ? '' : 's'} this week — below the ${MIN_EDIT_TURNS_FOR_COMPARE} needed for this rate.`;
+	}
+	if (spec.gate === 'sessions' && !metrics.sampleSufficient) {
+		return `Only ${metrics.sessionShare.toFixed(1)} session equivalents this week — below the ${MIN_SESSION_SHARE_FOR_COMPARE} needed for this ratio.`;
+	}
+	return 'No data backing this metric in the selected week.';
+}
+
+function modelWeekCaveats(
+	metrics: ModelPeriodMetrics | null,
+	prior: ModelPeriodMetrics | null,
+	bounds: WeekBounds,
+	priorLabel: string | null,
+): string[] {
+	if (!metrics) { return []; }
+	const caveats = [...modelSampleCaveats(metrics)];
+	if (isMixedModelHeavy(metrics)) { caveats.push(MIXED_MODEL_CAVEAT); }
+	if (prior) {
+		const divergence = taskMixDivergence(metrics.taskMix, prior.taskMix);
+		if (divergence >= TASK_MIX_DIVERGENCE_THRESHOLD) {
+			caveats.push(`This week's task mix differs from ${priorLabel ?? 'the previous week'} by ${Math.round(divergence * 100)}%, so part of any movement reflects the work rather than the model.`);
+		}
+	}
+	if (bounds.isPartial) {
+		caveats.push(`This week is still running (${bounds.elapsedDays} of 7 days), so its sample is smaller than a full week's.`);
+	}
+	return caveats;
+}
+
+/**
+ * Serializable detail for one model in one week of {@link buildModelWeeklySeries}
+ * output, compared against the same model in the previous week. Every existing
+ * sample floor is retained: a metric under its floor arrives as null with the
+ * floor spelled out, and the caveats repeat the task-mix and mixed-model-session
+ * warnings the head-to-head comparison carries.
+ *
+ * Returns null when `weekKey` is not part of the series.
+ */
+export function buildModelWeekDetail(
+	series: ModelWeekPoint[],
+	model: string,
+	weekKey: string,
+	now: Date,
+): ModelWeekDetail | null {
+	const index = series.findIndex(p => p.weekKey === weekKey);
+	if (index < 0) { return null; }
+	const point = series[index];
+	const priorPoint = index > 0 ? series[index - 1] : null;
+	const metrics = point.metrics;
+	const prior = priorPoint?.metrics ?? null;
+	const displayName = metrics?.displayName ?? getModelDisplayName(model);
+	const bounds = getWeekBounds(point.weekKey, now);
+	const rows: WeekDetailMetric[] = MODEL_METRIC_SPECS.map(spec => {
+		const value = metrics ? spec.pick(metrics) : null;
+		const priorValue = prior ? spec.pick(prior) : null;
+		const { deltaPct, improved } = changeAgainstBaseline(priorValue, value, spec.goodDirection);
+		return {
+			id: spec.id,
+			label: spec.label,
+			description: spec.description,
+			value,
+			prior: priorValue,
+			deltaPct,
+			unit: spec.unit,
+			goodDirection: spec.goodDirection,
+			improved,
+			unavailableReason: value === null ? modelWeekUnavailableReason(spec, metrics, displayName) : null,
+		};
+	});
+	return {
+		...bounds,
+		weekKey: point.weekKey,
+		label: point.label,
+		model,
+		displayName,
+		metrics,
+		prior,
+		priorWeekKey: priorPoint?.weekKey ?? null,
+		priorLabel: priorPoint?.label ?? null,
+		rows,
+		caveats: modelWeekCaveats(metrics, prior, bounds, priorPoint?.label ?? null),
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -1264,6 +1757,16 @@ export function compareModels(a: ModelPeriodMetrics, b: ModelPeriodMetrics): Mod
 
 /** Full payload for the Efficiency webview. */
 export interface EfficiencyViewData {
+	/**
+	 * Trend horizon the weekly series below were built for. Changing it is a
+	 * round trip to the host: a 12-week payload can never stand in for a 26- or
+	 * 52-week one.
+	 */
+	trendRange: EfficiencyTrendRangeId;
+	/** Weeks covered by `trendRange` — the length of `weekly` and `skillTrends.weeks`. */
+	trendRangeWeeks: number;
+	/** Every selectable horizon, so the view never hardcodes the list. */
+	trendRanges: readonly EfficiencyTrendRange[];
 	weekly: EfficiencyWeekPoint[];
 	/** True when any week has LOC data (enables the cost-per-KLOC series). */
 	hasLoc: boolean;

@@ -1,81 +1,244 @@
 {
+  "trendRange": "12w",
+  "trendRangeWeeks": 12,
+  "trendRanges": [
+    {
+      "id": "12w",
+      "weeks": 12,
+      "label": "12 weeks"
+    },
+    {
+      "id": "26w",
+      "weeks": 26,
+      "label": "26 weeks"
+    },
+    {
+      "id": "52w",
+      "weeks": 52,
+      "label": "52 weeks"
+    }
+  ],
   "weekly": [
     {
-      "weekKey": "2026-02-01",
-      "label": "Week 1",
-      "sessions": 22,
-      "tokens": 1180000,
+      "weekKey": "2025-12-22",
+      "label": "Dec 22–28",
+      "sessions": 18,
+      "tokens": 1100000,
       "cost": 18.4,
-      "loc": 2400,
-      "interactions": 170,
-      "tokensPerSession": 53636,
-      "turnsPerSession": 7.7,
-      "costPerKloc": 7.67
+      "loc": 0,
+      "interactions": 150,
+      "tokensPerSession": 61111,
+      "turnsPerSession": 8.3,
+      "costPerKloc": null,
+      "locPerDollar": null,
+      "activeMinutesPerSession": null,
+      "retryRate": null,
+      "applyRate": null,
+      "durationSessions": 0,
+      "editTurns": 3
+    },
+    {
+      "weekKey": "2025-12-29",
+      "label": "Dec 29–Jan 4",
+      "sessions": 19,
+      "tokens": 1142000,
+      "cost": 17.85,
+      "loc": 0,
+      "interactions": 159,
+      "tokensPerSession": 60105,
+      "turnsPerSession": 8.4,
+      "costPerKloc": null,
+      "locPerDollar": null,
+      "activeMinutesPerSession": null,
+      "retryRate": null,
+      "applyRate": null,
+      "durationSessions": 0,
+      "editTurns": 3
+    },
+    {
+      "weekKey": "2026-01-05",
+      "label": "Jan 5–11",
+      "sessions": 0,
+      "tokens": 0,
+      "cost": 0,
+      "loc": 0,
+      "interactions": 0,
+      "tokensPerSession": null,
+      "turnsPerSession": null,
+      "costPerKloc": null,
+      "locPerDollar": null,
+      "activeMinutesPerSession": null,
+      "retryRate": null,
+      "applyRate": null,
+      "durationSessions": 0,
+      "editTurns": 0
+    },
+    {
+      "weekKey": "2026-01-12",
+      "label": "Jan 12–18",
+      "sessions": 21,
+      "tokens": 1226000,
+      "cost": 16.75,
+      "loc": 0,
+      "interactions": 177,
+      "tokensPerSession": 58381,
+      "turnsPerSession": 8.4,
+      "costPerKloc": null,
+      "locPerDollar": null,
+      "activeMinutesPerSession": 38.7,
+      "retryRate": 0.1224,
+      "applyRate": 0.48,
+      "durationSessions": 17,
+      "editTurns": 49
+    },
+    {
+      "weekKey": "2026-01-19",
+      "label": "Jan 19–25",
+      "sessions": 22,
+      "tokens": 1268000,
+      "cost": 16.2,
+      "loc": 2680,
+      "interactions": 186,
+      "tokensPerSession": 57636,
+      "turnsPerSession": 8.5,
+      "costPerKloc": 6.04,
+      "locPerDollar": 165.4,
+      "activeMinutesPerSession": 37.6,
+      "retryRate": 0.1346,
+      "applyRate": 0.475,
+      "durationSessions": 18,
+      "editTurns": 52
+    },
+    {
+      "weekKey": "2026-01-26",
+      "label": "Jan 26–Feb 1",
+      "sessions": 23,
+      "tokens": 1310000,
+      "cost": 15.65,
+      "loc": 2800,
+      "interactions": 195,
+      "tokensPerSession": 56957,
+      "turnsPerSession": 8.5,
+      "costPerKloc": 5.59,
+      "locPerDollar": 178.9,
+      "activeMinutesPerSession": 36.5,
+      "retryRate": 0.1455,
+      "applyRate": 0.4706,
+      "durationSessions": 19,
+      "editTurns": 55
     },
     {
       "weekKey": "2026-02-02",
-      "label": "Week 2",
-      "sessions": 25,
-      "tokens": 1270000,
-      "cost": 16.8,
-      "loc": 2660,
-      "interactions": 192,
-      "tokensPerSession": 50800,
-      "turnsPerSession": 7.7,
-      "costPerKloc": 6.32
-    },
-    {
-      "weekKey": "2026-02-03",
-      "label": "Week 3",
-      "sessions": 28,
-      "tokens": 1360000,
-      "cost": 15.2,
+      "label": "Feb 2–8",
+      "sessions": 24,
+      "tokens": 1352000,
+      "cost": 15.1,
       "loc": 2920,
-      "interactions": 214,
-      "tokensPerSession": 48571,
-      "turnsPerSession": 7.6,
-      "costPerKloc": 5.21
+      "interactions": 204,
+      "tokensPerSession": 56333,
+      "turnsPerSession": 8.5,
+      "costPerKloc": 5.17,
+      "locPerDollar": 193.4,
+      "activeMinutesPerSession": 35.4,
+      "retryRate": 0.1034,
+      "applyRate": 0.4667,
+      "durationSessions": 20,
+      "editTurns": 58
     },
     {
-      "weekKey": "2026-02-04",
-      "label": "Week 4",
-      "sessions": 31,
-      "tokens": 1450000,
-      "cost": 13.6,
-      "loc": 3180,
-      "interactions": 236,
-      "tokensPerSession": 46774,
-      "turnsPerSession": 7.6,
-      "costPerKloc": 4.28
+      "weekKey": "2026-02-09",
+      "label": "Feb 9–15",
+      "sessions": 25,
+      "tokens": 1394000,
+      "cost": 14.55,
+      "loc": 3040,
+      "interactions": 213,
+      "tokensPerSession": 55760,
+      "turnsPerSession": 8.5,
+      "costPerKloc": 4.79,
+      "locPerDollar": 208.9,
+      "activeMinutesPerSession": 34.3,
+      "retryRate": 0.1148,
+      "applyRate": 0.4632,
+      "durationSessions": 21,
+      "editTurns": 61
     },
     {
-      "weekKey": "2026-02-05",
-      "label": "Week 5",
-      "sessions": 34,
-      "tokens": 1540000,
-      "cost": 12,
-      "loc": 3440,
-      "interactions": 258,
-      "tokensPerSession": 45294,
-      "turnsPerSession": 7.6,
-      "costPerKloc": 3.49
+      "weekKey": "2026-02-16",
+      "label": "Feb 16–22",
+      "sessions": 26,
+      "tokens": 1436000,
+      "cost": 14,
+      "loc": 3160,
+      "interactions": 222,
+      "tokensPerSession": 55231,
+      "turnsPerSession": 8.5,
+      "costPerKloc": 4.43,
+      "locPerDollar": 225.7,
+      "activeMinutesPerSession": 33.2,
+      "retryRate": 0.125,
+      "applyRate": 0.46,
+      "durationSessions": 22,
+      "editTurns": 64
     },
     {
-      "weekKey": "2026-02-06",
-      "label": "Week 6",
-      "sessions": 37,
-      "tokens": 1630000,
-      "cost": 10.4,
-      "loc": 3700,
-      "interactions": 280,
-      "tokensPerSession": 44054,
+      "weekKey": "2026-02-23",
+      "label": "Feb 23–Mar 1",
+      "sessions": 27,
+      "tokens": 1478000,
+      "cost": 13.45,
+      "loc": 3280,
+      "interactions": 231,
+      "tokensPerSession": 54741,
+      "turnsPerSession": 8.6,
+      "costPerKloc": 4.1,
+      "locPerDollar": 243.9,
+      "activeMinutesPerSession": 32.1,
+      "retryRate": 0.0896,
+      "applyRate": 0.4571,
+      "durationSessions": 23,
+      "editTurns": 67
+    },
+    {
+      "weekKey": "2026-03-02",
+      "label": "Mar 2–8",
+      "sessions": 28,
+      "tokens": 1520000,
+      "cost": 12.9,
+      "loc": 3400,
+      "interactions": 240,
+      "tokensPerSession": 54286,
+      "turnsPerSession": 8.6,
+      "costPerKloc": 3.79,
+      "locPerDollar": 263.6,
+      "activeMinutesPerSession": 31,
+      "retryRate": 0.1,
+      "applyRate": 0.4545,
+      "durationSessions": 24,
+      "editTurns": 70
+    },
+    {
+      "weekKey": "2026-03-09",
+      "label": "Mar 9–15",
+      "sessions": 9,
+      "tokens": 430000,
+      "cost": 6.1,
+      "loc": 980,
+      "interactions": 68,
+      "tokensPerSession": 47778,
       "turnsPerSession": 7.6,
-      "costPerKloc": 2.81
+      "costPerKloc": 6.22,
+      "locPerDollar": 160.7,
+      "activeMinutesPerSession": 29.9,
+      "retryRate": 0.1096,
+      "applyRate": 0.4522,
+      "durationSessions": 5,
+      "editTurns": 73
     }
   ],
   "hasLoc": true,
-  "hasDuration": false,
-  "hasRetry": false,
+  "hasDuration": true,
+  "hasRetry": true,
   "hasApply": true,
   "attribution": {
     "prev": {
@@ -99,56 +262,112 @@
     "modelShifts": [
       {
         "model": "claude-sonnet-4.5",
-        "deltaShare": 0.18
+        "displayName": "Claude Sonnet 4.5",
+        "prevShare": 0.42,
+        "curShare": 0.6,
+        "deltaShare": 0.18,
+        "prevTokens": 1638000,
+        "curTokens": 2670000
       },
       {
-        "model": "gpt-4o",
-        "deltaShare": -0.11
+        "model": "gpt-4o-mini",
+        "displayName": "GPT-4o mini",
+        "prevShare": 0.19,
+        "curShare": 0.08,
+        "deltaShare": -0.11,
+        "prevTokens": 741000,
+        "curTokens": 356000
       }
     ]
   },
   "attributionWindows": {
-    "prev": "Jan 12 – Feb 8",
-    "cur": "Feb 9 – Mar 8"
+    "prev": "previous 30 days",
+    "cur": "last 30 days",
+    "prevRange": "Jan 11, 2026–Feb 9, 2026",
+    "curRange": "Feb 10, 2026–Mar 11, 2026"
   },
   "deltas": [
     {
-      "id": "costPerKloc",
-      "label": "Cost per 1K lines",
-      "description": "Estimated spend for every thousand lines changed.",
-      "prev": 7.66,
-      "cur": 5.06,
-      "unit": "usd",
+      "id": "turns-per-session",
+      "label": "Turns per session",
+      "description": "Average user requests per session.",
+      "prev": 8.4,
+      "cur": 7.6,
+      "unit": "ratio",
       "goodDirection": "down",
-      "deltaPct": -33.9,
+      "deltaPct": -9.5,
       "improved": true
     },
     {
-      "id": "tokensPerSession",
-      "label": "Tokens per session",
-      "description": "Average context consumed per session.",
-      "prev": 60937,
-      "cur": 60958,
-      "unit": "count",
+      "id": "active-minutes-per-session",
+      "label": "Active minutes per session",
+      "description": "Net working time per session, excluding idle gaps.",
+      "prev": 44.2,
+      "cur": 38.5,
+      "unit": "minutes",
       "goodDirection": "down",
-      "deltaPct": 0.03,
-      "improved": false
+      "deltaPct": -12.9,
+      "improved": true
     },
     {
-      "id": "turnsPerSession",
-      "label": "Turns per session",
-      "description": "Back-and-forth needed to finish a task.",
-      "prev": 7.7,
-      "cur": 7.6,
-      "unit": "count",
+      "id": "retry-rate",
+      "label": "Edit retry rate",
+      "description": "Share of edit turns where the model had to retry a failed edit.",
+      "prev": 0.18,
+      "cur": 0.14,
+      "unit": "percent",
       "goodDirection": "down",
-      "deltaPct": -1.3,
+      "deltaPct": -22.2,
+      "improved": true
+    },
+    {
+      "id": "low-cost-share",
+      "label": "Low-cost model share",
+      "description": "Share of requests served by low-cost models.",
+      "prev": null,
+      "cur": null,
+      "unit": "percent",
+      "goodDirection": "up",
+      "deltaPct": null,
+      "improved": null
+    },
+    {
+      "id": "apply-rate",
+      "label": "Apply rate",
+      "description": "Share of suggested code blocks you actually applied.",
+      "prev": 0.51,
+      "cur": 0.58,
+      "unit": "percent",
+      "goodDirection": "up",
+      "deltaPct": 13.7,
+      "improved": true
+    },
+    {
+      "id": "tokens-per-session",
+      "label": "Tokens per session",
+      "description": "Average tokens consumed per session.",
+      "prev": 71200,
+      "cur": 63400,
+      "unit": "tokens",
+      "goodDirection": "down",
+      "deltaPct": -10.9,
+      "improved": true
+    },
+    {
+      "id": "cost-per-session",
+      "label": "Cost per session",
+      "description": "Estimated cost per session.",
+      "prev": 0.82,
+      "cur": 0.61,
+      "unit": "currency",
+      "goodDirection": "down",
+      "deltaPct": -25.6,
       "improved": true
     }
   ],
   "deltaWindows": {
-    "prev": "Jan 12 – Feb 8",
-    "cur": "Feb 9 – Mar 8"
+    "prev": "February 2026",
+    "cur": "March 2026 (to date)"
   },
   "value": {
     "userPrs": 18,
@@ -167,72 +386,1267 @@
   "skillTrends": {
     "weeks": [
       {
-        "weekKey": "2026-02-01",
-        "label": "Week 1",
-        "byCanonicalSkill": {
-          "graphify": 2,
+        "weekKey": "2025-12-22",
+        "label": "Dec 22–28",
+        "totalCalls": 0,
+        "skillSessions": 0,
+        "trackedSessions": 18,
+        "skillShare": 0,
+        "byName": {}
+      },
+      {
+        "weekKey": "2025-12-29",
+        "label": "Dec 29–Jan 4",
+        "totalCalls": 3,
+        "skillSessions": 2,
+        "trackedSessions": 19,
+        "skillShare": 0.1053,
+        "byName": {
+          "graphify": 3
+        }
+      },
+      {
+        "weekKey": "2026-01-05",
+        "label": "Jan 5–11",
+        "totalCalls": 0,
+        "skillSessions": 0,
+        "trackedSessions": 0,
+        "skillShare": null,
+        "byName": {}
+      },
+      {
+        "weekKey": "2026-01-12",
+        "label": "Jan 12–18",
+        "totalCalls": 6,
+        "skillSessions": 3,
+        "trackedSessions": 21,
+        "skillShare": 0.1429,
+        "byName": {
+          "graphify": 5,
           "code-review": 1
-        },
-        "totalCalls": 3
+        }
+      },
+      {
+        "weekKey": "2026-01-19",
+        "label": "Jan 19–25",
+        "totalCalls": 4,
+        "skillSessions": 3,
+        "trackedSessions": 22,
+        "skillShare": 0.1364,
+        "byName": {
+          "graphify": 2,
+          "code-review": 2
+        }
+      },
+      {
+        "weekKey": "2026-01-26",
+        "label": "Jan 26–Feb 1",
+        "totalCalls": 6,
+        "skillSessions": 3,
+        "trackedSessions": 23,
+        "skillShare": 0.1304,
+        "byName": {
+          "graphify": 3,
+          "code-review": 3
+        }
       },
       {
         "weekKey": "2026-02-02",
-        "label": "Week 2",
-        "byCanonicalSkill": {
-          "graphify": 3,
-          "code-review": 2
-        },
-        "totalCalls": 5
-      },
-      {
-        "weekKey": "2026-02-03",
-        "label": "Week 3",
-        "byCanonicalSkill": {
+        "label": "Feb 2–8",
+        "totalCalls": 5,
+        "skillSessions": 3,
+        "trackedSessions": 24,
+        "skillShare": 0.125,
+        "byName": {
           "graphify": 4,
-          "code-review": 3
-        },
-        "totalCalls": 7
-      },
-      {
-        "weekKey": "2026-02-04",
-        "label": "Week 4",
-        "byCanonicalSkill": {
-          "graphify": 5,
           "code-review": 1
-        },
-        "totalCalls": 6
+        }
       },
       {
-        "weekKey": "2026-02-05",
-        "label": "Week 5",
-        "byCanonicalSkill": {
-          "graphify": 6,
-          "code-review": 2
-        },
-        "totalCalls": 8
+        "weekKey": "2026-02-09",
+        "label": "Feb 9–15",
+        "totalCalls": 8,
+        "skillSessions": 4,
+        "trackedSessions": 25,
+        "skillShare": 0.16,
+        "byName": {
+          "graphify": 5,
+          "code-review": 2,
+          "release-notes": 1
+        }
       },
       {
-        "weekKey": "2026-02-06",
-        "label": "Week 6",
-        "byCanonicalSkill": {
-          "graphify": 7,
-          "code-review": 3
-        },
-        "totalCalls": 10
+        "weekKey": "2026-02-16",
+        "label": "Feb 16–22",
+        "totalCalls": 6,
+        "skillSessions": 4,
+        "trackedSessions": 26,
+        "skillShare": 0.1538,
+        "byName": {
+          "graphify": 2,
+          "code-review": 3,
+          "release-notes": 1
+        }
+      },
+      {
+        "weekKey": "2026-02-23",
+        "label": "Feb 23–Mar 1",
+        "totalCalls": 5,
+        "skillSessions": 4,
+        "trackedSessions": 27,
+        "skillShare": 0.1481,
+        "byName": {
+          "graphify": 3,
+          "code-review": 1,
+          "release-notes": 1
+        }
+      },
+      {
+        "weekKey": "2026-03-02",
+        "label": "Mar 2–8",
+        "totalCalls": 7,
+        "skillSessions": 4,
+        "trackedSessions": 28,
+        "skillShare": 0.1429,
+        "byName": {
+          "graphify": 4,
+          "code-review": 2,
+          "release-notes": 1
+        }
+      },
+      {
+        "weekKey": "2026-03-09",
+        "label": "Mar 9–15",
+        "totalCalls": 9,
+        "skillSessions": 4,
+        "trackedSessions": 9,
+        "skillShare": 0.4444,
+        "byName": {
+          "graphify": 5,
+          "code-review": 3,
+          "release-notes": 1
+        }
       }
     ],
     "topSkills": [
       "graphify",
-      "code-review"
+      "code-review",
+      "release-notes"
     ],
-    "totalCalls": 34
+    "totalCalls": 59
   },
   "skillImpact": [],
   "hasSkills": true,
-  "lastUpdated": "2026-03-14T09:30:00.000Z",
-  "backendConfigured": false,
-  "compactNumbers": false,
-  "isDebugMode": false,
+  "modelDaily": [
+    {
+      "date": "2026-01-05",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 26,
+          "toolCalls": 66,
+          "editTurns": 13,
+          "oneShotEditTurns": 9,
+          "retries": 2,
+          "selfCorrections": 1,
+          "editToolCalls": 15,
+          "inputTokens": 176000,
+          "outputTokens": 19800,
+          "cachedReadTokens": 121000,
+          "cost": 2.04,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 3432000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 231,
+          "linesRemoved": 99,
+          "applies": 10,
+          "codeBlocks": 17
+        }
+      },
+      "taskCategoryUsage": {
+        "Feature work": {
+          "tokens": 120000,
+          "sessions": 3
+        },
+        "Debugging": {
+          "tokens": 40000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-01-07",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 26,
+          "toolCalls": 66,
+          "editTurns": 13,
+          "oneShotEditTurns": 9,
+          "retries": 2,
+          "selfCorrections": 1,
+          "editToolCalls": 15,
+          "inputTokens": 176000,
+          "outputTokens": 19800,
+          "cachedReadTokens": 121000,
+          "cost": 2.04,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 3432000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 231,
+          "linesRemoved": 99,
+          "applies": 10,
+          "codeBlocks": 17
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-01-09",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 26,
+          "toolCalls": 66,
+          "editTurns": 13,
+          "oneShotEditTurns": 9,
+          "retries": 2,
+          "selfCorrections": 1,
+          "editToolCalls": 15,
+          "inputTokens": 176000,
+          "outputTokens": 19800,
+          "cachedReadTokens": 121000,
+          "cost": 2.04,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 3432000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 231,
+          "linesRemoved": 99,
+          "applies": 10,
+          "codeBlocks": 17
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-01-12",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 28,
+          "toolCalls": 69,
+          "editTurns": 14,
+          "oneShotEditTurns": 9,
+          "retries": 2,
+          "selfCorrections": 1,
+          "editToolCalls": 16,
+          "inputTokens": 184000,
+          "outputTokens": 20700,
+          "cachedReadTokens": 126500,
+          "cost": 2.13,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 3588000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 241,
+          "linesRemoved": 103,
+          "applies": 10,
+          "codeBlocks": 17
+        },
+        "gpt-4o-mini": {
+          "calls": 3,
+          "toolCalls": 4,
+          "editTurns": 2,
+          "oneShotEditTurns": 1,
+          "retries": 1,
+          "selfCorrections": 0,
+          "editToolCalls": 2,
+          "inputTokens": 14000,
+          "outputTokens": 1800,
+          "cachedReadTokens": 2000,
+          "cost": 0.06,
+          "sessions": 1,
+          "sessionShare": 0.5,
+          "activeDurationMs": 540000,
+          "durationSessionShare": 0.4,
+          "linesAdded": 20,
+          "linesRemoved": 5,
+          "applies": 1,
+          "codeBlocks": 3
+        }
+      },
+      "taskCategoryUsage": {
+        "Feature work": {
+          "tokens": 120000,
+          "sessions": 3
+        },
+        "Debugging": {
+          "tokens": 40000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-01-14",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 28,
+          "toolCalls": 69,
+          "editTurns": 14,
+          "oneShotEditTurns": 9,
+          "retries": 2,
+          "selfCorrections": 1,
+          "editToolCalls": 16,
+          "inputTokens": 184000,
+          "outputTokens": 20700,
+          "cachedReadTokens": 126500,
+          "cost": 2.13,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 3588000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 241,
+          "linesRemoved": 103,
+          "applies": 10,
+          "codeBlocks": 17
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-01-16",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 28,
+          "toolCalls": 69,
+          "editTurns": 14,
+          "oneShotEditTurns": 9,
+          "retries": 2,
+          "selfCorrections": 1,
+          "editToolCalls": 16,
+          "inputTokens": 184000,
+          "outputTokens": 20700,
+          "cachedReadTokens": 126500,
+          "cost": 2.13,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 3588000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 241,
+          "linesRemoved": 103,
+          "applies": 10,
+          "codeBlocks": 17
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-01-19",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 29,
+          "toolCalls": 72,
+          "editTurns": 14,
+          "oneShotEditTurns": 10,
+          "retries": 2,
+          "selfCorrections": 1,
+          "editToolCalls": 17,
+          "inputTokens": 192000,
+          "outputTokens": 21600,
+          "cachedReadTokens": 132000,
+          "cost": 2.22,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 3744000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 252,
+          "linesRemoved": 108,
+          "applies": 11,
+          "codeBlocks": 18
+        }
+      },
+      "taskCategoryUsage": {
+        "Feature work": {
+          "tokens": 120000,
+          "sessions": 3
+        },
+        "Debugging": {
+          "tokens": 40000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-01-21",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 29,
+          "toolCalls": 72,
+          "editTurns": 14,
+          "oneShotEditTurns": 10,
+          "retries": 2,
+          "selfCorrections": 1,
+          "editToolCalls": 17,
+          "inputTokens": 192000,
+          "outputTokens": 21600,
+          "cachedReadTokens": 132000,
+          "cost": 2.22,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 3744000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 252,
+          "linesRemoved": 108,
+          "applies": 11,
+          "codeBlocks": 18
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-01-23",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 29,
+          "toolCalls": 72,
+          "editTurns": 14,
+          "oneShotEditTurns": 10,
+          "retries": 2,
+          "selfCorrections": 1,
+          "editToolCalls": 17,
+          "inputTokens": 192000,
+          "outputTokens": 21600,
+          "cachedReadTokens": 132000,
+          "cost": 2.22,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 3744000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 252,
+          "linesRemoved": 108,
+          "applies": 11,
+          "codeBlocks": 18
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-01-26",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 30,
+          "toolCalls": 75,
+          "editTurns": 15,
+          "oneShotEditTurns": 10,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 18,
+          "inputTokens": 200000,
+          "outputTokens": 22500,
+          "cachedReadTokens": 137500,
+          "cost": 2.31,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 3900000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 263,
+          "linesRemoved": 113,
+          "applies": 11,
+          "codeBlocks": 19
+        }
+      },
+      "taskCategoryUsage": {
+        "Feature work": {
+          "tokens": 120000,
+          "sessions": 3
+        },
+        "Debugging": {
+          "tokens": 40000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-01-28",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 30,
+          "toolCalls": 75,
+          "editTurns": 15,
+          "oneShotEditTurns": 10,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 18,
+          "inputTokens": 200000,
+          "outputTokens": 22500,
+          "cachedReadTokens": 137500,
+          "cost": 2.31,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 3900000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 263,
+          "linesRemoved": 113,
+          "applies": 11,
+          "codeBlocks": 19
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-01-30",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 30,
+          "toolCalls": 75,
+          "editTurns": 15,
+          "oneShotEditTurns": 10,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 18,
+          "inputTokens": 200000,
+          "outputTokens": 22500,
+          "cachedReadTokens": 137500,
+          "cost": 2.31,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 3900000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 263,
+          "linesRemoved": 113,
+          "applies": 11,
+          "codeBlocks": 19
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-02-02",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 31,
+          "toolCalls": 78,
+          "editTurns": 16,
+          "oneShotEditTurns": 10,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 18,
+          "inputTokens": 208000,
+          "outputTokens": 23400,
+          "cachedReadTokens": 143000,
+          "cost": 2.41,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4056000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 273,
+          "linesRemoved": 117,
+          "applies": 12,
+          "codeBlocks": 20
+        },
+        "gpt-4o-mini": {
+          "calls": 3,
+          "toolCalls": 4,
+          "editTurns": 2,
+          "oneShotEditTurns": 1,
+          "retries": 1,
+          "selfCorrections": 0,
+          "editToolCalls": 2,
+          "inputTokens": 14000,
+          "outputTokens": 1800,
+          "cachedReadTokens": 2000,
+          "cost": 0.06,
+          "sessions": 1,
+          "sessionShare": 0.5,
+          "activeDurationMs": 540000,
+          "durationSessionShare": 0.4,
+          "linesAdded": 20,
+          "linesRemoved": 5,
+          "applies": 1,
+          "codeBlocks": 3
+        }
+      },
+      "taskCategoryUsage": {
+        "Feature work": {
+          "tokens": 120000,
+          "sessions": 3
+        },
+        "Debugging": {
+          "tokens": 40000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-02-04",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 31,
+          "toolCalls": 78,
+          "editTurns": 16,
+          "oneShotEditTurns": 10,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 18,
+          "inputTokens": 208000,
+          "outputTokens": 23400,
+          "cachedReadTokens": 143000,
+          "cost": 2.41,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4056000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 273,
+          "linesRemoved": 117,
+          "applies": 12,
+          "codeBlocks": 20
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-02-06",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 31,
+          "toolCalls": 78,
+          "editTurns": 16,
+          "oneShotEditTurns": 10,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 18,
+          "inputTokens": 208000,
+          "outputTokens": 23400,
+          "cachedReadTokens": 143000,
+          "cost": 2.41,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4056000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 273,
+          "linesRemoved": 117,
+          "applies": 12,
+          "codeBlocks": 20
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-02-09",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 32,
+          "toolCalls": 81,
+          "editTurns": 16,
+          "oneShotEditTurns": 11,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 19,
+          "inputTokens": 216000,
+          "outputTokens": 24300,
+          "cachedReadTokens": 148500,
+          "cost": 2.5,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4212000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 284,
+          "linesRemoved": 122,
+          "applies": 12,
+          "codeBlocks": 20
+        }
+      },
+      "taskCategoryUsage": {
+        "Feature work": {
+          "tokens": 120000,
+          "sessions": 3
+        },
+        "Debugging": {
+          "tokens": 40000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-02-11",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 32,
+          "toolCalls": 81,
+          "editTurns": 16,
+          "oneShotEditTurns": 11,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 19,
+          "inputTokens": 216000,
+          "outputTokens": 24300,
+          "cachedReadTokens": 148500,
+          "cost": 2.5,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4212000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 284,
+          "linesRemoved": 122,
+          "applies": 12,
+          "codeBlocks": 20
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-02-13",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 32,
+          "toolCalls": 81,
+          "editTurns": 16,
+          "oneShotEditTurns": 11,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 19,
+          "inputTokens": 216000,
+          "outputTokens": 24300,
+          "cachedReadTokens": 148500,
+          "cost": 2.5,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4212000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 284,
+          "linesRemoved": 122,
+          "applies": 12,
+          "codeBlocks": 20
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-02-16",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 34,
+          "toolCalls": 84,
+          "editTurns": 17,
+          "oneShotEditTurns": 11,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 20,
+          "inputTokens": 224000,
+          "outputTokens": 25200,
+          "cachedReadTokens": 154000,
+          "cost": 2.59,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4368000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 294,
+          "linesRemoved": 126,
+          "applies": 13,
+          "codeBlocks": 21
+        }
+      },
+      "taskCategoryUsage": {
+        "Feature work": {
+          "tokens": 120000,
+          "sessions": 3
+        },
+        "Debugging": {
+          "tokens": 40000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-02-18",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 34,
+          "toolCalls": 84,
+          "editTurns": 17,
+          "oneShotEditTurns": 11,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 20,
+          "inputTokens": 224000,
+          "outputTokens": 25200,
+          "cachedReadTokens": 154000,
+          "cost": 2.59,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4368000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 294,
+          "linesRemoved": 126,
+          "applies": 13,
+          "codeBlocks": 21
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-02-20",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 34,
+          "toolCalls": 84,
+          "editTurns": 17,
+          "oneShotEditTurns": 11,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 20,
+          "inputTokens": 224000,
+          "outputTokens": 25200,
+          "cachedReadTokens": 154000,
+          "cost": 2.59,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4368000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 294,
+          "linesRemoved": 126,
+          "applies": 13,
+          "codeBlocks": 21
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-02-23",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 35,
+          "toolCalls": 87,
+          "editTurns": 17,
+          "oneShotEditTurns": 12,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 20,
+          "inputTokens": 232000,
+          "outputTokens": 26100,
+          "cachedReadTokens": 159500,
+          "cost": 2.68,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4524000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 305,
+          "linesRemoved": 131,
+          "applies": 13,
+          "codeBlocks": 22
+        },
+        "gpt-4o-mini": {
+          "calls": 3,
+          "toolCalls": 4,
+          "editTurns": 2,
+          "oneShotEditTurns": 1,
+          "retries": 1,
+          "selfCorrections": 0,
+          "editToolCalls": 2,
+          "inputTokens": 14000,
+          "outputTokens": 1800,
+          "cachedReadTokens": 2000,
+          "cost": 0.06,
+          "sessions": 1,
+          "sessionShare": 0.5,
+          "activeDurationMs": 540000,
+          "durationSessionShare": 0.4,
+          "linesAdded": 20,
+          "linesRemoved": 5,
+          "applies": 1,
+          "codeBlocks": 3
+        }
+      },
+      "taskCategoryUsage": {
+        "Feature work": {
+          "tokens": 120000,
+          "sessions": 3
+        },
+        "Debugging": {
+          "tokens": 40000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-02-25",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 35,
+          "toolCalls": 87,
+          "editTurns": 17,
+          "oneShotEditTurns": 12,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 20,
+          "inputTokens": 232000,
+          "outputTokens": 26100,
+          "cachedReadTokens": 159500,
+          "cost": 2.68,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4524000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 305,
+          "linesRemoved": 131,
+          "applies": 13,
+          "codeBlocks": 22
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-02-27",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 35,
+          "toolCalls": 87,
+          "editTurns": 17,
+          "oneShotEditTurns": 12,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 20,
+          "inputTokens": 232000,
+          "outputTokens": 26100,
+          "cachedReadTokens": 159500,
+          "cost": 2.68,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4524000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 305,
+          "linesRemoved": 131,
+          "applies": 13,
+          "codeBlocks": 22
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-03-02",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 36,
+          "toolCalls": 90,
+          "editTurns": 18,
+          "oneShotEditTurns": 12,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 21,
+          "inputTokens": 240000,
+          "outputTokens": 27000,
+          "cachedReadTokens": 165000,
+          "cost": 2.78,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4680000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 315,
+          "linesRemoved": 135,
+          "applies": 14,
+          "codeBlocks": 23
+        }
+      },
+      "taskCategoryUsage": {
+        "Feature work": {
+          "tokens": 120000,
+          "sessions": 3
+        },
+        "Debugging": {
+          "tokens": 40000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-03-04",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 36,
+          "toolCalls": 90,
+          "editTurns": 18,
+          "oneShotEditTurns": 12,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 21,
+          "inputTokens": 240000,
+          "outputTokens": 27000,
+          "cachedReadTokens": 165000,
+          "cost": 2.78,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4680000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 315,
+          "linesRemoved": 135,
+          "applies": 14,
+          "codeBlocks": 23
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-03-06",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 36,
+          "toolCalls": 90,
+          "editTurns": 18,
+          "oneShotEditTurns": 12,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 21,
+          "inputTokens": 240000,
+          "outputTokens": 27000,
+          "cachedReadTokens": 165000,
+          "cost": 2.78,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4680000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 315,
+          "linesRemoved": 135,
+          "applies": 14,
+          "codeBlocks": 23
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-03-09",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 37,
+          "toolCalls": 93,
+          "editTurns": 19,
+          "oneShotEditTurns": 12,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 22,
+          "inputTokens": 248000,
+          "outputTokens": 27900,
+          "cachedReadTokens": 170500,
+          "cost": 2.87,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4836000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 326,
+          "linesRemoved": 140,
+          "applies": 14,
+          "codeBlocks": 23
+        }
+      },
+      "taskCategoryUsage": {
+        "Feature work": {
+          "tokens": 120000,
+          "sessions": 3
+        },
+        "Debugging": {
+          "tokens": 40000,
+          "sessions": 1
+        }
+      }
+    },
+    {
+      "date": "2026-03-11",
+      "modelEfficiency": {
+        "claude-sonnet-4.5": {
+          "calls": 37,
+          "toolCalls": 93,
+          "editTurns": 19,
+          "oneShotEditTurns": 12,
+          "retries": 3,
+          "selfCorrections": 1,
+          "editToolCalls": 22,
+          "inputTokens": 248000,
+          "outputTokens": 27900,
+          "cachedReadTokens": 170500,
+          "cost": 2.87,
+          "sessions": 4,
+          "sessionShare": 2.4,
+          "activeDurationMs": 4836000,
+          "durationSessionShare": 2.1,
+          "linesAdded": 326,
+          "linesRemoved": 140,
+          "applies": 14,
+          "codeBlocks": 23
+        }
+      },
+      "taskCategoryUsage": {
+        "Refactoring": {
+          "tokens": 90000,
+          "sessions": 2
+        },
+        "Feature work": {
+          "tokens": 30000,
+          "sessions": 1
+        }
+      }
+    }
+  ],
+  "hasModelComparison": false,
   "cacheBreakage": {
     "counts": {
       "model-switch": {
@@ -257,5 +1671,9 @@
     "tokensWritten": 15892222,
     "peakContextTokens": 9264875,
     "worstRewriteFactor": 6.26
-  }
+  },
+  "lastUpdated": "2026-03-11T09:30:00.000Z",
+  "backendConfigured": false,
+  "compactNumbers": false,
+  "isDebugMode": false
 }

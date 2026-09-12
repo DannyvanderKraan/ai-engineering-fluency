@@ -14,6 +14,13 @@ import {
 	listComparableModels,
 	compareModels,
 	buildModelWeeklySeries,
+	buildEfficiencyWeekDetail,
+	buildModelWeekDetail,
+	buildSkillWeekDetail,
+	getWeekBounds,
+	resolveTrendRange,
+	DEFAULT_EFFICIENCY_TREND_RANGE,
+	EFFICIENCY_TREND_RANGES,
 	resolveModelCompareWindow,
 	selectDaysInWindow,
 	windowHasModelData,
@@ -778,4 +785,301 @@ test('windowHasModelData: true when at least one day in the window has per-model
 test('windowHasModelData: ignores data outside the window bounds', () => {
 	const days = [modelDay('2026-06-01', { 'gpt-4o': {} })];
 	assert.equal(windowHasModelData(days, resolveModelCompareWindow('thisMonth', NOW)), false);
+});
+// ── Trend horizons ───────────────────────────────────────────────────────────
+
+test('EFFICIENCY_TREND_RANGES: offers exactly the 12/26/52-week horizons', () => {
+	assert.deepEqual(EFFICIENCY_TREND_RANGES.map(r => r.id), ['12w', '26w', '52w']);
+	assert.deepEqual(EFFICIENCY_TREND_RANGES.map(r => r.weeks), [12, 26, 52]);
+	assert.equal(DEFAULT_EFFICIENCY_TREND_RANGE, '12w');
+});
+
+test('resolveTrendRange: resolves each supported id and falls back to 12 weeks', () => {
+	assert.equal(resolveTrendRange('26w').weeks, 26);
+	assert.equal(resolveTrendRange('52w').weeks, 52);
+	assert.equal(resolveTrendRange('7d').weeks, 12);
+	assert.equal(resolveTrendRange(undefined).weeks, 12);
+	assert.equal(resolveTrendRange(null).weeks, 12);
+});
+
+test('buildEfficiencyTrends: each horizon returns exactly that many ordered weeks ending on the current one', () => {
+	for (const range of EFFICIENCY_TREND_RANGES) {
+		const weekly = buildEfficiencyTrends([], [], flatDeps, range.weeks);
+		assert.equal(weekly.length, range.weeks, `${range.id} week count`);
+		assert.equal(weekly[weekly.length - 1].weekKey, '2026-07-13', `${range.id} ends on the current week`);
+		const keys = weekly.map(w => w.weekKey);
+		assert.deepEqual(keys, [...keys].sort((a, b) => a.localeCompare(b)), `${range.id} is ordered`);
+		assert.equal(new Set(keys).size, range.weeks, `${range.id} has no duplicate weeks`);
+	}
+});
+
+test('buildEfficiencyTrends: a wider horizon zero-fills the weeks before any data, without nulling the ratios that exist', () => {
+	const days = [day('2026-07-14', { tokens: 1000, sessions: 2, interactions: 8 })];
+	const weekly = buildEfficiencyTrends(days, [], flatDeps, 52);
+	assert.equal(weekly.length, 52);
+	// Everything before the current week is an empty week: zero volume, null ratios.
+	for (const w of weekly.slice(0, 51)) {
+		assert.equal(w.sessions, 0);
+		assert.equal(w.tokens, 0);
+		assert.equal(w.tokensPerSession, null);
+		assert.equal(w.turnsPerSession, null);
+	}
+	assert.equal(weekly[51].tokensPerSession, 500);
+	assert.equal(weekly[51].turnsPerSession, 4);
+});
+
+test('buildEfficiencyTrends: weeks older than the horizon are dropped, weeks inside a wider one are kept', () => {
+	// 2026-02-04 sits 23 weeks back from the 2026-07-13 current week.
+	const days = [day('2026-02-04', { tokens: 6000, sessions: 3 })];
+	const narrow = buildEfficiencyTrends(days, [], flatDeps, 12);
+	assert.equal(narrow.reduce((s, w) => s + w.tokens, 0), 0);
+	const wide = buildEfficiencyTrends(days, [], flatDeps, 26);
+	assert.equal(wide.reduce((s, w) => s + w.tokens, 0), 6000);
+});
+
+test('buildSkillUsageTrends: honours each horizon', () => {
+	for (const range of EFFICIENCY_TREND_RANGES) {
+		const trends = buildSkillUsageTrends([], flatDeps, range.weeks);
+		assert.equal(trends.weeks.length, range.weeks);
+		assert.equal(trends.weeks[trends.weeks.length - 1].weekKey, '2026-07-13');
+	}
+});
+
+// ── getWeekBounds ────────────────────────────────────────────────────────────
+
+test('getWeekBounds: a past week is complete and spans Monday to Sunday', () => {
+	const bounds = getWeekBounds('2026-07-06', NOW);
+	assert.equal(bounds.startKey, '2026-07-06');
+	assert.equal(bounds.endKey, '2026-07-12');
+	assert.equal(bounds.isPartial, false);
+	assert.equal(bounds.elapsedDays, 7);
+	assert.match(bounds.rangeLabel, /Jul 6/);
+});
+
+test('getWeekBounds: the current week is partial with only the elapsed days counted', () => {
+	// NOW is Wednesday 2026-07-15: Mon, Tue, Wed have happened.
+	const bounds = getWeekBounds('2026-07-13', NOW);
+	assert.equal(bounds.isPartial, true);
+	assert.equal(bounds.elapsedDays, 3);
+	assert.equal(bounds.endKey, '2026-07-19');
+});
+
+test('getWeekBounds: a week entirely in the future has no elapsed days', () => {
+	const bounds = getWeekBounds('2026-07-20', NOW);
+	assert.equal(bounds.elapsedDays, 0);
+	assert.equal(bounds.isPartial, true);
+});
+
+// ── buildEfficiencyWeekDetail ────────────────────────────────────────────────
+
+/** A 12-week series where only the two most recent weeks carry data. */
+function detailSeries(): ReturnType<typeof buildEfficiencyTrends> {
+	const days = [
+		day('2026-07-07', { tokens: 40_000, sessions: 4, interactions: 24, linesAdded: 600, linesRemoved: 200 }),
+		day('2026-07-14', { tokens: 30_000, sessions: 5, interactions: 20, linesAdded: 400, linesRemoved: 100 }),
+	];
+	const sessions: EfficiencySessionInput[] = [
+		{ dayKey: '2026-07-07', activeDurationMs: 30 * 60_000, editTurns: 20, retries: 4, applies: 8, codeBlocks: 10 },
+		{ dayKey: '2026-07-14', activeDurationMs: 18 * 60_000, editTurns: 20, retries: 2, applies: 9, codeBlocks: 10 },
+	];
+	return buildEfficiencyTrends(days, sessions, flatDeps, 12);
+}
+
+test('buildEfficiencyWeekDetail: returns null for a week outside the series', () => {
+	assert.equal(buildEfficiencyWeekDetail(detailSeries(), '2026-01-05', NOW), null);
+	assert.equal(buildEfficiencyWeekDetail([], '2026-07-13', NOW), null);
+});
+
+test('buildEfficiencyWeekDetail: reports the raw volume and range of the selected week', () => {
+	const detail = buildEfficiencyWeekDetail(detailSeries(), '2026-07-06', NOW)!;
+	assert.equal(detail.weekKey, '2026-07-06');
+	assert.equal(detail.sessions, 4);
+	assert.equal(detail.tokens, 40_000);
+	assert.equal(detail.interactions, 24);
+	assert.equal(detail.loc, 800);
+	assert.equal(detail.startKey, '2026-07-06');
+	assert.equal(detail.endKey, '2026-07-12');
+	assert.equal(detail.isPartial, false);
+});
+
+test('buildEfficiencyWeekDetail: flags the current week as partial and says how much has elapsed', () => {
+	const detail = buildEfficiencyWeekDetail(detailSeries(), '2026-07-13', NOW)!;
+	assert.equal(detail.isPartial, true);
+	assert.equal(detail.elapsedDays, 3);
+	assert.ok(detail.coverageNotes.some(n => n.includes('Partial week: 3 of 7 days')), detail.coverageNotes.join(' | '));
+});
+
+test('buildEfficiencyWeekDetail: compares against the previous week in the series', () => {
+	const detail = buildEfficiencyWeekDetail(detailSeries(), '2026-07-13', NOW)!;
+	assert.equal(detail.priorWeekKey, '2026-07-06');
+	const retry = detail.metrics.find(m => m.id === 'retry-rate')!;
+	assert.equal(retry.value, 0.1);
+	assert.equal(retry.prior, 0.2);
+	assert.equal(retry.deltaPct, -50);
+	assert.equal(retry.improved, true);
+	const turns = detail.metrics.find(m => m.id === 'turns-per-session')!;
+	assert.equal(turns.value, 4);
+	assert.equal(turns.prior, 6);
+	assert.equal(turns.improved, true);
+});
+
+test('buildEfficiencyWeekDetail: the first week of the horizon has no prior week to compare with', () => {
+	const series = detailSeries();
+	const detail = buildEfficiencyWeekDetail(series, series[0].weekKey, NOW)!;
+	assert.equal(detail.priorWeekKey, null);
+	assert.equal(detail.priorLabel, null);
+	for (const m of detail.metrics) {
+		assert.equal(m.prior, null, `${m.id} prior`);
+		assert.equal(m.deltaPct, null, `${m.id} deltaPct`);
+		assert.equal(m.improved, null, `${m.id} improved`);
+	}
+});
+
+test('buildEfficiencyWeekDetail: unavailable metrics stay null and say why — never zero', () => {
+	const series = detailSeries();
+	const empty = buildEfficiencyWeekDetail(series, series[0].weekKey, NOW)!;
+	assert.equal(empty.sessions, 0);
+	for (const m of empty.metrics) {
+		assert.equal(m.value, null, `${m.id} value`);
+		assert.ok(m.unavailableReason && m.unavailableReason.length > 0, `${m.id} reason`);
+	}
+	assert.equal(
+		empty.metrics.find(m => m.id === 'tokens-per-session')!.unavailableReason,
+		'No sessions were recorded in this week.',
+	);
+});
+
+test('buildEfficiencyWeekDetail: a week under the edit-turn floor reports the floor rather than a retry rate', () => {
+	const sessions: EfficiencySessionInput[] = [{ dayKey: '2026-07-14', editTurns: 2, retries: 1 }];
+	const series = buildEfficiencyTrends([day('2026-07-14', { tokens: 10, sessions: 1 })], sessions, flatDeps, 12);
+	const retry = buildEfficiencyWeekDetail(series, '2026-07-13', NOW)!.metrics.find(m => m.id === 'retry-rate')!;
+	assert.equal(retry.value, null);
+	assert.match(retry.unavailableReason!, /2 edit turns/);
+	assert.match(retry.unavailableReason!, /below the 5/);
+});
+
+test('buildEfficiencyWeekDetail: every metric carries a direction and a description for the detail table', () => {
+	const detail = buildEfficiencyWeekDetail(detailSeries(), '2026-07-06', NOW)!;
+	assert.ok(detail.metrics.length >= 7);
+	for (const m of detail.metrics) {
+		assert.ok(['up', 'down'].includes(m.goodDirection), `${m.id} direction`);
+		assert.ok(m.description.length > 0, `${m.id} description`);
+	}
+});
+
+// ── buildSkillWeekDetail ─────────────────────────────────────────────────────
+
+test('buildSkillWeekDetail: null for an unknown week, otherwise the week and its skills', () => {
+	const sessions: EfficiencySessionInput[] = [
+		{ dayKey: '2026-07-07', skillCalls: { graphify: 2 } },
+		{ dayKey: '2026-07-07', skillCalls: {} },
+		{ dayKey: '2026-07-14', skillCalls: { graphify: 3, 'code-review': 1 } },
+	];
+	const trends = buildSkillUsageTrends(sessions, flatDeps, 12);
+	assert.equal(buildSkillWeekDetail(trends, '2020-01-06', NOW), null);
+
+	const detail = buildSkillWeekDetail(trends, '2026-07-13', NOW)!;
+	assert.equal(detail.totalCalls, 4);
+	assert.equal(detail.skills[0].skill, 'graphify');
+	assert.equal(detail.skills[0].calls, 3);
+	assert.equal(detail.skills[0].priorCalls, 2);
+	assert.equal(detail.priorWeekKey, '2026-07-06');
+	assert.equal(detail.isPartial, true);
+	// Adoption is reported without a good/bad judgement.
+	for (const m of detail.metrics) {
+		assert.equal(m.goodDirection, 'none', `${m.id} direction`);
+		assert.equal(m.improved, null, `${m.id} improved`);
+	}
+});
+
+test('buildSkillWeekDetail: a week with no tracked sessions keeps the share null', () => {
+	const trends = buildSkillUsageTrends([], flatDeps, 12);
+	const detail = buildSkillWeekDetail(trends, '2026-07-13', NOW)!;
+	assert.equal(detail.trackedSessions, 0);
+	assert.equal(detail.skillShare, null);
+	assert.equal(detail.skills.length, 0);
+	assert.equal(detail.metrics.find(m => m.id === 'skill-share')!.value, null);
+});
+
+// ── buildModelWeekDetail ─────────────────────────────────────────────────────
+
+test('buildModelWeekDetail: null for a week outside the series', () => {
+	const series = buildModelWeeklySeries([modelDay('2026-07-14', { kimi: solidModel({}) })], 'kimi', NOW, 12);
+	assert.equal(buildModelWeekDetail(series, 'kimi', '2020-01-06', NOW), null);
+});
+
+test('buildModelWeekDetail: a week the model was not used yields null metrics, not zeroes', () => {
+	const series = buildModelWeeklySeries([modelDay('2026-07-14', { kimi: solidModel({}) })], 'kimi', NOW, 12);
+	const detail = buildModelWeekDetail(series, 'kimi', series[0].weekKey, NOW)!;
+	assert.equal(detail.metrics, null);
+	assert.equal(detail.caveats.length, 0);
+	for (const row of detail.rows) {
+		assert.equal(row.value, null, `${row.id} value`);
+		assert.match(row.unavailableReason!, /was not used in this week/);
+	}
+});
+
+test('buildModelWeekDetail: reports the week profile and compares it with the previous week', () => {
+	const days = [
+		modelDay('2026-07-07', { kimi: solidModel({ cost: 20 }) }),
+		modelDay('2026-07-14', { kimi: solidModel({ cost: 10 }) }),
+	];
+	const series = buildModelWeeklySeries(days, 'kimi', NOW, 12);
+	const detail = buildModelWeekDetail(series, 'kimi', '2026-07-13', NOW)!;
+	assert.equal(detail.model, 'kimi');
+	assert.equal(detail.priorWeekKey, '2026-07-06');
+	const costPerTurn = detail.rows.find(r => r.id === 'cost-per-edit-turn')!;
+	assert.equal(costPerTurn.value, 0.5);
+	assert.equal(costPerTurn.prior, 1);
+	assert.equal(costPerTurn.deltaPct, -50);
+	assert.equal(costPerTurn.improved, true);
+});
+
+test('buildModelWeekDetail: retains the sample-floor caveats and names the floor on each gated metric', () => {
+	const thin = { sessions: 1, sessionShare: 1, calls: 2, editTurns: 2, oneShotEditTurns: 1, retries: 1, inputTokens: 900, outputTokens: 100, cost: 1 };
+	const series = buildModelWeeklySeries([modelDay('2026-07-14', { kimi: thin })], 'kimi', NOW, 12);
+	const detail = buildModelWeekDetail(series, 'kimi', '2026-07-13', NOW)!;
+	assert.ok(detail.caveats.some(c => c.includes('session equivalents')), detail.caveats.join(' | '));
+	assert.ok(detail.caveats.some(c => c.includes('edit turns')), detail.caveats.join(' | '));
+	// The partial current week is called out too.
+	assert.ok(detail.caveats.some(c => c.includes('still running')), detail.caveats.join(' | '));
+
+	const editGated = detail.rows.find(r => r.id === 'retry-rate')!;
+	assert.equal(editGated.value, null);
+	assert.match(editGated.unavailableReason!, /below the 10 needed/);
+	const sessionGated = detail.rows.find(r => r.id === 'cost-per-session')!;
+	assert.equal(sessionGated.value, null);
+	assert.match(sessionGated.unavailableReason!, /below the 5 needed/);
+	// An ungated metric is still computed from the same thin sample.
+	assert.ok(detail.rows.find(r => r.id === 'dollars-per-mtokens')!.value !== null);
+});
+
+test('buildModelWeekDetail: keeps the mixed-model-session caveat', () => {
+	const mixed = solidModel({ sessions: 20, sessionShare: 10 });
+	const series = buildModelWeeklySeries([modelDay('2026-07-14', { kimi: mixed })], 'kimi', NOW, 12);
+	const detail = buildModelWeekDetail(series, 'kimi', '2026-07-13', NOW)!;
+	assert.ok(detail.caveats.some(c => c.includes('mixed several models')), detail.caveats.join(' | '));
+});
+
+test('buildModelWeekDetail: raises a task-mix caveat when the week did different work from the last one', () => {
+	const days = [
+		modelDay('2026-07-07', { kimi: solidModel({}) }, { refactor: { tokens: 1000, sessions: 1 } }),
+		modelDay('2026-07-14', { kimi: solidModel({}) }, { debugging: { tokens: 1000, sessions: 1 } }),
+	];
+	const series = buildModelWeeklySeries(days, 'kimi', NOW, 12);
+	const detail = buildModelWeekDetail(series, 'kimi', '2026-07-13', NOW)!;
+	assert.ok(detail.caveats.some(c => c.includes('task mix differs')), detail.caveats.join(' | '));
+});
+
+test('compareModels: still produces every catalogued metric row after the spec refactor', () => {
+	const days = [modelDay('2026-07-01', { a: solidModel({}), b: solidModel({ cost: 5 }) })];
+	const cmp = compareModels(
+		computeModelPeriodMetrics(days, 'a', 'Jul')!,
+		computeModelPeriodMetrics(days, 'b', 'Jul')!,
+	);
+	assert.deepEqual(cmp.rows.map(r => r.id), [
+		'cost-per-edit-turn', 'cost-per-session', 'cost-per-kloc', 'dollars-per-mtokens',
+		'tokens-per-edit-turn', 'tokens-per-session', 'one-shot-rate', 'retry-rate',
+		'self-correction-rate', 'cache-read-share', 'active-minutes-per-session', 'apply-rate',
+	]);
 });

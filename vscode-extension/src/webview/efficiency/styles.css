@@ -407,3 +407,147 @@
 	font-size: 0.85em;
 	line-height: 1.45;
 }
+
+/* ── Horizon selector + selected-week drill-down ───────────────────────── */
+
+.eff-controls,
+.eff-week-picker {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	align-items: center;
+	margin: 10px 0;
+}
+.eff-control-label {
+	font-size: 0.85em;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+}
+.eff-control-hint {
+	font-size: 0.8em;
+	color: var(--vscode-descriptionForeground);
+}
+.eff-range {
+	display: inline-flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	align-items: center;
+}
+.eff-range-btn {
+	padding: 3px 10px;
+	border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.3));
+	border-radius: 999px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-size: 0.82em;
+	cursor: pointer;
+}
+.eff-range-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15)); }
+.eff-range-btn:focus-visible {
+	outline: 2px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+.eff-range-btn.active {
+	border-color: var(--vscode-focusBorder);
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	font-weight: 600;
+}
+.eff-range-status {
+	font-size: 0.8em;
+	font-style: italic;
+	color: var(--vscode-descriptionForeground);
+}
+.eff-link-btn {
+	margin-left: 8px;
+	padding: 0;
+	border: none;
+	background: none;
+	color: var(--vscode-textLink-foreground);
+	font-size: 0.82em;
+	text-decoration: underline;
+	cursor: pointer;
+}
+.eff-link-btn:focus-visible {
+	outline: 2px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
+.delta-card .eff-link-btn { display: inline-block; margin: 6px 0 0 0; }
+.delta-no-trend {
+	margin: 6px 0 0 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.8em;
+	font-style: italic;
+}
+.week-detail {
+	margin: 12px 0 18px 0;
+	padding: 12px 14px;
+	border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.25));
+	border-radius: 6px;
+	background: var(--vscode-editorWidget-background);
+}
+.week-detail:focus-visible {
+	outline: 2px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
+.week-detail-head {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	align-items: baseline;
+}
+.week-detail-title { margin: 0; font-size: 1em; }
+.week-detail-range {
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.85em;
+}
+.week-chip {
+	padding: 1px 8px;
+	border: 1px solid var(--vscode-charts-yellow, #fbbf24);
+	border-radius: 999px;
+	color: var(--vscode-charts-yellow, #fbbf24);
+	font-size: 0.75em;
+}
+.week-detail-sub { margin: 12px 0 6px 0; font-size: 0.88em; }
+.week-detail-prior {
+	margin: 0 0 6px 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.8em;
+}
+.week-raw {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 16px;
+	margin: 0;
+}
+.week-raw-stat dt {
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.78em;
+}
+.week-raw-stat dd {
+	margin: 2px 0 0 0;
+	font-size: 1.02em;
+	font-variant-numeric: tabular-nums;
+	font-weight: 600;
+}
+.week-unavailable {
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.78em;
+	font-style: italic;
+	line-height: 1.4;
+}
+.week-coverage {
+	margin: 0;
+	padding-left: 18px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.8em;
+	line-height: 1.5;
+}
+.trend-card.focused {
+	outline: 2px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
+.trend-card:focus-visible {
+	outline: 2px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}

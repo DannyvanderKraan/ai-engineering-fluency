@@ -64,6 +64,45 @@ export interface WebviewLocalization {
 	'logviewer.summary.started': string;
 	'logviewer.summary.lastActivity': string;
 
+	// Efficiency view — horizon selector and selected-week drill-down
+	'efficiency.horizon.label': string;
+	'efficiency.horizon.hint': string;
+	'efficiency.horizon.loading': string;
+	'efficiency.week.label': string;
+	'efficiency.week.none': string;
+	'efficiency.week.hint': string;
+	'efficiency.week.detailHeading': string;
+	'efficiency.week.empty': string;
+	'efficiency.week.rawHeading': string;
+	'efficiency.week.sessions': string;
+	'efficiency.week.tokens': string;
+	'efficiency.week.turns': string;
+	'efficiency.week.loc': string;
+	'efficiency.week.cost': string;
+	'efficiency.week.ratiosHeading': string;
+	'efficiency.week.colMetric': string;
+	'efficiency.week.colValue': string;
+	'efficiency.week.colPrior': string;
+	'efficiency.week.colChange': string;
+	'efficiency.week.priorIs': string;
+	'efficiency.week.noPrior': string;
+	'efficiency.week.coverageHeading': string;
+	'efficiency.week.skillsHeading': string;
+	'efficiency.week.colSkill': string;
+	'efficiency.week.colCalls': string;
+	'efficiency.week.colShare': string;
+	'efficiency.week.noSkills': string;
+	'efficiency.week.modelHeading': string;
+	'efficiency.week.modelUnused': string;
+	'efficiency.week.caveatsHeading': string;
+	'efficiency.week.unavailable': string;
+	'efficiency.deltas.showTrend': string;
+	'efficiency.deltas.noTrend': string;
+	'efficiency.attribution.showModel': string;
+	'efficiency.week.better': string;
+	'efficiency.week.worse': string;
+	'efficiency.week.partialChip': string;
+
 	// Add other webview-localizable strings here as needed
 	[key: string]: string;
 }
@@ -117,7 +156,44 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'logviewer.summary.modified': 'Modified',
 	'logviewer.summary.timeline': 'Timeline',
 	'logviewer.summary.started': 'Started',
-	'logviewer.summary.lastActivity': 'Last activity'
+	'logviewer.summary.lastActivity': 'Last activity',
+	'efficiency.horizon.label': 'Horizon',
+	'efficiency.horizon.hint': 'Applies to the weekly charts on this page. Month vs Month and Cost Attribution keep their own fixed windows.',
+	'efficiency.horizon.loading': 'Loading the wider horizon…',
+	'efficiency.week.label': 'Selected week',
+	'efficiency.week.none': 'No week selected',
+	'efficiency.week.hint': 'You can also click a point on a chart.',
+	'efficiency.week.detailHeading': 'Selected week detail',
+	'efficiency.week.empty': 'No week selected. Pick one above — or click a point on a chart — to see the raw volume behind it.',
+	'efficiency.week.rawHeading': 'Raw volume',
+	'efficiency.week.sessions': 'Sessions',
+	'efficiency.week.tokens': 'Tokens',
+	'efficiency.week.turns': 'Turns',
+	'efficiency.week.loc': 'Lines changed',
+	'efficiency.week.cost': 'Estimated cost',
+	'efficiency.week.ratiosHeading': 'Derived ratios',
+	'efficiency.week.colMetric': 'Metric',
+	'efficiency.week.colValue': 'This week',
+	'efficiency.week.colPrior': 'Prior week',
+	'efficiency.week.colChange': 'Change',
+	'efficiency.week.priorIs': 'Prior week: {0}',
+	'efficiency.week.noPrior': 'No prior week inside the selected horizon.',
+	'efficiency.week.coverageHeading': 'Data coverage',
+	'efficiency.week.skillsHeading': 'Skill invocations this week',
+	'efficiency.week.colSkill': 'Skill',
+	'efficiency.week.colCalls': 'Invocations',
+	'efficiency.week.colShare': 'Share',
+	'efficiency.week.noSkills': 'No skill invocations were recorded in this week.',
+	'efficiency.week.modelHeading': 'Selected model and week',
+	'efficiency.week.modelUnused': '{0} was not used in this week, so every metric below is unavailable rather than zero.',
+	'efficiency.week.caveatsHeading': 'Read with care',
+	'efficiency.week.unavailable': 'Unavailable',
+	'efficiency.deltas.showTrend': 'Show weekly trend',
+	'efficiency.deltas.noTrend': 'No weekly equivalent — this card compares whole calendar months.',
+	'efficiency.attribution.showModel': 'Inspect this model',
+	'efficiency.week.better': 'better',
+	'efficiency.week.worse': 'worse',
+	'efficiency.week.partialChip': 'Partial week'
 };
 
 // Current localization strings, initialized with defaults

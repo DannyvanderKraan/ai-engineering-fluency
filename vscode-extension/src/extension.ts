@@ -223,7 +223,11 @@ import {
   computeValueSignals as _computeValueSignals,
   getTrailingWindowBoundaries as _getTrailingWindowBoundaries,
   splitTrailingWindows as _splitTrailingWindows,
+  resolveTrendRange as _resolveTrendRange,
+  DEFAULT_EFFICIENCY_TREND_RANGE,
+  EFFICIENCY_TREND_RANGES,
   type EfficiencySessionInput,
+  type EfficiencyTrendRangeId,
   type EfficiencyViewData,
   type ModelDailyInput,
   type PeriodVolumeTotals,
@@ -719,8 +723,16 @@ class CopilotTokenTracker implements vscode.Disposable {
 	private _viewVisits: ViewVisitMap = {};
 	/** Resolves once the persisted what's-new bookkeeping has been read and reconciled. */
 	private _whatsNewReady: Promise<void> | undefined;
-	/** Memoized per-session efficiency inputs; cleared wherever the daily/usage stat caches are. */
-	private lastEfficiencySessionInputs: EfficiencySessionInput[] | undefined;
+	/**
+	 * Memoized per-session efficiency inputs, keyed by the horizon (in weeks)
+	 * they were collected for. Keyed rather than single-slot on purpose: a
+	 * 12-week collection must never be handed back for a 26- or 52-week request,
+	 * which would silently truncate the wider horizon. Cleared wherever the
+	 * daily/usage stat caches are.
+	 */
+	private readonly lastEfficiencySessionInputs = new Map<number, EfficiencySessionInput[]>();
+	/** Horizon the Efficiency panel is currently showing; survives a Refresh. */
+	private efficiencyTrendRange: EfficiencyTrendRangeId = DEFAULT_EFFICIENCY_TREND_RANGE;
 	private outputChannel!: vscode.OutputChannel;
 	private lastDetailedStats: DetailedStats | undefined;
 	private lastDailyStats: DailyTokenStats[] | undefined;
@@ -1334,7 +1346,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		this.localRegressionSampleDataDir = '';
 		this.sessionDiscovery.clearCache();
 		this.lastDetailedStats = this.lastDailyStats = this.lastFullDailyStats = this.lastUsageAnalysisStats = undefined;
-		this.lastEfficiencySessionInputs = undefined;
+		this.lastEfficiencySessionInputs.clear();
 		const results: LocalViewRegressionResult[] = [];
 		let dataSourceLabel = 'local session data';
 		try {
@@ -1352,7 +1364,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			this.localRegressionSampleDataDir = previousSampleDir;
 			this.sessionDiscovery.clearCache();
 			this.lastDetailedStats = this.lastDailyStats = this.lastFullDailyStats = this.lastUsageAnalysisStats = this.lastDashboardData = undefined;
-			this.lastEfficiencySessionInputs = undefined;
+			this.lastEfficiencySessionInputs.clear();
 		}
 		await this.reportLocalViewRegressionResults(results, dataSourceLabel);
 	}
@@ -1494,7 +1506,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			this.lastFullDailyStats = undefined;
 			this.lastUsageAnalysisStats = undefined;
 			this.lastDashboardData = undefined;
-			this.lastEfficiencySessionInputs = undefined;
+			this.lastEfficiencySessionInputs.clear();
 
 			this.log(`Cache cleared successfully. Removed ${cacheSize} entries.`);
 			vscode.window.showInformationMessage('Cache cleared successfully. Reloading statistics...');
@@ -4208,6 +4220,44 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'logviewer.summary.timeline': l10n.t('logviewer.summary.timeline'),
 			'logviewer.summary.started': l10n.t('logviewer.summary.started'),
 			'logviewer.summary.lastActivity': l10n.t('logviewer.summary.lastActivity'),
+			// Efficiency view — horizon selector and selected-week drill-down
+			'efficiency.horizon.label': l10n.t('efficiency.horizon.label'),
+			'efficiency.horizon.hint': l10n.t('efficiency.horizon.hint'),
+			'efficiency.horizon.loading': l10n.t('efficiency.horizon.loading'),
+			'efficiency.week.label': l10n.t('efficiency.week.label'),
+			'efficiency.week.none': l10n.t('efficiency.week.none'),
+			'efficiency.week.hint': l10n.t('efficiency.week.hint'),
+			'efficiency.week.detailHeading': l10n.t('efficiency.week.detailHeading'),
+			'efficiency.week.empty': l10n.t('efficiency.week.empty'),
+			'efficiency.week.rawHeading': l10n.t('efficiency.week.rawHeading'),
+			'efficiency.week.sessions': l10n.t('efficiency.week.sessions'),
+			'efficiency.week.tokens': l10n.t('efficiency.week.tokens'),
+			'efficiency.week.turns': l10n.t('efficiency.week.turns'),
+			'efficiency.week.loc': l10n.t('efficiency.week.loc'),
+			'efficiency.week.cost': l10n.t('efficiency.week.cost'),
+			'efficiency.week.ratiosHeading': l10n.t('efficiency.week.ratiosHeading'),
+			'efficiency.week.colMetric': l10n.t('efficiency.week.colMetric'),
+			'efficiency.week.colValue': l10n.t('efficiency.week.colValue'),
+			'efficiency.week.colPrior': l10n.t('efficiency.week.colPrior'),
+			'efficiency.week.colChange': l10n.t('efficiency.week.colChange'),
+			'efficiency.week.priorIs': l10n.t('efficiency.week.priorIs'),
+			'efficiency.week.noPrior': l10n.t('efficiency.week.noPrior'),
+			'efficiency.week.coverageHeading': l10n.t('efficiency.week.coverageHeading'),
+			'efficiency.week.skillsHeading': l10n.t('efficiency.week.skillsHeading'),
+			'efficiency.week.colSkill': l10n.t('efficiency.week.colSkill'),
+			'efficiency.week.colCalls': l10n.t('efficiency.week.colCalls'),
+			'efficiency.week.colShare': l10n.t('efficiency.week.colShare'),
+			'efficiency.week.noSkills': l10n.t('efficiency.week.noSkills'),
+			'efficiency.week.modelHeading': l10n.t('efficiency.week.modelHeading'),
+			'efficiency.week.modelUnused': l10n.t('efficiency.week.modelUnused'),
+			'efficiency.week.caveatsHeading': l10n.t('efficiency.week.caveatsHeading'),
+			'efficiency.week.unavailable': l10n.t('efficiency.week.unavailable'),
+			'efficiency.deltas.showTrend': l10n.t('efficiency.deltas.showTrend'),
+			'efficiency.deltas.noTrend': l10n.t('efficiency.deltas.noTrend'),
+			'efficiency.attribution.showModel': l10n.t('efficiency.attribution.showModel'),
+			'efficiency.week.better': l10n.t('efficiency.week.better'),
+			'efficiency.week.worse': l10n.t('efficiency.week.worse'),
+			'efficiency.week.partialChip': l10n.t('efficiency.week.partialChip'),
 			// Current language for reference
 			'__language__': language
 		};
@@ -9497,6 +9547,7 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 			if (this.handleLocalViewRegressionMessage(message)) { return; }
 			if (await this.dispatchSharedCommand(message)) { return; }
 			if (message.command === 'refresh') { await this.dispatch('refresh:efficiency', () => this.refreshEfficiencyPanel()); }
+			if (message.command === 'setEfficiencyRange') { await this.applyEfficiencyTrendRange(message.range); }
 		});
 		this.efficiencyPanel.onDidDispose(() => { this.log('⚡ Efficiency view closed'); this.efficiencyPanel = undefined; });
 
@@ -9510,7 +9561,7 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 		// key locked — if the user closes the panel and reopens it before the build finishes, the
 		// reopen would be silently dropped as "already in flight" (same fix as showChart above).
 		void (async () => {
-			const data = await this.buildEfficiencyViewData();
+			const data = await this.buildEfficiencyViewData(false, this.efficiencyTrendRange);
 			// The user may have closed the panel while the data was being computed.
 			if (this.efficiencyPanel !== panel) { return; }
 			panel.webview.html = this.getEfficiencyHtml(panel.webview, data);
@@ -9521,8 +9572,31 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 	private async refreshEfficiencyPanel(): Promise<void> {
 		if (!this.efficiencyPanel) { return; }
 		this.log('🔄 Refreshing Efficiency view');
-		const data = await this.buildEfficiencyViewData(true);
+		const data = await this.buildEfficiencyViewData(true, this.efficiencyTrendRange);
 		this.efficiencyPanel.webview.html = this.getEfficiencyHtml(this.efficiencyPanel.webview, data);
+	}
+
+	/**
+	 * Rebuilds the Efficiency payload for a new trend horizon and pushes it into
+	 * the open panel, so the selected tab and week survive the zoom (re-setting
+	 * `webview.html` would reset both).
+	 *
+	 * Widening the horizon needs session inputs the 12-week collection never
+	 * walked, so this is a genuine rebuild rather than a client-side re-slice.
+	 * Only the monthly delta and 30-day attribution windows are untouched: they
+	 * are separately scoped on purpose.
+	 */
+	private async applyEfficiencyTrendRange(rangeId: unknown): Promise<void> {
+		const range = _resolveTrendRange(rangeId);
+		this.efficiencyTrendRange = range.id;
+		const panel = this.efficiencyPanel;
+		if (!panel) { return; }
+		this.log(`⚡ Efficiency horizon set to ${range.label}`);
+		const data = await this.buildEfficiencyViewData(false, range.id);
+		// The panel may have been closed, or a later horizon requested, while this
+		// build was running — neither result should overwrite what is on screen.
+		if (this.efficiencyPanel !== panel || this.efficiencyTrendRange !== range.id) { return; }
+		void panel.webview.postMessage({ command: 'updateEfficiency', data });
 	}
 
 	/** Maps one cached session to the pure-module input shape for efficiency trends. */
@@ -9555,10 +9629,11 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 	 * building the Efficiency view, so the result is memoized alongside the other
 	 * `last*` stat caches and invalidated by the same paths.
 	 */
-	private async collectEfficiencySessionInputs(weeksBack = 12, useCache = true): Promise<EfficiencySessionInput[]> {
-		if (useCache && this.lastEfficiencySessionInputs) {
-			this.log('⚡ [Efficiency] Using cached session inputs');
-			return this.lastEfficiencySessionInputs;
+	private async collectEfficiencySessionInputs(weeksBack: number, useCache = true): Promise<EfficiencySessionInput[]> {
+		const cached = useCache ? this.lastEfficiencySessionInputs.get(weeksBack) : undefined;
+		if (cached) {
+			this.log(`⚡ [Efficiency] Using cached session inputs for ${weeksBack} weeks`);
+			return cached;
 		}
 		const now = new Date();
 		const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - weeksBack * 7);
@@ -9569,7 +9644,7 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 				if (!r || r.sessionData.interactions === 0) { continue; }
 				inputs.push(this.toEfficiencySessionInput(r.sessionData, r.mtime));
 			}
-			this.lastEfficiencySessionInputs = inputs;
+			this.lastEfficiencySessionInputs.set(weeksBack, inputs);
 		} catch (error) {
 			this.error('Error collecting efficiency session inputs:', error);
 		}
@@ -9608,18 +9683,22 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 		return payload;
 	}
 
-	private async buildEfficiencyViewData(forceRecalc = false): Promise<EfficiencyViewData> {
+	private async buildEfficiencyViewData(
+		forceRecalc = false,
+		rangeId: EfficiencyTrendRangeId = DEFAULT_EFFICIENCY_TREND_RANGE,
+	): Promise<EfficiencyViewData> {
 		const now = new Date();
+		const range = _resolveTrendRange(rangeId);
 		const dailyStats = (!forceRecalc && this.lastFullDailyStats) ? this.lastFullDailyStats : await this.calculateDailyStats();
 		const usage = await this.calculateUsageAnalysisStats(!forceRecalc);
-		const sessionInputs = await this.collectEfficiencySessionInputs(12, !forceRecalc);
+		const sessionInputs = await this.collectEfficiencySessionInputs(range.weeks, !forceRecalc);
 		const deps = {
 			calculateEstimatedCost: (mu: ModelUsage, src: 'provider' | 'copilot') => this.calculateEstimatedCost(mu, src),
 			now,
 		};
-		const weekly = _buildEfficiencyTrends(dailyStats, sessionInputs, deps);
+		const weekly = _buildEfficiencyTrends(dailyStats, sessionInputs, deps, range.weeks);
 		const modelDaily = this.buildModelDailyPayload(dailyStats, now);
-		const skillTrends = _buildSkillUsageTrends(sessionInputs, deps);
+		const skillTrends = _buildSkillUsageTrends(sessionInputs, deps, range.weeks);
 		const skillImpact = _computeSkillImpact(sessionInputs);
 		const { prevDays, curDays } = _splitTrailingWindows(dailyStats, now);
 		const attributionBoundaries = _getTrailingWindowBoundaries(now);
@@ -9651,6 +9730,9 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 			now,
 		});
 		return {
+			trendRange: range.id,
+			trendRangeWeeks: range.weeks,
+			trendRanges: EFFICIENCY_TREND_RANGES,
 			weekly,
 			hasLoc: weekly.some(w => w.loc > 0),
 			hasDuration: weekly.some(w => w.activeMinutesPerSession !== null),

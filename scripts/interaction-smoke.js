@@ -11,7 +11,15 @@
  * of the bug class this repo keeps hitting after a PR burst: the handler is
  * fine, the markup is fine, and the click goes nowhere.
  *
- * So this script clicks. It reuses the visual-view-diff harness to render the
+ * So this script clicks — and, for the controls a click cannot drive, changes.
+ * A native `<select>` never receives a `click` that changes its value, so a
+ * click-only crawl reports nothing at all about one: the dropdown is neither
+ * exercised nor flagged. A second pass therefore selects a *different* option on
+ * every `<select>` and measures the same way, which is how a keyboard-accessible
+ * dropdown (the Efficiency view's week selector, the Models tab's pickers) gets
+ * covered at all.
+ *
+ * It reuses the visual-view-diff harness to render the
  * *real* webview bundles headlessly (never the Extension Development Host —
  * see "Never Launch a Real Editor/IDE Instance" in AGENTS.md), enumerates every
  * interactive control, clicks each one, and records what happened:
@@ -76,6 +84,45 @@ const INTERACTIVE_SELECTOR = [
   'input[type="radio"]',
 ].join(', ');
 
+/**
+ * Runs inside the page: tags every visible, enabled `<select>` that has an
+ * enabled option other than the current one, and reports which option to switch
+ * to. Selects with a single usable option are skipped — changing nothing proves
+ * nothing.
+ */
+const TAG_SELECTS = () => {
+  const isVisible = (el) => {
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
+      return false;
+    }
+    const style = window.getComputedStyle(el);
+    return style.visibility !== 'hidden' && style.display !== 'none' && style.pointerEvents !== 'none';
+  };
+
+  const selects = [];
+  let index = 0;
+  for (const el of Array.from(document.querySelectorAll('select'))) {
+    if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true' || !isVisible(el)) {
+      continue;
+    }
+    el.setAttribute('data-smoke-select-id', String(index));
+    const usable = Array.from(el.options).filter((o) => !o.disabled);
+    const target = usable.find((o) => o.value !== el.value);
+    selects.push({
+      index,
+      key: el.id || `select-${index}`,
+      tag: 'select',
+      id: el.id || null,
+      label: (el.getAttribute('aria-label') || el.id || '').slice(0, 60) || null,
+      from: el.value,
+      target: target ? target.value : null,
+    });
+    index++;
+  }
+  return selects;
+};
+
 /** Reads the extension-side handled-command set once, for the unhandled check. */
 function loadHandledCommands() {
   const extDir = path.join(REPO_ROOT, 'vscode-extension', 'src');
@@ -85,9 +132,14 @@ function loadHandledCommands() {
 }
 
 /**
- * Runs inside the page: tags every visible, enabled control with a stable index
- * and returns a short description of each, so the driver can click by index
- * even after the DOM around it has shifted.
+ * Runs inside the page: tags every visible, enabled control with an index and a
+ * stable key, and returns a short description of each.
+ *
+ * The key matters more than the index. These views re-render by replacing the
+ * whole subtree, so the moment one click lands every tag is gone and every
+ * later control is "not clickable in this pass" — which silently skipped every
+ * tab but the first, and every control those tabs contain. The driver therefore
+ * re-runs this before each interaction and finds the control by key.
  */
 const TAG_CONTROLS = (selector) => {
   const isVisible = (el) => {
@@ -100,6 +152,7 @@ const TAG_CONTROLS = (selector) => {
   };
 
   const controls = [];
+  const seen = {};
   let index = 0;
   for (const el of Array.from(document.querySelectorAll(selector))) {
     if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') {
@@ -118,9 +171,16 @@ const TAG_CONTROLS = (selector) => {
       el.getAttribute('aria-pressed') === 'true' ||
       el.getAttribute('aria-selected') === 'true' ||
       (el instanceof HTMLInputElement && el.type === 'radio' && el.checked);
+    const tag = el.tagName.toLowerCase();
+    // State-free identity: tag, id and visible label. `.active`/`aria-pressed`
+    // deliberately play no part — a control must stay the same control after the
+    // click that selects it.
+    const base = `${tag}|${el.id || ''}|${label}`;
+    seen[base] = (seen[base] || 0) + 1;
     controls.push({
       index,
-      tag: el.tagName.toLowerCase(),
+      key: `${base}|${seen[base]}`,
+      tag,
       id: el.id || null,
       classes: el.className && typeof el.className === 'string' ? el.className.slice(0, 80) : null,
       label: label || null,
@@ -144,7 +204,7 @@ const TAG_CONTROLS = (selector) => {
  */
 const DOM_SIGNATURE = () => {
   const clone = document.body.cloneNode(true);
-  const FOCUS_ATTRS = ['focused', 'autofocus', 'aria-activedescendant', 'data-smoke-id'];
+  const FOCUS_ATTRS = ['focused', 'autofocus', 'aria-activedescendant', 'data-smoke-id', 'data-smoke-select-id'];
   const FOCUS_CLASSES = ['focused', 'focus-visible', 'focus', 'hover', 'hovered'];
   for (const el of Array.from(clone.querySelectorAll('*'))) {
     for (const attr of FOCUS_ATTRS) {
@@ -218,8 +278,14 @@ async function waitForQuietDom(page, { pollMs = 100, maxWaitMs = 3000 } = {}) {
   return false;
 }
 
-async function clickControl(page, control) {
-  // Settle first, so what we measure is this click's doing and not the last one's.
+/**
+ * Drives one interaction and reports what it did. `act` performs the actual
+ * gesture; everything around it — settling the DOM first so the previous
+ * interaction cannot be credited to this one, clearing the recorded messages,
+ * and comparing the before/after signatures — is identical for a click and for
+ * a dropdown change.
+ */
+async function measureInteraction(page, act, settleMs) {
   const quiet = await waitForQuietDom(page);
   const before = await page.evaluate(DOM_SIGNATURE);
   await page.evaluate(() => {
@@ -227,14 +293,12 @@ async function clickControl(page, control) {
     window.__HARNESS_ERRORS__.length = 0;
   });
 
-  const locator = page.locator(`[data-smoke-id="${control.index}"]`);
-  try {
-    await locator.click({ timeout: 1500, force: false, noWaitAfter: true });
-  } catch (error) {
-    return { status: 'skipped', reason: `not clickable in this pass: ${String(error.message).split('\n')[0]}` };
+  const skipped = await act();
+  if (skipped) {
+    return skipped;
   }
 
-  await page.waitForTimeout(120);
+  await page.waitForTimeout(settleMs);
 
   const [posted, errors, after] = await Promise.all([
     page.evaluate(() => window.__HARNESS_POSTED_MESSAGES__.slice()),
@@ -252,6 +316,47 @@ async function clickControl(page, control) {
     return { status: 'dom-only', posted, domChanged: true, quiet };
   }
   return { status: 'dead', posted, domChanged: false, quiet };
+}
+
+async function clickControl(page, control) {
+  const current = (await page.evaluate(TAG_CONTROLS, INTERACTIVE_SELECTOR)).find((c) => c.key === control.key);
+  if (!current) {
+    return { status: 'skipped', reason: 'the control is no longer on the page in this pass' };
+  }
+  const outcome = await measureInteraction(page, async () => {
+    try {
+      await page.locator(`[data-smoke-id="${current.index}"]`).click({ timeout: 1500, force: false, noWaitAfter: true });
+    } catch (error) {
+      return { status: 'skipped', reason: `not clickable in this pass: ${String(error.message).split('\n')[0]}` };
+    }
+    return null;
+  }, 120);
+  // Selected state is read at click time, not at enumeration time: a control the
+  // user has since selected is allowed to be inert.
+  return { ...outcome, alreadySelected: current.alreadySelected };
+}
+
+/**
+ * Picks a different option on one `<select>`. The page is re-tagged first: an
+ * earlier change may have re-rendered the view, which drops the tags and can
+ * move a select's position, so the dropdown is re-found by its id.
+ */
+async function changeSelect(page, control) {
+  const current = (await page.evaluate(TAG_SELECTS)).find((s) => s.key === control.key);
+  if (!current) {
+    return { status: 'skipped', reason: 'the select is no longer on the page in this pass' };
+  }
+  if (current.target === null) {
+    return { status: 'skipped', reason: 'no alternative enabled option to switch to' };
+  }
+  return measureInteraction(page, async () => {
+    try {
+      await page.locator(`[data-smoke-select-id="${current.index}"]`).selectOption(current.target, { timeout: 1500 });
+    } catch (error) {
+      return { status: 'skipped', reason: `not selectable in this pass: ${String(error.message).split('\n')[0]}` };
+    }
+    return null;
+  }, 150);
 }
 
 async function smokeView({ browser, view, defaults, handledCommands, isolate }) {
@@ -279,14 +384,21 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
   const results = [];
   const findings = [];
 
-  for (const control of controls) {
+  // Clicks first, then dropdown changes: a click can reveal a `<select>` that
+  // was not in the first enumeration, and the select pass re-enumerates anyway.
+  const passes = [
+    ...controls.map((control) => ({ control, run: () => clickControl(page, control) })),
+    ...(await page.evaluate(TAG_SELECTS)).map((control) => ({ control, run: () => changeSelect(page, control) })),
+  ];
+
+  for (const { control, run } of passes) {
     if (isolate && results.length > 0) {
       await page.close();
       page = await openPage(browser, pageFile, view, defaults);
       await page.evaluate(TAG_CONTROLS, INTERACTIVE_SELECTOR);
     }
 
-    const outcome = await clickControl(page, control);
+    const outcome = await run();
     results.push({ ...control, ...outcome });
 
     const where = `${control.tag}${control.id ? `#${control.id}` : ''}${control.label ? ` "${control.label}"` : ''}`;
@@ -294,20 +406,22 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
     if (outcome.status === 'dead' && outcome.quiet === false) {
       // The DOM never stopped moving, so "nothing changed" is not trustworthy here.
       results[results.length - 1].status = 'inconclusive';
-    } else if (outcome.status === 'dead' && control.alreadySelected) {
+    } else if (outcome.status === 'dead' && (outcome.alreadySelected ?? control.alreadySelected)) {
       results[results.length - 1].status = 'noop-selected';
     } else if (outcome.status === 'dead') {
       findings.push({
         view: view.id,
         kind: 'dead-control',
         control: where,
-        detail: 'clicking it posts no message to the host and changes nothing on screen',
+        detail: control.tag === 'select'
+          ? `changing it from '${control.from}' to '${control.target}' posts no message to the host and changes nothing on screen`
+          : 'clicking it posts no message to the host and changes nothing on screen',
       });
     }
     if (outcome.status === 'error') {
       findings.push({
         view: view.id,
-        kind: 'click-threw',
+        kind: control.tag === 'select' ? 'change-threw' : 'click-threw',
         control: where,
         detail: outcome.errors.join(' | ').slice(0, 400),
       });

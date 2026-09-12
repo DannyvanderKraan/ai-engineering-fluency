@@ -13,24 +13,42 @@ import { getWindowData } from '../../../../src/webview/shared/dataLoader';
 import type {
 	CostAttribution,
 	EfficiencyDelta,
+	EfficiencyTrendRangeId,
 	EfficiencyViewData,
+	EfficiencyWeekDetail,
 	ModelComparison,
 	ModelComparisonMetricId,
 	ModelComparisonRow,
 	ModelCompareWindowId,
 	ModelPeriodMetrics,
+	ModelWeekDetail,
 	SkillImpact,
+	SkillWeekDetail,
 } from '../../../../src/efficiencyAnalysis';
 import {
+	buildEfficiencyWeekDetail,
+	buildModelWeekDetail,
 	buildModelWeeklySeries,
+	buildSkillWeekDetail,
 	compareModels,
 	computeModelPeriodMetrics,
+	DEFAULT_EFFICIENCY_TREND_RANGE,
 	listComparableModels,
 	resolveModelCompareWindow,
 	selectDaysInWindow,
 	windowHasModelData,
 } from '../../../../src/efficiencyAnalysis';
-import { initializeWebviewLocalization, setCurrentLanguage } from '../shared/localization';
+import {
+	clampSelectedWeek,
+	fmtValue,
+	renderModelWeekDetail,
+	renderRangeControls,
+	renderSkillWeekDetail,
+	renderWeekDetail,
+	renderWeekPicker,
+	trendMetricForDelta,
+} from './weekDetail';
+import { initializeWebviewLocalization, localize, setCurrentLanguage } from '../shared/localization';
 
 // Minimal structural types for the dynamically imported Chart.js bundle —
 // a `typeof import('chart.js/auto')` type-import trips TS1542 under CJS resolution.
@@ -44,7 +62,7 @@ declare function acquireVsCodeApi<TState = unknown>(): {
 };
 
 const vscode = acquireVsCodeApi();
-const data = getWindowData<EfficiencyViewData & { localization?: Record<string, string> }>('__INITIAL_EFFICIENCY__');
+let data = getWindowData<EfficiencyViewData & { localization?: Record<string, string> }>('__INITIAL_EFFICIENCY__');
 
 // Initialize localization for webview
 if (data?.localization) {
@@ -89,17 +107,6 @@ function visibleTabs(d: EfficiencyViewData): { id: TabId; label: string }[] {
 function cssVar(name: string, fallback: string): string {
 	const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 	return v || fallback;
-}
-
-function fmtValue(v: number | null, unit: EfficiencyDelta['unit']): string {
-	if (v === null) { return '—'; }
-	switch (unit) {
-		case 'percent': return `${(v * 100).toFixed(1)}%`;
-		case 'minutes': return `${v.toFixed(1)} min`;
-		case 'tokens': return formatCompact(Math.round(v));
-		case 'currency': return `$${v.toFixed(2)}`;
-		case 'ratio': return v.toFixed(1);
-	}
 }
 
 function fmtMoney(v: number): string {
@@ -220,8 +227,9 @@ function renderTrendsTab(d: EfficiencyViewData): string {
 		const body = spec.available
 			? `<div class="chart-wrap"><canvas id="trend-${spec.id}"></canvas></div>`
 			: `<div class="trend-empty">${escapeHtml(spec.unavailableHint)}</div>`;
+		const focused = zoomState.focusTrendMetric === spec.id ? ' focused' : '';
 		return `
-			<div class="trend-card">
+			<div class="trend-card${focused}" id="trend-card-${spec.id}" tabindex="-1">
 				<h3><span>${spec.title}</span>${spec.available ? trendBadge(spec.values, spec.goodDirection) : ''}</h3>
 				<p class="trend-desc">${escapeHtml(spec.desc)}</p>
 				${body}
@@ -229,6 +237,8 @@ function renderTrendsTab(d: EfficiencyViewData): string {
 	}).join('');
 	return `
 		<p class="eff-section-note">Weekly ratios over the last ${d.weekly.length} weeks. Badges compare the recent half of the window against the earlier half; green means the ratio moved in the efficient direction. The current week is partial.</p>
+		${zoomControls(d)}
+		${renderWeekDetail(selectedWeekDetail(d))}
 		<div class="trend-grid">${cards}</div>`;
 }
 
@@ -240,6 +250,13 @@ function renderDeltasTab(d: EfficiencyViewData): string {
 			const arrow = delta.deltaPct > 0 ? '↑' : delta.deltaPct < 0 ? '↓' : '→';
 			change = `<span class="delta-change ${cls}">${arrow} ${Math.abs(delta.deltaPct).toFixed(0)}%</span>`;
 		}
+		const trendId = trendMetricForDelta(delta.id);
+		// A card with a weekly equivalent can focus it; one without stays
+		// explanatory rather than offering a control that would imply the monthly
+		// window can be filtered the same way.
+		const action = trendId
+			? `<button type="button" class="eff-link-btn" data-focus-trend="${escapeHtml(trendId)}">${escapeHtml(localize('efficiency.deltas.showTrend'))}</button>`
+			: `<p class="delta-no-trend">${escapeHtml(localize('efficiency.deltas.noTrend'))}</p>`;
 		return `
 			<div class="delta-card">
 				<h3>${escapeHtml(delta.label)}</h3>
@@ -249,6 +266,7 @@ function renderDeltasTab(d: EfficiencyViewData): string {
 				</div>
 				<div class="delta-prev">was ${fmtValue(delta.prev, delta.unit)} in ${escapeHtml(d.deltaWindows.prev)}</div>
 				<p class="delta-desc">${escapeHtml(delta.description)}</p>
+				${action}
 			</div>`;
 	}).join('');
 	return `
@@ -281,7 +299,7 @@ function renderAttributionTab(d: EfficiencyViewData): string {
 			<tbody>
 				${a.modelShifts.map(s => `
 					<tr>
-						<td>${escapeHtml(s.displayName)}</td>
+						<td>${escapeHtml(s.displayName)}<button type="button" class="eff-link-btn" data-focus-model="${escapeHtml(s.model)}">${escapeHtml(localize('efficiency.attribution.showModel'))}</button></td>
 						<td class="num">${(s.prevShare * 100).toFixed(1)}%</td>
 						<td class="num">${(s.curShare * 100).toFixed(1)}%</td>
 						<td class="num ${s.deltaShare > 0 ? 'share-up' : 'share-down'}">${s.deltaShare > 0 ? '+' : ''}${(s.deltaShare * 100).toFixed(1)} pt</td>
@@ -349,7 +367,9 @@ function renderSkillsTab(d: EfficiencyViewData): string {
 		: `<p class="eff-section-note">No skill has enough sessions yet for a with/without comparison (needs at least 5 sessions on each side).</p>`;
 	return `
 		<p class="eff-section-note">${d.skillTrends.totalCalls} skill invocations across ${d.skillTrends.topSkills.length} skill${d.skillTrends.topSkills.length === 1 ? '' : 's'} in the last ${d.skillTrends.weeks.length} weeks. Bars stack invocations per skill; the line is the share of sessions that used any skill.</p>
+		${zoomControls(d)}
 		<div class="combined-wrap"><canvas id="skills-chart"></canvas></div>
+		${renderSkillWeekDetail(selectedSkillWeekDetail(d))}
 		${impactSection}`;
 }
 
@@ -406,6 +426,7 @@ async function drawSkillsChart(d: EfficiencyViewData): Promise<void> {
 		options: {
 			responsive: true,
 			maintainAspectRatio: false,
+			...weekClickOptions(weeks.map(w => w.weekKey)),
 			plugins: { legend: { position: 'bottom', labels: { color: fg, boxWidth: 14 } } },
 			scales: {
 				x: { stacked: true, ticks: { color: fg, maxRotation: 45, autoSkip: true }, grid: { display: false } },
@@ -461,7 +482,9 @@ function renderValueTab(d: EfficiencyViewData): string {
 function renderCombinedTab(d: EfficiencyViewData): string {
 	return `
 		<p class="eff-section-note">Everything on one chart. Ratio lines are <b>indexed to 100</b> at their first measured week so different units share one axis — a line falling below 100 means that ratio improved (except apply rate, where up is good). Bars show raw lines-of-code output per week: efficiency gains only count if the bars hold up.</p>
-		<div class="combined-wrap"><canvas id="combined-chart"></canvas></div>`;
+		${zoomControls(d)}
+		<div class="combined-wrap"><canvas id="combined-chart"></canvas></div>
+		${renderWeekDetail(selectedWeekDetail(d))}`;
 }
 
 // ── Models tab ─────────────────────────────────────────────────────────
@@ -814,7 +837,9 @@ function renderModelsTab(d: EfficiencyViewData): string {
 		<h3>Drift over time</h3>
 		<p class="eff-section-note">Weekly values for each side's model, so a model getting better — or quietly getting worse — is visible. Gaps are weeks where the model was not used.</p>
 		<div class="model-trend-controls"><label>Metric ${selectHtml('model-trend-metric', metricOptions, modelState.trendMetric)}</label></div>
-		<div class="model-trend-wrap"><canvas id="model-trend"></canvas></div>`;
+		${zoomControls(d)}
+		<div class="model-trend-wrap"><canvas id="model-trend"></canvas></div>
+		${renderModelWeekDetail(selectedModelWeekDetail(d))}`;
 }
 
 
@@ -912,8 +937,9 @@ async function drawModelTrend(d: EfficiencyViewData): Promise<void> {
 	const now = payloadNow(d);
 	const models = trendModels();
 	const colors = [cssVar('--vscode-charts-blue', '#60a5fa'), cssVar('--vscode-charts-orange', '#ff9f40')];
-	const seriesList = models.map(m => buildModelWeeklySeries(d.modelDaily, m, now));
+	const seriesList = models.map(m => buildModelWeeklySeries(d.modelDaily, m, now, d.trendRangeWeeks));
 	const labels = seriesList[0]?.map(p => p.label) ?? [];
+	const weekKeys = d.weekly.map(w => w.weekKey);
 	const fg = cssVar('--vscode-descriptionForeground', '#999');
 	const grid = cssVar('--vscode-widget-border', 'rgba(128,128,128,0.2)');
 	liveCharts.push(new Chart(canvas, {
@@ -933,6 +959,7 @@ async function drawModelTrend(d: EfficiencyViewData): Promise<void> {
 		options: {
 			responsive: true,
 			maintainAspectRatio: false,
+			...weekClickOptions(weekKeys),
 			plugins: {
 				legend: { position: 'bottom', labels: { color: fg, boxWidth: 14 } },
 				tooltip: { callbacks: { label: (ctx: { parsed: { y: number | null } }) => ctx.parsed.y === null ? 'no data' : fmtValue(ctx.parsed.y, spec.unit) } },
@@ -960,6 +987,7 @@ async function drawTrendCharts(d: EfficiencyViewData): Promise<void> {
 	await loadChartModule();
 	if (!Chart) { return; }
 	const labels = d.weekly.map(w => w.label);
+	const weekKeys = d.weekly.map(w => w.weekKey);
 	const fg = cssVar('--vscode-descriptionForeground', '#999');
 	const grid = cssVar('--vscode-widget-border', 'rgba(128,128,128,0.2)');
 	for (const spec of buildTrendSpecs(d)) {
@@ -983,6 +1011,7 @@ async function drawTrendCharts(d: EfficiencyViewData): Promise<void> {
 			options: {
 				responsive: true,
 				maintainAspectRatio: false,
+				...weekClickOptions(weekKeys),
 				plugins: {
 					legend: { display: false },
 					tooltip: { callbacks: { label: (ctx: { parsed: { y: number | null } }) => ctx.parsed.y === null ? 'no data' : spec.format(ctx.parsed.y) } },
@@ -1045,6 +1074,7 @@ async function drawCombinedChart(d: EfficiencyViewData): Promise<void> {
 		options: {
 			responsive: true,
 			maintainAspectRatio: false,
+			...weekClickOptions(d.weekly.map(w => w.weekKey)),
 			plugins: {
 				legend: { position: 'bottom', labels: { color: fg, boxWidth: 14 } },
 			},
@@ -1068,6 +1098,139 @@ async function drawCombinedChart(d: EfficiencyViewData): Promise<void> {
 			},
 		},
 	} as never));
+}
+
+// ── Horizon + selected week ────────────────────────────────────────────
+
+/**
+ * Horizon and selected-week state, shared by every trend-capable tab so a week
+ * picked on Trends is still the selected week on Combined, Tools & Skills and
+ * Models. Deliberately not a categorical filter: nothing here narrows the
+ * population a ratio is computed over, it only changes which weeks are drawn
+ * and which one is described underneath.
+ */
+const zoomState: {
+	range: EfficiencyTrendRangeId;
+	/** True between asking the host for a new horizon and its payload arriving. */
+	rangeLoading: boolean;
+	selectedWeek: string | null;
+	/** Trend card a Month vs Month card asked to focus; cleared on the next tab switch. */
+	focusTrendMetric: string | null;
+} = {
+	range: DEFAULT_EFFICIENCY_TREND_RANGE,
+	rangeLoading: false,
+	selectedWeek: null,
+	focusTrendMetric: null,
+};
+
+/** Re-renders, then puts focus back where the user left it — `render()` replaces the whole subtree. */
+function renderAndRestoreFocus(selector: string | null): void {
+	render();
+	if (!selector) { return; }
+	(document.querySelector(selector) as HTMLElement | null)?.focus();
+}
+
+/**
+ * Asks the host to rebuild the payload for a wider or narrower horizon. The
+ * host owns the data: a 12-week payload cannot be stretched into a 26- or
+ * 52-week one client-side, so this is a round trip, not a re-slice.
+ */
+function requestRange(rangeId: EfficiencyTrendRangeId): void {
+	if (rangeId === zoomState.range) { return; }
+	zoomState.range = rangeId;
+	zoomState.rangeLoading = true;
+	vscode.postMessage({ command: 'setEfficiencyRange', range: rangeId });
+	renderAndRestoreFocus(`.eff-range-btn[data-range="${rangeId}"]`);
+}
+
+/** The detail for the currently selected week of the efficiency trends, or null when none is selected. */
+function selectedWeekDetail(d: EfficiencyViewData): EfficiencyWeekDetail | null {
+	return zoomState.selectedWeek === null
+		? null
+		: buildEfficiencyWeekDetail(d.weekly, zoomState.selectedWeek, payloadNow(d));
+}
+
+/** The selected week of the skill trends, or null when none is selected. */
+function selectedSkillWeekDetail(d: EfficiencyViewData): SkillWeekDetail | null {
+	return zoomState.selectedWeek === null
+		? null
+		: buildSkillWeekDetail(d.skillTrends, zoomState.selectedWeek, payloadNow(d));
+}
+
+/** The selected week for the model currently in slot A, or null when no week is selected. */
+function selectedModelWeekDetail(d: EfficiencyViewData): ModelWeekDetail | null {
+	if (zoomState.selectedWeek === null || modelState.modelA === '') { return null; }
+	const now = payloadNow(d);
+	const series = buildModelWeeklySeries(d.modelDaily, modelState.modelA, now, d.trendRangeWeeks);
+	return buildModelWeekDetail(series, modelState.modelA, zoomState.selectedWeek, now);
+}
+
+/** The horizon selector and the keyboard-accessible week selector, in that order. */
+function zoomControls(d: EfficiencyViewData): string {
+	return `
+		${renderRangeControls(d.trendRanges, zoomState.range, zoomState.rangeLoading)}
+		${renderWeekPicker(d.weekly, zoomState.selectedWeek, payloadNow(d))}`;
+}
+
+/**
+ * Chart.js options that turn a point click into a week selection. This is a
+ * pointer convenience layered on top of the week selector — never the only way
+ * to reach the detail region.
+ */
+function weekClickOptions(weekKeys: string[]): object {
+	return {
+		onClick: (_event: unknown, elements: { index: number }[]): void => {
+			const index = elements[0]?.index;
+			const weekKey = index === undefined ? undefined : weekKeys[index];
+			if (!weekKey) { return; }
+			// Deferred: re-rendering destroys the Chart.js instance that is still
+			// dispatching this very event.
+			setTimeout(() => {
+				zoomState.selectedWeek = weekKey;
+				render();
+				// A canvas click leaves focus on the canvas, which says nothing about
+				// what just changed. Land on the detail region instead — the whole
+				// subtree is replaced by the render, so a live-region announcement
+				// alone cannot be relied on here.
+				const detail = document.getElementById('eff-week-detail');
+				detail?.scrollIntoView({ block: 'nearest' });
+				detail?.focus();
+			}, 0);
+		},
+		onHover: (event: { native?: Event }, elements: unknown[]): void => {
+			const target = event?.native?.target as HTMLElement | undefined;
+			if (target?.style) { target.style.cursor = elements.length > 0 ? 'pointer' : 'default'; }
+		},
+	};
+}
+
+/** Switches to the Trends tab and puts the matching trend card into view and into focus. */
+function focusTrendCard(metricId: string): void {
+	zoomState.focusTrendMetric = metricId;
+	activeTab = 'trends';
+	vscode.postMessage({ command: 'viewTabOpened', view: 'efficiency', tab: activeTab });
+	render();
+	const card = document.getElementById(`trend-card-${metricId}`);
+	card?.scrollIntoView({ block: 'center' });
+	card?.focus();
+}
+
+/**
+ * Switches to the Models tab with the named model in slot A. The Cost
+ * Attribution decomposition itself is untouched — it stays computed over the
+ * whole population, because volume, efficiency and mix only add up when they
+ * are measured over the same sessions.
+ */
+function focusModelContext(model: string): void {
+	if (data) {
+		initModelState(data);
+		if (listComparableModels(data.modelDaily).some(m => m.model === model)) {
+			modelState.modelA = model;
+		}
+	}
+	activeTab = 'models';
+	vscode.postMessage({ command: 'viewTabOpened', view: 'efficiency', tab: activeTab });
+	renderAndRestoreFocus('#model-a');
 }
 
 // ── Main render ────────────────────────────────────────────────────────
@@ -1134,10 +1297,31 @@ function wireModelControls(): void {
 	bind('model-trend-metric', v => { modelState.trendMetric = v as ModelComparisonMetricId; });
 }
 
+/** Wires the horizon buttons, the week selector, and the two contextual navigation buttons. */
+function wireZoomControls(): void {
+	document.querySelectorAll<HTMLButtonElement>('.eff-range-btn').forEach(btn => {
+		btn.addEventListener('click', () => { requestRange(btn.dataset.range as EfficiencyTrendRangeId); });
+	});
+	document.getElementById('eff-week-select')?.addEventListener('change', ev => {
+		const value = (ev.target as HTMLSelectElement).value;
+		zoomState.selectedWeek = value === '' ? null : value;
+		renderAndRestoreFocus('#eff-week-select');
+	});
+	document.querySelectorAll<HTMLButtonElement>('[data-focus-trend]').forEach(btn => {
+		btn.addEventListener('click', () => { focusTrendCard(btn.dataset.focusTrend ?? ''); });
+	});
+	document.querySelectorAll<HTMLButtonElement>('[data-focus-model]').forEach(btn => {
+		btn.addEventListener('click', () => { focusModelContext(btn.dataset.focusModel ?? ''); });
+	});
+}
+
 function wireEvents(): void {
 	document.querySelectorAll<HTMLButtonElement>('.eff-tab').forEach(btn => {
 		btn.addEventListener('click', () => {
 			activeTab = btn.dataset.tab as TabId;
+			// A trend card highlighted from a Month vs Month card stops being the
+			// thing the user just navigated to once they move tabs themselves.
+			zoomState.focusTrendMetric = null;
 			// Report the subview so the what's-new announcer can skip tabs the user
 			// already found for themselves. Fire-and-forget.
 			vscode.postMessage({ command: 'viewTabOpened', view: 'efficiency', tab: activeTab });
@@ -1145,6 +1329,7 @@ function wireEvents(): void {
 		});
 	});
 	wireModelControls();
+	wireZoomControls();
 	document.getElementById('btn-refresh')?.addEventListener('click', () => { vscode.postMessage({ command: 'refresh' }); });
 	document.getElementById('btn-details')?.addEventListener('click', () => { vscode.postMessage({ command: 'showDetails' }); });
 	document.getElementById('btn-chart')?.addEventListener('click', () => { vscode.postMessage({ command: 'showChart' }); });
@@ -1156,6 +1341,19 @@ function wireEvents(): void {
 	wireExtensionPointButtons(vscode);
 }
 
+/**
+ * Swaps in a payload rebuilt by the host for a new horizon. A selection that
+ * fell outside the narrower window is dropped rather than re-pointed at a
+ * different week.
+ */
+function applyEfficiencyUpdate(next: EfficiencyViewData): void {
+	data = { ...next, localization: data?.localization };
+	zoomState.range = next.trendRange;
+	zoomState.rangeLoading = false;
+	zoomState.selectedWeek = clampSelectedWeek(next.weekly.map(w => w.weekKey), zoomState.selectedWeek);
+	render();
+}
+
 async function bootstrap(): Promise<void> {
 	await import('@vscode-elements/elements/dist/vscode-button/index.js');
 	if (!data) {
@@ -1163,6 +1361,13 @@ async function bootstrap(): Promise<void> {
 		if (root) { root.textContent = 'No data available.'; }
 		return;
 	}
+	zoomState.range = data.trendRange ?? DEFAULT_EFFICIENCY_TREND_RANGE;
+	window.addEventListener('message', event => {
+		const message = event.data as { command?: string; data?: EfficiencyViewData } | undefined;
+		if (message?.command === 'updateEfficiency' && message.data) {
+			applyEfficiencyUpdate(message.data);
+		}
+	});
 	render();
 }
 
