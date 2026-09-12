@@ -1066,3 +1066,58 @@ test('buildCombinedDaily: keeps only the trailing window and no per-session deta
 	assert.equal(keys.has('sessionId'), false);
 	assert.equal(keys.has('path'), false);
 });
+
+test('COMBINED_FILTER_ALL: the unfiltered sentinel cannot collide with a real model id', () => {
+	// A custom endpoint's model part is free text that canonicalizes straight
+	// through, so a readable sentinel like 'all' would be a real model id too —
+	// and that model could then never be selected.
+	assert.equal(getCanonicalModelId('customendpoint/Acme/all'), 'all');
+	assert.notEqual(COMBINED_FILTER_ALL, 'all');
+
+	const days = [day('2026-07-06', {
+		tokens: 1_000, sessions: 1, interactions: 4,
+		modelUsage: modelUsageOf([['customendpoint/Acme/all', 800, 200]]),
+		editorUsage: { 'VS Code': { tokens: 1_000, sessions: 1 } },
+		editorModelUsage: { 'VS Code': modelUsageOf([['customendpoint/Acme/all', 800, 200]]) },
+	})];
+	const points = buildCombinedDaily(days, [], combinedDeps);
+	const models = listCombinedFacets(points, UNFILTERED_COMBINED).models.map(m => m.value);
+	assert.deepEqual(models, ['all']);
+	// Selecting it really filters, rather than reading as "no filter".
+	const selected = aggregateCombinedWeekly(points, { ...UNFILTERED_COMBINED, model: 'all' }, NOW);
+	assert.ok(selected.some(w => w.tokens > 0), 'the model named "all" is selectable');
+	const other = aggregateCombinedWeekly(points, { ...UNFILTERED_COMBINED, model: 'gpt-5' }, NOW);
+	assert.ok(other.every(w => w.tokens === 0), 'a different model selects nothing');
+});
+
+test('buildCombinedDaily: model-less activity is not absorbed by the models named beside it', () => {
+	// One editor, one day, two sessions: one on gpt-5, one that named no model.
+	// Without the unattributed figure the day's whole 30k would land on gpt-5.
+	const days = [day('2026-07-06', {
+		tokens: 30_000, sessions: 2, interactions: 10, linesAdded: 90, linesRemoved: 10,
+		modelUsage: modelUsageOf([['gpt-5', 16_000, 4_000]]),
+		editorUsage: { 'VS Code': { tokens: 30_000, sessions: 2, linesAdded: 90, linesRemoved: 10 } },
+		editorModelUsage: { 'VS Code': modelUsageOf([['gpt-5', 16_000, 4_000]]) },
+		editorUnattributed: { 'VS Code': { tokens: 10_000, sessions: 1 } },
+	})];
+	const points = buildCombinedDaily(days, [], combinedDeps);
+	const week = (model: string) => aggregateCombinedWeekly(points, { ...UNFILTERED_COMBINED, model }, NOW)
+		.find(w => w.weekKey === '2026-07-06')!;
+
+	const unknown = week(UNKNOWN_MODEL_ID);
+	const gpt = week('gpt-5');
+	// 10k of 30k tokens named no model, so a third of the day is unattributed.
+	assertClose(unknown.tokens, 10_000, 'unattributed tokens');
+	assertClose(gpt.tokens, 20_000, 'gpt-5 tokens');
+	assert.ok(unknown.sessions > 0, 'the model-less session keeps a session share');
+	// And the split still adds back up to the unfiltered day.
+	const all = aggregateCombinedWeekly(points, UNFILTERED_COMBINED, NOW).find(w => w.weekKey === '2026-07-06')!;
+	assertClose(unknown.tokens + gpt.tokens, all.tokens, 'tokens');
+	assertClose(unknown.sessions + gpt.sessions, all.sessions, 'sessions');
+	assertClose(unknown.loc + gpt.loc, all.loc, 'loc');
+
+	assert.ok(
+		listCombinedFacets(points, UNFILTERED_COMBINED).vendors.some(v => v.value === UNCLASSIFIED_VENDOR),
+		'the unattributed share is offered under Unclassified',
+	);
+});

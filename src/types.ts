@@ -190,6 +190,16 @@ export interface DailyTokenStats {
    * Absent when no session on this day carried per-model efficiency data.
    */
   modelEfficiency?: DailyModelEfficiency;
+  /**
+   * Activity on this day that named no model at all, per editor.
+   *
+   * `editorModelUsage` can only describe sessions that reported a model, so on a
+   * day mixing both kinds it silently understates the editor. Recording the
+   * model-less remainder separately keeps it visible (it is what the Efficiency
+   * Combined chart files under "Unclassified") instead of quietly folding it
+   * into whichever models happened to be named that day.
+   */
+  editorUnattributed?: { [editor: string]: { tokens: number; sessions: number } };
 }
 
 /**

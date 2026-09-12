@@ -84,14 +84,22 @@ const MAX_CRAWL_PASSES = 40;
  * Identity of a control across re-renders. Deliberately ignores the tag index
  * (which is reassigned every pass) and the selected/active state classes, so a
  * tab does not look like a new control once clicking it marks it active.
+ *
+ * An id is identity enough on its own, and is preferred where there is one: a
+ * `<select>`'s label is its concatenated option text, which a faceted filter
+ * rewrites whenever a *different* control's selection changes — keying on that
+ * would make the crawl revisit the same dropdown forever instead of converging.
  */
 function controlKey(control) {
+  if (control.id) {
+    return `${control.tag}|${control.id}`;
+  }
   const classes = (control.classes || '')
     .split(/\s+/)
     .filter((cls) => cls && cls !== 'active' && cls !== 'selected')
     .sort()
     .join(' ');
-  return `${control.tag}|${control.id || ''}|${classes}|${control.label || ''}`;
+  return `${control.tag}||${classes}|${control.label || ''}`;
 }
 
 /** Reads the extension-side handled-command set once, for the unhandled check. */
@@ -333,7 +341,10 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
     for (const control of controls) {
       const deep = maxPasses > 1;
       if (deep && visited.has(controlKey(control))) { continue; }
-      if (isolate && results.length > 0) {
+      // `--isolate` reloads between controls, which is the opposite of what a
+      // deep crawl needs: the controls it is working through only exist because
+      // of the state earlier ones produced, and a fresh page does not have them.
+      if (isolate && !deep && results.length > 0) {
         await page.close();
         page = await openPage(browser, pageFile, view, defaults);
         await page.evaluate(TAG_CONTROLS, INTERACTIVE_SELECTOR);

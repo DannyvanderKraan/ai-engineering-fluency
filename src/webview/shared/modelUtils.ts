@@ -163,7 +163,10 @@ export const UNCLASSIFIED_VENDOR = 'Unclassified';
  * Returns {@link UNKNOWN_MODEL_ID} for sessions that name no model at all.
  */
 export function getCanonicalModelId(model: string): string {
-	const raw = (model ?? '').trim();
+	// Lowercase *before* the lookup, not just after: the candidate builder strips
+	// `copilot/` case-sensitively, so `COPILOT/claude-opus-4.8` would otherwise
+	// keep its wrapper and never meet plain `claude-opus-4.8`.
+	const raw = (model ?? '').trim().toLowerCase();
 	if (!raw) { return UNKNOWN_MODEL_ID; }
 	const candidates = getModelLookupCandidates(raw);
 	for (const candidate of candidates) {
@@ -232,6 +235,20 @@ const MODEL_VENDOR_PREFIXES: Array<[string, string]> = [
 export function getModelVendor(model: string): string {
 	const canonical = getCanonicalModelId(model);
 	if (canonical === UNKNOWN_MODEL_ID) { return UNCLASSIFIED_VENDOR; }
-	const match = MODEL_VENDOR_PREFIXES.find(([prefix]) => canonical.startsWith(prefix));
+	const match = MODEL_VENDOR_PREFIXES.find(([prefix]) => matchesVendorPrefix(canonical, prefix));
 	return match ? match[1] : UNCLASSIFIED_VENDOR;
+}
+
+/**
+ * Whether a canonical id starts with a vendor prefix *as a whole token*.
+ *
+ * A bare `startsWith` would read `gptish-internal` as OpenAI's and `claudefake`
+ * as Anthropic's, which is exactly the guessing this classifier exists to avoid:
+ * only a version or variant separator (or a digit, as in `gpt5`) may follow the
+ * prefix. Anything else is a different word, and stays Unclassified.
+ */
+function matchesVendorPrefix(canonical: string, prefix: string): boolean {
+	if (!canonical.startsWith(prefix)) { return false; }
+	if (canonical.length === prefix.length) { return true; }
+	return /[-._/0-9]/.test(canonical.charAt(prefix.length));
 }

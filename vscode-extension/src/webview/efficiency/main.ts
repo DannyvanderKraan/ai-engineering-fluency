@@ -68,6 +68,14 @@ if (data?.localization) {
 let Chart: ChartConstructor | undefined;
 const liveCharts: ChartInstance[] = [];
 
+/**
+ * Bumped on every render. Chart drawing is async, so a filter change can start a
+ * second draw while the first is still awaiting the Chart.js module — both would
+ * then construct a chart on the same canvas, which Chart.js rejects with "canvas
+ * is already in use". A draw whose generation is stale bails instead.
+ */
+let renderGeneration = 0;
+
 async function loadChartModule(): Promise<void> {
 	if (Chart) { return; }
 	const mod = await import('chart.js/auto') as { default: unknown };
@@ -1161,8 +1169,9 @@ function combinedSeries(d: EfficiencyViewData, weekly: EfficiencyWeekPoint[]): {
 }
 
 async function drawCombinedChart(d: EfficiencyViewData): Promise<void> {
+	const generation = renderGeneration;
 	await loadChartModule();
-	if (!Chart) { return; }
+	if (!Chart || generation !== renderGeneration) { return; }
 	const canvas = document.getElementById('combined-chart') as HTMLCanvasElement | null;
 	if (!canvas) { return; }
 	const weekly = combinedWeekly(d);
@@ -1241,6 +1250,7 @@ function render(): void {
 	const root = document.getElementById('root');
 	if (!root || !data) { return; }
 	setCompactNumbers(data.compactNumbers !== false);
+	renderGeneration += 1;
 	destroyCharts();
 	// Snap back to a real tab if the selected one is no longer shown — e.g. the
 	// Prompt Cache tab after cache data disappeared — so the content and the

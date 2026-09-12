@@ -37,8 +37,17 @@ which collapses the id variants that all mean the same model:
 
 A model whose id matches nothing we recognize — an internal or freshly released
 model — is filed under **Unclassified** and stays selectable. Sessions that name
-no model at all land there too, under the `unknown` model id. Nothing is dropped
-and no vendor is guessed at, so the slices still add up to the unfiltered totals.
+no model at all land there too, under the `unknown` model id — including on a day
+where the same editor also ran sessions that *did* name a model. That day's
+model-less remainder is tracked separately as `editorUnattributed`, so it is not
+quietly folded into whichever models happened to be named alongside it. Nothing
+is dropped and no vendor is guessed at, so the slices still add up to the
+unfiltered totals.
+
+A vendor prefix only matches as a whole token: the next character must be a
+separator or a digit, so `gpt-5`, `gpt5` and `o4-mini` classify while
+`gptish-internal` and `claudefake` stay Unclassified. Sharing an opening
+substring with a known model family is not evidence of who built something.
 
 ## Cost basis
 

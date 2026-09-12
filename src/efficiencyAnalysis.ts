@@ -1339,8 +1339,17 @@ export interface EfficiencyViewData {
 // Combined-chart filters (model vendor × model × editor)
 // ---------------------------------------------------------------------------
 
-/** Sentinel meaning "do not filter on this dimension". */
-export const COMBINED_FILTER_ALL = 'all';
+/**
+ * Sentinel meaning "do not filter on this dimension".
+ *
+ * The empty string is the one value no dimension can ever take: an editor falls
+ * back to {@link COMBINED_UNKNOWN_EDITOR}, a vendor to `Unclassified`, and a
+ * canonical model id to `unknown`. A readable word would not be safe — a custom
+ * endpoint's free-text model part canonicalizes straight through, so
+ * `customendpoint/Acme/all` really does produce the model id `all`, which would
+ * then be indistinguishable from "no filter" and impossible to select.
+ */
+export const COMBINED_FILTER_ALL = '';
 
 /** Editor label used when a session's source could not be determined. */
 export const COMBINED_UNKNOWN_EDITOR = 'Unknown';
@@ -1468,12 +1477,20 @@ function canonicalShares(raw: { [model: string]: number } | undefined): Map<stri
 	return byModel;
 }
 
-/** Token weights (input + output) per canonical model for one `ModelUsage` map. */
-function modelTokenShares(modelUsage: ModelUsage | undefined): Map<string, number> {
+/**
+ * Token weights (input + output) per canonical model for one `ModelUsage` map.
+ *
+ * `unattributedTokens` is the same editor-day's activity that named no model;
+ * it weighs into the unknown bucket so a day mixing attributed and unattributed
+ * sessions does not hand the unattributed share to whichever models happened to
+ * be named alongside it.
+ */
+function modelTokenShares(modelUsage: ModelUsage | undefined, unattributedTokens = 0): Map<string, number> {
 	const raw: { [model: string]: number } = {};
 	for (const [model, usage] of Object.entries(modelUsage ?? {})) {
 		raw[model] = (usage.inputTokens || 0) + (usage.outputTokens || 0);
 	}
+	if (unattributedTokens > 0) { raw[UNKNOWN_MODEL_ID] = (raw[UNKNOWN_MODEL_ID] ?? 0) + unattributedTokens; }
 	return canonicalShares(raw);
 }
 
@@ -1534,7 +1551,7 @@ function foldDayIntoCells(day: DailyTokenStats, deps: EfficiencyDeps, cellFor: C
 		const editorCost = dayCost * (costW.size > 0 ? shareOf(costW, editor, equalShare) : tokenShare);
 
 		const usage = day.editorModelUsage?.[editor];
-		const byTokens = modelTokenShares(usage);
+		const byTokens = modelTokenShares(usage, day.editorUnattributed?.[editor]?.tokens ?? 0);
 		const byCost = modelCostShares(usage, deps);
 		const models = byTokens.size > 0 ? [...byTokens.keys()] : [UNKNOWN_MODEL_ID];
 		for (const model of models) {
@@ -1608,13 +1625,17 @@ export function buildCombinedDaily(
 	const endKey = fmtKey(end);
 	const inWindow = (dayKey: string): boolean => dayKey >= startKey && dayKey <= endKey;
 
-	const byDate = new Map<string, Map<string, CombinedDailyCell>>();
+	// Editor → model nested maps rather than one composite string key: editor
+	// names and model ids are both free text, so any separator character is a
+	// collision (or, if picked to be unlikely, an unreadable one in the source).
+	const byDate = new Map<string, Map<string, Map<string, CombinedDailyCell>>>();
 	const cellFor: CellLookup = (date, editor, model) => {
-		let cells = byDate.get(date);
-		if (!cells) { cells = new Map(); byDate.set(date, cells); }
-		const key = `${editor} ${model}`;
-		let cell = cells.get(key);
-		if (!cell) { cell = emptyCombinedCell(editor, model); cells.set(key, cell); }
+		let editors = byDate.get(date);
+		if (!editors) { editors = new Map(); byDate.set(date, editors); }
+		let models = editors.get(editor);
+		if (!models) { models = new Map(); editors.set(editor, models); }
+		let cell = models.get(model);
+		if (!cell) { cell = emptyCombinedCell(editor, model); models.set(model, cell); }
 		return cell;
 	};
 
@@ -1627,7 +1648,10 @@ export function buildCombinedDaily(
 
 	return Array.from(byDate.entries())
 		.sort(([a], [b]) => a.localeCompare(b))
-		.map(([date, cells]) => ({ date, cells: Array.from(cells.values()) }));
+		.map(([date, editors]) => ({
+			date,
+			cells: Array.from(editors.values()).flatMap(models => Array.from(models.values())),
+		}));
 }
 
 /** Whether a cell survives the current selection. */

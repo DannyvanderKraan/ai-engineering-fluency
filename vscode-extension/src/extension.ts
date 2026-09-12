@@ -4508,6 +4508,14 @@ class CopilotTokenTracker implements vscode.Disposable {
 		for (const model of Object.keys(modelUsage)) {
 			entry.editorModelUsage[editorType][model]!.sessions += 1;
 		}
+		if (Object.keys(modelUsage).length === 0) {
+			// No model named at all: track it separately so per-model views can show
+			// it as unattributed rather than lose it behind the day's named models.
+			if (!entry.editorUnattributed) { entry.editorUnattributed = {}; }
+			if (!entry.editorUnattributed[editorType]) { entry.editorUnattributed[editorType] = { tokens: 0, sessions: 0 }; }
+			entry.editorUnattributed[editorType].tokens += tokens;
+			entry.editorUnattributed[editorType].sessions += 1;
+		}
 		this.addTaskCategoryToDailyEntry(entry, tokens, modelUsage, taskCategoryShares, primaryTaskCategory);
 	}
 

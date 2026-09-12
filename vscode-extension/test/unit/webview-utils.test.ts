@@ -181,6 +181,31 @@ test('getModelVendor: is the model maker, not the billing group', () => {
 	assert.equal(getModelVendor('customendpoint/Acme Corp/mistral-medium-latest'), 'Mistral AI');
 });
 
+test('getCanonicalModelId: an upper-case wrapper still collapses onto the plain id', () => {
+	// The candidate builder strips `copilot/` case-sensitively, so the raw id has
+	// to be lowercased before the lookup, not only after it.
+	assert.equal(getCanonicalModelId('COPILOT/claude-opus-4.8'), getCanonicalModelId('claude-opus-4.8'));
+	assert.equal(getCanonicalModelId('Copilot/GPT-5'), getCanonicalModelId('gpt-5'));
+	assert.equal(getModelVendor('COPILOT/claude-opus-4.8'), 'Anthropic');
+});
+
+test('getModelVendor: a vendor prefix only matches as a whole token', () => {
+	// Otherwise every unrecognized id starting with those letters would be
+	// silently claimed by a vendor — the exact guessing Unclassified prevents.
+	assert.equal(getModelVendor('gptish-internal'), UNCLASSIFIED_VENDOR);
+	assert.equal(getModelVendor('claudefake'), UNCLASSIFIED_VENDOR);
+	assert.equal(getModelVendor('grokking-around'), UNCLASSIFIED_VENDOR);
+	assert.equal(getModelVendor('geminized'), UNCLASSIFIED_VENDOR);
+	// Real ids still classify, whether the prefix is followed by a separator or a digit.
+	assert.equal(getModelVendor('gpt-5'), 'OpenAI');
+	assert.equal(getModelVendor('gpt5'), 'OpenAI');
+	assert.equal(getModelVendor('o4-mini'), 'OpenAI');
+	assert.equal(getModelVendor('claude-sonnet-4.5'), 'Anthropic');
+	assert.equal(getModelVendor('gemini-2.5-pro'), 'Google');
+	assert.equal(getModelVendor('llama3'), 'Meta');
+	assert.equal(getModelVendor('codex'), 'OpenAI');
+});
+
 test('getModelVendor: unrecognized models stay visible as Unclassified rather than being guessed at', () => {
 	assert.equal(getModelVendor('acme-internal-v2'), UNCLASSIFIED_VENDOR);
 	assert.equal(getModelVendor('customendpoint/Acme Corp/acme-internal-v2'), UNCLASSIFIED_VENDOR);
