@@ -36,6 +36,14 @@ const MAX_PAGES = 20;
 /** Overall fetch timeout so a hung connection never blocks the webview indefinitely. */
 const FETCH_TIMEOUT_MS = 20_000;
 
+/**
+ * Matches the wording `withTimeout`'s own `TimeoutError` produces for the same operation/deadline
+ * (see collectMistralCloudSessions), so whichever of the two same-deadline timers — this one's
+ * abort or withTimeout's rejection — happens to settle first, the user sees the same real timeout
+ * message instead of an opaque "Aborted" if the abort path wins.
+ */
+const ABORT_TIMEOUT_MESSAGE = `Mistral cloud sessions fetch timed out after ${FETCH_TIMEOUT_MS}ms`;
+
 /** SecretStorage key under which the user's Mistral API key is stored. */
 export const MISTRAL_API_KEY_SECRET = 'aiEngineeringFluency.mistral.apiKey';
 
@@ -83,7 +91,7 @@ export function requestMistralJson(
       settled = true;
       resolve(result);
     };
-    if (signal?.aborted) { settle({ error: 'Aborted' }); return; }
+    if (signal?.aborted) { settle({ error: ABORT_TIMEOUT_MESSAGE }); return; }
     const url = new URL(path, MISTRAL_API_BASE);
     const req = requestFn(
       {
@@ -126,10 +134,13 @@ export function requestMistralJson(
     // its own it never stops this request. Without destroying the socket here too, a response that
     // keeps trickling bytes without ending would keep accumulating in `data` and holding the
     // connection open indefinitely after the UI has already reported the timeout.
+    // The abort timer and withTimeout's own rejection timer both fire at FETCH_TIMEOUT_MS, so
+    // either can win the race; using the same wording as withTimeout's TimeoutError here means the
+    // user sees a real timeout message either way instead of an opaque "Aborted" if this one wins.
     if (signal) {
       signal.addEventListener('abort', () => {
         req.destroy();
-        settle({ error: 'Aborted' });
+        settle({ error: ABORT_TIMEOUT_MESSAGE });
       }, { once: true });
     }
     attachRequestFailureHandling(req, FETCH_TIMEOUT_MS, (message) => settle({ error: message }));
@@ -275,6 +286,11 @@ async function listAllMistralConversations(
       totalCount = pageResult.totalCount;
       totalIsFromApi = !!pageResult.totalIsFromApi;
     }
+    // An authoritative total that's already been reached means the listing is complete even when
+    // the last page happened to come back exactly `pageSize` long — without this, an exact-page
+    // listing (e.g. total: 100 with a 100-entry first page) would probe one more, unnecessary page,
+    // and an error on that page would misreport an already-complete listing as a partial failure.
+    if (totalIsFromApi && totalCount !== undefined && conversations.length >= totalCount) { break; }
     if ((pageResult.rawCount ?? pageConversations.length) < pageSize) { break; }
     if (page === MAX_PAGES - 1) { hitPageCap = true; }
   }

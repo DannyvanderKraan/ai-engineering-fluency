@@ -188,7 +188,10 @@ test('requestMistralJson: destroys the socket when an abort signal fires', async
 		controller.abort();
 		const result = await resultPromise;
 		assert.equal(destroyed, true, 'expected the socket to be destroyed when the signal aborts');
-		assert.match(result.error ?? '', /abort/i);
+		// A real timeout-worded message (matching withTimeout's own TimeoutError), not an opaque
+		// "Aborted" — see the finding this fixes: whichever of the two same-deadline timers wins the
+		// race, the user should see the same real timeout message either way.
+		assert.match(result.error ?? '', /timed out after \d+ms/i);
 		assert.ok(capturedReq, 'expected a request to have been created');
 	} finally {
 		FakeClientRequest.prototype.destroy = originalDestroy;
@@ -272,6 +275,25 @@ test('collectMistralCloudSessions: stops at a bounded page cap instead of pagina
 	// The page cap cut a listing that still looked full short, so the total must read as larger
 	// than what was actually fetched — otherwise the "N of Total" UI would present it as complete.
 	assert.ok(result.totalCount > result.conversations.length, 'expected the total to signal truncation');
+});
+
+test('collectMistralCloudSessions: stops at an exact-page authoritative total without probing an unnecessary next page', async () => {
+	// The first (and only) page is exactly `pageSize` (100) long, and the API's own total (100)
+	// says that's everything. Without the fix, the loop would still probe a second page (since the
+	// raw count wasn't short of pageSize) purely to discover it's empty/erroring.
+	const exactPage = { data: Array.from({ length: 100 }, (_, i) => conv(`x-${i}`)), total: 100 };
+	let calls = 0;
+	const requestFn = (((_opts: any, callback: (res: http.IncomingMessage) => void) => {
+		calls++;
+		const req = new FakeClientRequest();
+		process.nextTick(() => callback(makeResponse(exactPage)));
+		return req as unknown as http.ClientRequest;
+	}) as unknown) as typeof http.request;
+	const result = await collectMistralCloudSessions('key', { requestFn });
+	assert.equal(calls, 1, 'an authoritative total already reached must not trigger a next-page probe');
+	assert.equal(result.conversations.length, 100);
+	assert.equal(result.totalCount, 100);
+	assert.equal(result.error, '', 'a complete, authoritative listing must not read as a partial failure');
 });
 
 test('collectMistralCloudSessions: trusts an API-reported total that exactly equals the page-cap fetch count', async () => {

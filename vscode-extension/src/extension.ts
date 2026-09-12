@@ -10862,13 +10862,20 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     }
   }
 
-  /** BETA: whether a Mistral API key is currently stored. Sent as initial data to the webview. */
-  private async getMistralCloudSessionsStatus(): Promise<{ apiKeyConfigured: boolean }> {
+  /**
+   * BETA: whether a Mistral API key is currently stored. Sent as initial data to the webview.
+   * Returns undefined (rather than collapsing into `apiKeyConfigured: false`) when the read
+   * itself failed — a rejected SecretStorage.get is not the same as a genuinely missing key, and
+   * treating it as "not configured" would render Connect and risk the user overwriting a key that
+   * is actually still there. Callers should simply omit the status field on undefined, leaving the
+   * webview's last-known state (or its "not yet known" default) alone instead of downgrading it.
+   */
+  private async getMistralCloudSessionsStatus(): Promise<{ apiKeyConfigured: boolean } | undefined> {
     try {
       const key = await this.context.secrets.get(MISTRAL_API_KEY_SECRET);
       return { apiKeyConfigured: !!key };
     } catch {
-      return { apiKeyConfigured: false };
+      return undefined;
     }
   }
 
@@ -10878,13 +10885,24 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
    * this, a status snapshot read moments before a concurrent set/clear could still win a race
    * against the clear/set handler's own, more current, status message.
    */
-  private async getFreshMistralCloudSessionsStatus(): Promise<{ apiKeyConfigured: boolean }> {
+  private async getFreshMistralCloudSessionsStatus(): Promise<{ apiKeyConfigured: boolean } | undefined> {
     const generationBefore = this._mistralCloudRefreshGeneration;
     let status = await this.getMistralCloudSessionsStatus();
     if (this._mistralCloudRefreshGeneration !== generationBefore) {
       status = await this.getMistralCloudSessionsStatus();
     }
     return status;
+  }
+
+  /**
+   * BETA: the `diagnosticDataLoaded` message's optional Mistral status field — an empty object
+   * (which spreads into nothing) when the read failed, rather than synthesizing a false
+   * "not configured" value that would flip the webview to Connect over a key that may still be
+   * there.
+   */
+  private async getMistralCloudSessionsStatusMessageField(): Promise<{ mistralCloudSessionsStatus?: { apiKeyConfigured: boolean } }> {
+    const status = await this.getFreshMistralCloudSessionsStatus();
+    return status ? { mistralCloudSessionsStatus: status } : {};
   }
 
   /**
@@ -10906,8 +10924,16 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     if (!this.diagnosticsPanel || !this.isPanelOpen(this.diagnosticsPanel)) { return; }
     const generation = ++this._mistralCloudRefreshGeneration;
     let apiKey: string | undefined;
-    try { apiKey = await this.context.secrets.get(MISTRAL_API_KEY_SECRET); } catch { apiKey = undefined; }
+    let initialKeyReadFailed = false;
+    try { apiKey = await this.context.secrets.get(MISTRAL_API_KEY_SECRET); } catch { initialKeyReadFailed = true; }
     if (generation !== this._mistralCloudRefreshGeneration || !this.diagnosticsPanel || !this.isPanelOpen(this.diagnosticsPanel)) { return; }
+    if (initialKeyReadFailed) {
+      // A rejected read is not the same as a genuinely absent key — treating it as "no key" would
+      // post the empty/unconfigured result below, which the webview reads as "removed", prompting
+      // the user to re-enter (and potentially overwrite) a key that may still be there.
+      this.postMistralKeyCheckFailedResult();
+      return;
+    }
     if (!apiKey) {
       this._lastMistralCloudSessions = this.buildEmptyMistralCloudSessionsResult();
       this._lastMistralCloudSessionsKeyFingerprint = undefined;
@@ -12112,7 +12138,10 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
         command: "backendStorageInfoLoaded",
         backendStorageInfo,
         githubAuth: githubAuthStatus,
-        mistralCloudSessionsStatus,
+        // Omitted (rather than a synthesized `apiKeyConfigured: false`) when the read failed, so
+        // the webview leaves its last-known/"not yet known" state alone instead of downgrading it
+        // and rendering Connect over a key that may still be there.
+        ...(mistralCloudSessionsStatus ? { mistralCloudSessionsStatus } : {}),
       });
       // BETA: rehydrate a previously fetched conversation listing (kept in memory across panel
       // close/reopen within the same extension host session) so it doesn't disappear until the
@@ -12121,13 +12150,23 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       // window, whose own generation counter this window never sees), so also verify the cached
       // listing's key fingerprint still matches the currently configured key before rehydrating —
       // otherwise drop it rather than show one account's conversations under another's key.
-      if (this._lastMistralCloudSessions && mistralCloudSessionsStatus.apiKeyConfigured) {
+      if (this._lastMistralCloudSessions && mistralCloudSessionsStatus?.apiKeyConfigured) {
+        const generationBeforeFingerprintCheck = this._mistralCloudRefreshGeneration;
         const currentKeyFingerprint = await this.getCurrentMistralApiKeyFingerprint();
-        if (currentKeyFingerprint && currentKeyFingerprint === this._lastMistralCloudSessionsKeyFingerprint) {
+        if (this._mistralCloudRefreshGeneration !== generationBeforeFingerprintCheck) {
+          // Superseded by a concurrent set/clear while this read was in flight — that handler
+          // already posted its own authoritative message; don't risk resurrecting stale data
+          // on top of it.
+        } else if (currentKeyFingerprint && currentKeyFingerprint === this._lastMistralCloudSessionsKeyFingerprint) {
           panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this._lastMistralCloudSessions });
         } else {
           this._lastMistralCloudSessions = undefined;
           this._lastMistralCloudSessionsKeyFingerprint = undefined;
+          // The webview may already be showing this stale listing from an earlier message (e.g. a
+          // previous panel-open rehydration) — the status message above still reports a key
+          // configured (just a different one), so the webview's own "clear on unconfigured" path
+          // never fires; explicitly clear the display instead of leaving it until manual Refresh.
+          panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this.buildEmptyMistralCloudSessionsResult() });
         }
       }
     }
@@ -12186,7 +12225,7 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       // value captured at the top of this method: the pipeline above can take a while, during
       // which the key may have been connected or removed, and a stale snapshot here would
       // overwrite that already-live state with an outdated one.
-      const currentMistralCloudSessionsStatus = await this.getFreshMistralCloudSessionsStatus();
+      const mistralStatusField = await this.getMistralCloudSessionsStatusMessageField();
       panel.webview.postMessage({
         command: "diagnosticDataLoaded",
         report,
@@ -12201,7 +12240,7 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
         skillDescriptions: this._buildSkillDescriptions(),
         toolFamilies: getToolFamilies(),
         otelComparison,
-        mistralCloudSessionsStatus: currentMistralCloudSessionsStatus,
+        ...mistralStatusField,
       });
 
       this.log("✅ Diagnostic data loaded and sent to webview");
