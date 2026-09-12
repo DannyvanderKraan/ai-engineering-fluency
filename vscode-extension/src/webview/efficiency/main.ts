@@ -1181,12 +1181,12 @@ function indexTo100(values: (number | null)[]): (number | null)[] {
  */
 function combinedSeries(d: EfficiencyViewData, weekly: EfficiencyWeekPoint[]): CombinedSeries[] {
 	return [
-		{ label: 'Cost per 1K lines (index)', values: indexTo100(weekly.map(w => w.costPerKloc)), color: cssVar('--vscode-charts-red', '#fb7185'), show: weekly.some(w => w.costPerKloc !== null) },
-		{ label: 'Tokens per session (index)', values: indexTo100(weekly.map(w => w.tokensPerSession)), color: cssVar('--vscode-charts-blue', '#60a5fa'), show: true },
-		{ label: 'Turns per session (index)', values: indexTo100(weekly.map(w => w.turnsPerSession)), color: cssVar('--vscode-charts-purple', '#c37bff'), show: true },
-		{ label: 'Active min per session (index)', values: indexTo100(weekly.map(w => w.activeMinutesPerSession)), color: cssVar('--vscode-charts-yellow', '#fbbf24'), show: weekly.some(w => w.activeMinutesPerSession !== null) },
-		{ label: 'Retry rate (index)', values: indexTo100(weekly.map(w => w.retryRate)), color: cssVar('--vscode-charts-orange', '#ff9f40'), show: d.hasRetry && weekly.some(w => w.retryRate !== null) },
-		{ label: 'Lines changed (output)', values: weekly.map(w => w.loc), color: cssVar('--vscode-charts-green', '#4ade80'), show: weekly.some(w => w.loc > 0), bar: true },
+		{ label: localize('efficiency.combined.seriesCostPerKloc'), values: indexTo100(weekly.map(w => w.costPerKloc)), color: cssVar('--vscode-charts-red', '#fb7185'), show: weekly.some(w => w.costPerKloc !== null) },
+		{ label: localize('efficiency.combined.seriesTokensPerSession'), values: indexTo100(weekly.map(w => w.tokensPerSession)), color: cssVar('--vscode-charts-blue', '#60a5fa'), show: true },
+		{ label: localize('efficiency.combined.seriesTurnsPerSession'), values: indexTo100(weekly.map(w => w.turnsPerSession)), color: cssVar('--vscode-charts-purple', '#c37bff'), show: true },
+		{ label: localize('efficiency.combined.seriesActiveMinutes'), values: indexTo100(weekly.map(w => w.activeMinutesPerSession)), color: cssVar('--vscode-charts-yellow', '#fbbf24'), show: weekly.some(w => w.activeMinutesPerSession !== null) },
+		{ label: localize('efficiency.combined.seriesRetryRate'), values: indexTo100(weekly.map(w => w.retryRate)), color: cssVar('--vscode-charts-orange', '#ff9f40'), show: d.hasRetry && weekly.some(w => w.retryRate !== null) },
+		{ label: localize('efficiency.combined.seriesLoc'), values: weekly.map(w => w.loc), color: cssVar('--vscode-charts-green', '#4ade80'), show: weekly.some(w => w.loc > 0), bar: true },
 	];
 }
 
@@ -1237,7 +1237,7 @@ async function drawCombinedChart(d: EfficiencyViewData): Promise<void> {
 				x: { ticks: { color: fg, maxRotation: 45, autoSkip: true }, grid: { display: false } },
 				y: {
 					position: 'left',
-					title: { display: true, text: 'Index (first week = 100)', color: fg },
+					title: { display: true, text: localize('efficiency.combined.axisIndex'), color: fg },
 					ticks: { color: fg },
 					grid: { color: grid },
 				},
@@ -1245,7 +1245,7 @@ async function drawCombinedChart(d: EfficiencyViewData): Promise<void> {
 					yLoc: {
 						position: 'right' as const,
 						beginAtZero: true,
-						title: { display: true, text: 'Lines changed', color: fg },
+						title: { display: true, text: localize('efficiency.combined.axisLoc'), color: fg },
 						ticks: { color: fg },
 						grid: { display: false },
 					},

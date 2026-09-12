@@ -1098,7 +1098,7 @@ test('buildCombinedDaily: model-less activity is not absorbed by the models name
 		modelUsage: modelUsageOf([['gpt-5', 16_000, 4_000]]),
 		editorUsage: { 'VS Code': { tokens: 30_000, sessions: 2, linesAdded: 90, linesRemoved: 10 } },
 		editorModelUsage: { 'VS Code': modelUsageOf([['gpt-5', 16_000, 4_000]]) },
-		editorUnattributed: { 'VS Code': { tokens: 10_000, sessions: 1 } },
+		editorModelFallback: { 'VS Code': { [UNKNOWN_MODEL_ID]: 10_000 } },
 	})];
 	const points = buildCombinedDaily(days, [], combinedDeps);
 	const week = (model: string) => aggregateCombinedWeekly(points, { ...UNFILTERED_COMBINED, model }, NOW)
@@ -1120,4 +1120,54 @@ test('buildCombinedDaily: model-less activity is not absorbed by the models name
 		listCombinedFacets(points, UNFILTERED_COMBINED).vendors.some(v => v.value === UNCLASSIFIED_VENDOR),
 		'the unattributed share is offered under Unclassified',
 	);
+});
+
+test('buildCombinedDaily: the raw no-model turn key folds into one unattributed bucket', () => {
+	// computeEfficiencyFromTurns writes the bare word 'unknown' for a turn that
+	// named no model. It must land in the same bucket as genuinely model-less
+	// activity, not a second lowercase slice beside it — while a *wrapped* id
+	// that merely ends in "unknown" stays a real, separate model.
+	const days = [day('2026-07-06', {
+		tokens: 20_000, sessions: 2, interactions: 8,
+		modelUsage: modelUsageOf([['customendpoint/Acme/unknown', 8_000, 2_000]]),
+		editorUsage: { 'VS Code': { tokens: 20_000, sessions: 2 } },
+		editorModelUsage: { 'VS Code': modelUsageOf([['customendpoint/Acme/unknown', 8_000, 2_000]]) },
+		editorModelFallback: { 'VS Code': { unknown: 10_000 } },
+	})];
+	const points = buildCombinedDaily(days, [], combinedDeps);
+	const models = listCombinedFacets(points, UNFILTERED_COMBINED).models.map(m => m.value).sort();
+	assert.deepEqual(models, [UNKNOWN_MODEL_ID, 'unknown'].sort());
+
+	const week = (model: string) => aggregateCombinedWeekly(points, { ...UNFILTERED_COMBINED, model }, NOW)
+		.find(w => w.weekKey === '2026-07-06')!;
+	assertClose(week(UNKNOWN_MODEL_ID).tokens, 10_000, 'unattributed tokens');
+	assertClose(week('unknown').tokens, 10_000, 'the custom model named "unknown"');
+});
+
+test('buildCombinedDaily: a session with only turn counters is attributed to those models', () => {
+	// No token breakdown, so it contributes nothing to editorModelUsage — its
+	// volume must follow the models its counters name, not become unattributed.
+	const days = [day('2026-07-06', {
+		tokens: 12_000, sessions: 1, interactions: 5, linesAdded: 40, linesRemoved: 10,
+		modelUsage: {},
+		editorUsage: { 'Claude Code': { tokens: 12_000, sessions: 1, linesAdded: 40, linesRemoved: 10 } },
+		editorModelUsage: { 'Claude Code': {} },
+		editorModelFallback: { 'Claude Code': { 'claude-opus-4.8': 12_000 } },
+	})];
+	const sessions: EfficiencySessionInput[] = [{
+		dayKey: '2026-07-06', editor: 'Claude Code',
+		modelShares: { 'claude-opus-4.8': 1 },
+		modelEditTurns: { 'claude-opus-4.8': 6 }, modelRetries: { 'claude-opus-4.8': 2 },
+		editTurns: 6, retries: 2,
+	}];
+	const points = buildCombinedDaily(days, sessions, combinedDeps);
+	const opus = aggregateCombinedWeekly(points, { ...UNFILTERED_COMBINED, model: 'claude-opus-4.8' }, NOW)
+		.find(w => w.weekKey === '2026-07-06')!;
+	// Volume and behavioural evidence land in the same slice.
+	assertClose(opus.tokens, 12_000, 'tokens');
+	assertClose(opus.sessions, 1, 'sessions');
+	assertClose(opus.loc, 50, 'loc');
+	assertClose(opus.editTurns, 6, 'edit turns');
+	const unattributed = aggregateCombinedWeekly(points, { ...UNFILTERED_COMBINED, model: UNKNOWN_MODEL_ID }, NOW);
+	assert.ok(unattributed.every(w => w.tokens === 0), 'nothing is left unattributed');
 });

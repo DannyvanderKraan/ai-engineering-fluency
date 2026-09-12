@@ -39,15 +39,19 @@ A model whose id matches nothing we recognize — an internal or freshly release
 model — is filed under **Unclassified** and stays selectable. Sessions that name
 no model at all land there too, under the `Unattributed` model id — including on a day
 where the same editor also ran sessions that *did* name a model. That day's
-model-less remainder is tracked separately as `editorUnattributed`, so it is not
-quietly folded into whichever models happened to be named alongside it. Nothing
-is dropped and no vendor is guessed at, so the slices still add up to the
-unfiltered totals.
+model-less remainder is tracked separately as `editorModelFallback`, so it is not
+quietly folded into whichever models happened to be named alongside it. The same
+field carries a session that reported no token breakdown but *did* name models in
+its per-turn counters — its volume follows those models, so a filtered slice never
+shows edit turns without the tokens that produced them. Nothing is dropped and no
+vendor is guessed at, so the slices still add up to the unfiltered totals.
 
 A vendor prefix only matches as a whole token: the next character must be a
 separator or a digit, so `gpt-5`, `gpt5` and `o4-mini` classify while
 `gptish-internal` and `claudefake` stay Unclassified. Sharing an opening
-substring with a known model family is not evidence of who built something.
+substring with a known model family is not evidence of who built something. A
+prefix that already ends in a delimiter (`phi-`, `mai-`, `command-`) is bounded
+by its own last character, so `phi-mini` and `command-r` classify normally.
 
 ## Cost basis
 

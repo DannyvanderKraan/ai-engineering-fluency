@@ -191,15 +191,20 @@ export interface DailyTokenStats {
    */
   modelEfficiency?: DailyModelEfficiency;
   /**
-   * Activity on this day that named no model at all, per editor.
+   * Per-editor model weights for activity `editorModelUsage` cannot describe.
    *
-   * `editorModelUsage` can only describe sessions that reported a model, so on a
-   * day mixing both kinds it silently understates the editor. Recording the
-   * model-less remainder separately keeps it visible (it is what the Efficiency
-   * Combined chart files under "Unclassified") instead of quietly folding it
-   * into whichever models happened to be named that day.
+   * `editorModelUsage` is built from token usage alone, so a session that
+   * reported no token breakdown contributes nothing to it — and on a day mixing
+   * such a session with ordinary ones, its volume would silently be handed to
+   * whichever models happened to be named alongside it. This records where that
+   * volume really belongs: under the model named by the session's per-model turn
+   * counters, or under the `Unattributed` marker when it named no model at all.
+   *
+   * Weights only — the units are tokens, but they are used for apportioning, and
+   * this map is deliberately separate from `editorModelUsage` so cost-by-provider
+   * and the other token views never see synthesized usage.
    */
-  editorUnattributed?: { [editor: string]: { tokens: number; sessions: number } };
+  editorModelFallback?: { [editor: string]: { [model: string]: number } };
 }
 
 /**

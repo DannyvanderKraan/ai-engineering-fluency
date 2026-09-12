@@ -274,6 +274,7 @@ import {
 
 // --- Chart building ---
 import { buildChartData as _buildChartData, getBillingGroup, getPricingSourceForBillingGroup, getPricingSourceForEditor } from '../../src/chartDataBuilder';
+import { UNKNOWN_MODEL_ID } from '../../src/webview/shared/modelUtils';
 
 // --- Time-to-first-token analysis ---
 import { buildTtftBuckets as _buildTtftBuckets, buildTtftModelSeries as _buildTtftModelSeries, type TtftGranularity } from '../../src/ttftAnalysis';
@@ -4230,6 +4231,14 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'efficiency.combined.summaryCaption': l10n.t('efficiency.combined.summaryCaption'),
 			'efficiency.combined.weekColumn': l10n.t('efficiency.combined.weekColumn'),
 			'efficiency.combined.attribution': l10n.t('efficiency.combined.attribution'),
+			'efficiency.combined.seriesCostPerKloc': l10n.t('efficiency.combined.seriesCostPerKloc'),
+			'efficiency.combined.seriesTokensPerSession': l10n.t('efficiency.combined.seriesTokensPerSession'),
+			'efficiency.combined.seriesTurnsPerSession': l10n.t('efficiency.combined.seriesTurnsPerSession'),
+			'efficiency.combined.seriesActiveMinutes': l10n.t('efficiency.combined.seriesActiveMinutes'),
+			'efficiency.combined.seriesRetryRate': l10n.t('efficiency.combined.seriesRetryRate'),
+			'efficiency.combined.seriesLoc': l10n.t('efficiency.combined.seriesLoc'),
+			'efficiency.combined.axisIndex': l10n.t('efficiency.combined.axisIndex'),
+			'efficiency.combined.axisLoc': l10n.t('efficiency.combined.axisLoc'),
 			// HydraFusion Routing section (log viewer) and its Session Steps Overview integration.
 			// Templates with {0} are resolved webview-side by localizeFormat(), so they are passed
 			// through unformatted here.
@@ -4433,7 +4442,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			if (dayKey < cutoffUtcStartKey) { continue; }
 			const dayTokens = (dayRollup.actualTokens > 0 ? dayRollup.actualTokens : dayRollup.tokens);
 			const dailyEntry = this.getOrCreateDailyEntry(dailyStatsMap, dayKey);
-			this.addUsageToDailyEntry(dailyEntry, dayTokens, dayRollup.interactions, editorType, repository, dayRollup.modelUsage, dayRollup.taskCategoryShares, dayRollup.primaryTaskCategory, this.sessionNamesAnyModel(sessionData));
+			this.addUsageToDailyEntry(dailyEntry, dayTokens, dayRollup.interactions, editorType, repository, dayRollup.modelUsage, dayRollup.taskCategoryShares, dayRollup.primaryTaskCategory, this.fallbackModelWeights(sessionData));
 			if (!lastDayKey || dayKey > lastDayKey) { lastDayKey = dayKey; }
 		}
 		if (lastDayKey) {
@@ -4454,7 +4463,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		const dateKey = toLocalDayKey(lastActivity);
 		if (dateKey < cutoffUtcStartKey) { return; }
 		const dailyEntry = this.getOrCreateDailyEntry(dailyStatsMap, dateKey);
-		this.addUsageToDailyEntry(dailyEntry, tokens, sessionData.interactions, editorType, repository, sessionData.modelUsage, sessionData.taskCategoryShares, sessionData.taskCategory, this.sessionNamesAnyModel(sessionData));
+		this.addUsageToDailyEntry(dailyEntry, tokens, sessionData.interactions, editorType, repository, sessionData.modelUsage, sessionData.taskCategoryShares, sessionData.taskCategory, this.fallbackModelWeights(sessionData));
 		this.addModelEfficiencyToDailyEntry(dailyEntry, sessionData);
 		if ((sessionData.linesAdded ?? 0) + (sessionData.linesRemoved ?? 0) > 0) {
 			this.addLocToDailyEntry(dailyEntry, sessionData.linesAdded ?? 0, sessionData.linesRemoved ?? 0, editorType, repository, sessionData.languageUsage);
@@ -4462,13 +4471,14 @@ class CopilotTokenTracker implements vscode.Disposable {
 	}
 
 	/**
-	 * Whether a session names a model anywhere — token usage or per-model turn
-	 * counters. Mirrors `computeModelTokenShares`'s fallback order, so a session
-	 * it can attribute is never also recorded as unattributed.
+	 * Where a session's volume belongs when it contributed nothing to
+	 * `editorModelUsage`: the models its per-model turn counters name, weighted the
+	 * same way `computeModelTokenShares` weights them, or the unattributed marker
+	 * when it named no model at all. Shares sum to 1.
 	 */
-	private sessionNamesAnyModel(sessionData: SessionFileCache): boolean {
-		return Object.keys(sessionData.modelUsage ?? {}).length > 0
-			|| Object.keys(sessionData.usageAnalysis?.modelEfficiency ?? {}).length > 0;
+	private fallbackModelWeights(sessionData: SessionFileCache): { [model: string]: number } {
+		const shares = _computeModelTokenShares(_buildSessionEfficiencyAttribution(sessionData));
+		return shares.size > 0 ? Object.fromEntries(shares) : { [UNKNOWN_MODEL_ID]: 1 };
 	}
 
 	/**
@@ -4510,7 +4520,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		modelUsage: any,
 		taskCategoryShares?: TaskCategoryBreakdown,
 		primaryTaskCategory?: TaskCategory,
-		sessionNamesModel = false
+		fallbackModelWeights?: { [model: string]: number }
 	): void {
 		entry.tokens += tokens;
 		entry.sessions += 1;
@@ -4533,16 +4543,15 @@ class CopilotTokenTracker implements vscode.Disposable {
 		for (const model of Object.keys(modelUsage)) {
 			entry.editorModelUsage[editorType][model]!.sessions += 1;
 		}
-		if (Object.keys(modelUsage).length === 0 && !sessionNamesModel) {
-			// No model named *anywhere* in the session: track it separately so
-			// per-model views can show it as unattributed rather than lose it behind
-			// the day's named models. An empty `modelUsage` alone is not enough —
-			// `computeModelTokenShares` falls back to the per-model turn counters, so
-			// a session with those does get attributed and must not be counted here.
-			if (!entry.editorUnattributed) { entry.editorUnattributed = {}; }
-			if (!entry.editorUnattributed[editorType]) { entry.editorUnattributed[editorType] = { tokens: 0, sessions: 0 }; }
-			entry.editorUnattributed[editorType].tokens += tokens;
-			entry.editorUnattributed[editorType].sessions += 1;
+		if (Object.keys(modelUsage).length === 0 && fallbackModelWeights) {
+			// This session put nothing into `editorModelUsage`, so record where its
+			// volume belongs — under the models its turn counters name, or under the
+			// unattributed marker — rather than let the day's other models absorb it.
+			if (!entry.editorModelFallback) { entry.editorModelFallback = {}; }
+			const target = entry.editorModelFallback[editorType] ?? (entry.editorModelFallback[editorType] = {});
+			for (const [model, share] of Object.entries(fallbackModelWeights)) {
+				target[model] = (target[model] ?? 0) + tokens * share;
+			}
 		}
 		this.addTaskCategoryToDailyEntry(entry, tokens, modelUsage, taskCategoryShares, primaryTaskCategory);
 	}

@@ -260,8 +260,14 @@ export function getModelVendor(model: string): string {
  * only a version or variant separator (or a digit, as in `gpt5`) may follow the
  * prefix. Anything else is a different word, and stays Unclassified.
  */
+const TOKEN_BOUNDARY = /[-._/0-9]/;
+
 function matchesVendorPrefix(canonical: string, prefix: string): boolean {
 	if (!canonical.startsWith(prefix)) { return false; }
+	// A prefix that already ends in a delimiter (`phi-`, `mai-`, `command-`) is
+	// token-bounded by its own last character; demanding another delimiter after
+	// it would reject every real id it exists to match (`phi-mini`, `command-r`).
+	if (TOKEN_BOUNDARY.test(prefix.charAt(prefix.length - 1))) { return true; }
 	if (canonical.length === prefix.length) { return true; }
-	return /[-._/0-9]/.test(canonical.charAt(prefix.length));
+	return TOKEN_BOUNDARY.test(canonical.charAt(prefix.length));
 }

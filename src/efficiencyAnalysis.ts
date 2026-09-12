@@ -1351,6 +1351,13 @@ export interface EfficiencyViewData {
  */
 export const COMBINED_FILTER_ALL = '';
 
+/**
+ * The bare key `computeEfficiencyFromTurns` writes for a turn that named no
+ * model (`turn.model || 'unknown'`). Folded into {@link UNKNOWN_MODEL_ID} so
+ * model-less work lands in one bucket rather than two.
+ */
+const RAW_NO_MODEL_KEY = 'unknown';
+
 /** Editor label used when a session's source could not be determined. */
 export const COMBINED_UNKNOWN_EDITOR = 'Unknown';
 
@@ -1470,7 +1477,12 @@ function canonicalShares(raw: { [model: string]: number } | undefined): Map<stri
 		if (!(value > 0)) { continue; }
 		// The no-model marker is not a model id and must not be canonicalized —
 		// doing so would lowercase it into an ordinary (and collidable) value.
-		const canonical = model === UNKNOWN_MODEL_ID ? UNKNOWN_MODEL_ID : getCanonicalModelId(model);
+		// `computeEfficiencyFromTurns` writes the bare word for a turn with no
+		// model, so that synthetic key folds into the marker as well; a *wrapped*
+		// id like `customendpoint/Acme/unknown` is a real model and is left alone.
+		const canonical = model === UNKNOWN_MODEL_ID || model === RAW_NO_MODEL_KEY
+			? UNKNOWN_MODEL_ID
+			: getCanonicalModelId(model);
 		byModel.set(canonical, (byModel.get(canonical) ?? 0) + value);
 		total += value;
 	}
@@ -1482,17 +1494,23 @@ function canonicalShares(raw: { [model: string]: number } | undefined): Map<stri
 /**
  * Token weights (input + output) per canonical model for one `ModelUsage` map.
  *
- * `unattributedTokens` is the same editor-day's activity that named no model;
- * it weighs into the unknown bucket so a day mixing attributed and unattributed
- * sessions does not hand the unattributed share to whichever models happened to
- * be named alongside it.
+ * `fallback` carries the same editor-day's weights for activity `modelUsage`
+ * could not describe — a session that reported no token breakdown, whether it
+ * named a model in its turn counters or no model at all. Folding it in here is
+ * what stops a day mixing both kinds from handing that volume to whichever
+ * models happened to be named alongside it.
  */
-function modelTokenShares(modelUsage: ModelUsage | undefined, unattributedTokens = 0): Map<string, number> {
+function modelTokenShares(
+	modelUsage: ModelUsage | undefined,
+	fallback: { [model: string]: number } | undefined,
+): Map<string, number> {
 	const raw: { [model: string]: number } = {};
 	for (const [model, usage] of Object.entries(modelUsage ?? {})) {
 		raw[model] = (usage.inputTokens || 0) + (usage.outputTokens || 0);
 	}
-	if (unattributedTokens > 0) { raw[UNKNOWN_MODEL_ID] = (raw[UNKNOWN_MODEL_ID] ?? 0) + unattributedTokens; }
+	for (const [model, weight] of Object.entries(fallback ?? {})) {
+		if (weight > 0) { raw[model] = (raw[model] ?? 0) + weight; }
+	}
 	return canonicalShares(raw);
 }
 
@@ -1553,7 +1571,7 @@ function foldDayIntoCells(day: DailyTokenStats, deps: EfficiencyDeps, cellFor: C
 		const editorCost = dayCost * (costW.size > 0 ? shareOf(costW, editor, equalShare) : tokenShare);
 
 		const usage = day.editorModelUsage?.[editor];
-		const byTokens = modelTokenShares(usage, day.editorUnattributed?.[editor]?.tokens ?? 0);
+		const byTokens = modelTokenShares(usage, day.editorModelFallback?.[editor]);
 		const byCost = modelCostShares(usage, deps);
 		const models = byTokens.size > 0 ? [...byTokens.keys()] : [UNKNOWN_MODEL_ID];
 		for (const model of models) {

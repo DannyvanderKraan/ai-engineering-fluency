@@ -211,6 +211,14 @@ test('l10n: every Efficiency Combined-filter key resolves in English', () => {
 		"efficiency.combined.summaryCaption": "Combined chart values by week for the current selection",
 		"efficiency.combined.weekColumn": "Week",
 		"efficiency.combined.attribution": "Per-model and per-vendor numbers are attributed, not directly observed: token totals and counters are exact per model, while session duration, lines of code, applies, interactions and the session denominator are split by each model’s share of the session’s tokens. Cost is a Copilot-equivalent estimate for comparison across filters, not billed spend — the model vendor (who built the model) and the billing source (who charges for the call) are different things. Models we cannot place appear under Unclassified rather than being guessed at or dropped.",
+		"efficiency.combined.seriesCostPerKloc": "Cost per 1K lines (index)",
+		"efficiency.combined.seriesTokensPerSession": "Tokens per session (index)",
+		"efficiency.combined.seriesTurnsPerSession": "Turns per session (index)",
+		"efficiency.combined.seriesActiveMinutes": "Active min per session (index)",
+		"efficiency.combined.seriesRetryRate": "Retry rate (index)",
+		"efficiency.combined.seriesLoc": "Lines changed (output)",
+		"efficiency.combined.axisIndex": "Index (first week = 100)",
+		"efficiency.combined.axisLoc": "Lines changed",
 	};
 	for (const [key, text] of Object.entries(expected)) {
 		assert.equal(t(key), text, `English value for ${key}`);
@@ -240,6 +248,14 @@ test('l10n: every Efficiency Combined-filter key resolves in zh-cn', () => {
 			"efficiency.combined.summaryCaption": "当前选择下按周列出的组合图表数值",
 			"efficiency.combined.weekColumn": "周",
 			"efficiency.combined.attribution": "按模型和厂商划分的数值是归因结果，而非直接观测：令牌总量和计数器按模型精确统计，而会话时长、代码行数、应用次数、交互次数以及会话分母则按各模型在会话令牌中的占比拆分。成本是用于跨筛选条件比较的 Copilot 等效估算值，并非实际账单支出——模型厂商（谁构建了模型）与计费来源（谁为该调用收费）是不同的概念。无法归类的模型会显示为 Unclassified，而不会被猜测归类或被丢弃。",
+			"efficiency.combined.seriesCostPerKloc": "每千行代码成本（指数）",
+			"efficiency.combined.seriesTokensPerSession": "每会话令牌数（指数）",
+			"efficiency.combined.seriesTurnsPerSession": "每会话轮次数（指数）",
+			"efficiency.combined.seriesActiveMinutes": "每会话活跃分钟数（指数）",
+			"efficiency.combined.seriesRetryRate": "重试率（指数）",
+			"efficiency.combined.seriesLoc": "代码行变更量（产出）",
+			"efficiency.combined.axisIndex": "指数（首周 = 100）",
+			"efficiency.combined.axisLoc": "代码行变更量",
 		};
 		for (const [key, text] of Object.entries(expected)) {
 			assert.equal(t(key), text, `zh-cn value for ${key}`);

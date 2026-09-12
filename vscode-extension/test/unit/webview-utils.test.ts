@@ -221,6 +221,13 @@ test('getModelVendor: a vendor prefix only matches as a whole token', () => {
 	assert.equal(getModelVendor('gemini-2.5-pro'), 'Google');
 	assert.equal(getModelVendor('llama3'), 'Meta');
 	assert.equal(getModelVendor('codex'), 'OpenAI');
+	// A prefix that already ends in a delimiter is bounded by its own last
+	// character — requiring another one would reject every id it exists to match.
+	assert.equal(getModelVendor('phi-mini'), 'Microsoft');
+	assert.equal(getModelVendor('phi-4'), 'Microsoft');
+	assert.equal(getModelVendor('mai-code-1-flash'), 'Microsoft');
+	assert.equal(getModelVendor('command-r'), 'Cohere');
+	assert.equal(getModelVendor('command-a'), 'Cohere');
 });
 
 test('getModelVendor: unrecognized models stay visible as Unclassified rather than being guessed at', () => {
