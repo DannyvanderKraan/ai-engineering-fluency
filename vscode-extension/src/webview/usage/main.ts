@@ -2426,7 +2426,13 @@ function reportTabOpened(tab: string): void {
  * to the button itself. The host applies its own cooldown and cross-window lock, so a click is a
  * request to revalidate, not a guarantee of an immediate API call.
  */
+let githubActivityRefreshWired = false;
+
 function wireGitHubActivityRefresh(): void {
+	// renderLayout() runs again on every stats update, so without this guard each rerender would
+	// add another document-level listener and one click would post N identical messages.
+	if (githubActivityRefreshWired) { return; }
+	githubActivityRefreshWired = true;
 	document.addEventListener('click', (event) => {
 		const target = event.target as HTMLElement | null;
 		if (!target?.closest(`[data-action="${REFRESH_GITHUB_ACTIVITY_ACTION}"]`)) { return; }
@@ -2567,11 +2573,13 @@ function repoPrSnapshotFreshnessHtml(data: RepoPrStatsResult): string {
 function renderReposPrContent(data: RepoPrStatsResult): string {
 	const sinceDate = escapeHtml(new Date(data.since).toLocaleDateString());
 	if (data.error) {
-		return `
+		// Keep the freshness banner here too: it carries the Refresh now action, and the error state
+		// is exactly when a user wants to retry without hunting for another way to trigger one.
+		return `${repoPrSnapshotFreshnessHtml(data)}
 			<div style="margin-top:12px; padding:12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; font-size:12px; color:var(--text-secondary);">
 				<strong>⚠️ Failed to load repository PR activity</strong><br/>
 				${data.error}<br/>
-				Switch to another tab and back to retry — details are in the extension Output channel.
+				${escapeHtml(localize('usage.githubActivity.retryHint'))}
 			</div>`;
 	}
 	if (!data.authenticated) {

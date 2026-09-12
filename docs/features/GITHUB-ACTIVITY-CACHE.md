@@ -81,9 +81,12 @@ eviction.
   the lock alive so a slow API pass is never mistaken for a stale lock.
 - Opening a tab serves the cached snapshot immediately (stale-while-revalidate) and then asks for a
   refresh, which only happens if the snapshot is actually due.
-- The freshness banner on both tabs offers **Refresh now**. It bypasses the hourly TTL but still
-  respects the cross-window lock and a short cooldown
-  (`GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS`), so repeated clicking cannot spend the rate limit.
+- The freshness banner on both tabs offers **Refresh now** — including on the error state, which is
+  exactly when a retry is wanted. It bypasses the hourly TTL but still respects the cross-window
+  lock and a short cooldown (`GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS`), so repeated clicking
+  cannot spend the rate limit. The cooldown is enforced twice: per window in memory, and — once the
+  lock is held — against the snapshot's own `fetchedAt`, which is what makes it reach across
+  windows that cannot see each other's clicks.
 
 A refresh is incremental: the authoritative listing still runs (it is the only way to discover new,
 changed, removed, archived and moved entities), but per-entity work is only redone for entities that
@@ -100,10 +103,17 @@ result is marked partial.
 | Situation | Effect |
 |---|---|
 | Listing completed | Records not in the listing are removed; totals are complete |
-| Listing hit its page cap (5 pages) | Records retained; repo/tab marked partial (lower bound) |
-| Listing errored or timed out | Records retained; per-repo error shown; tab marked partial |
+| Listing hit its page cap (5 pages) | Records retained for the cache; repo/tab marked partial (lower bound) |
+| Listing errored or timed out | Pages collected before the failure are still counted; records retained; per-repo error shown; tab marked partial |
 | Cloud-agent detail budget exhausted | Undetailed tasks stay "owed"; tab marked partial |
-| Cloud-agent detail call failed | No aggregate stored for that task — a failure is never remembered as zero usage; retried next pass, with its consecutive-failure count |
+| Cloud-agent detail call failed | No aggregate stored for that task — a failure is never remembered as zero usage; the task's row and the tab are marked partial; retried next pass, with its consecutive-failure count |
+| Both listings disagree about a task's repository | The repo-scoped listing wins the row attribution, but the task is treated as uncacheable for that pass — a stale aggregate can never land on the wrong repository |
+
+**Retained records are cached, not counted.** A record kept only because the listing was incomplete
+stays in the cache so the next pass can reuse it, but it is deliberately left out of the numbers on
+screen: it might name a PR that has since been deleted, and counting it would turn the advertised
+lower bound into a possible overcount. A retained record whose PR has aged out of the 30-day window
+is dropped outright rather than carried forward.
 
 The banner states which of these applies: *not fetched yet*, *updated N ago / next refresh at …*,
 *revalidating* (TTL passed, showing the cached snapshot), and an explicit **partial data — the
@@ -116,7 +126,23 @@ figures below are a lower bound** line with the reason.
 - **Sign out from GitHub** additionally purges the signing-out identity's scope specifically, so
   nothing can serve that account's data afterwards.
 
-Neither touches the session-parsing caches' lock files or another window's coordination state.
+Both also drop this window's in-memory snapshots *and* the retained webview-replay messages, so
+recreating the Usage Analysis panel cannot repopulate it from data that was just discarded. The
+cleanup covers the `*.snapshot.json.<pid>.tmp` files an interrupted atomic write can leave behind,
+which hold a complete envelope.
+
+Neither touches the session-parsing caches' lock files or another window's coordination state. One
+known limit: a *different* VS Code window that already holds an in-memory snapshot keeps showing it
+until its next revalidation notices the file is gone — the stale display is transient, but it is not
+invalidated across windows synchronously.
+
+### Identity changes mid-flight
+
+The in-memory snapshots are tagged with the scope they were collected under. Switching account or
+Enterprise host discards them rather than publishing the previous identity's repository names and
+counts to the new session. A collection pass that spans a sign-out, a switch or a Clear Cache has
+its result discarded instead of written — otherwise it would recreate a deliberately deleted file
+under an identity that is no longer signed in.
 
 ## Migration
 

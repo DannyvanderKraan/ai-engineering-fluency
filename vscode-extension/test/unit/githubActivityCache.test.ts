@@ -229,3 +229,36 @@ test('evictInactiveGitHubActivityScopes never evicts the active scope', async ()
 		assert.equal((await fs.promises.readdir(dir)).length, 2);
 	});
 });
+
+// --- Review follow-up (PR #2073): abandoned atomic-write temp files ----------
+
+test('cleanup also reclaims the temp files an interrupted atomic write leaves behind', async () => {
+	// Both caches write `<name>.snapshot.json.<pid>.tmp` and rename it into place. A host that dies
+	// between the two leaves a complete private envelope on disk; Clear Cache and sign-out must not
+	// report success while that copy survives.
+	await withTempDir(async (dir) => {
+		await fs.promises.writeFile(path.join(dir, `repoprs_${SCOPE_A}.snapshot.json`), '{}', 'utf8');
+		await fs.promises.writeFile(path.join(dir, `repoprs_${SCOPE_A}.snapshot.json.4242.tmp`), '{}', 'utf8');
+		await fs.promises.writeFile(path.join(dir, `agenttasks_${SCOPE_B}.snapshot.json.99.tmp`), '{}', 'utf8');
+
+		const listed = await listGitHubActivityCacheFiles(dir);
+		assert.equal(listed.length, 3);
+		assert.deepEqual([...new Set(listed.map((f) => f.scope))].sort(), [SCOPE_A, SCOPE_B]);
+
+		// A scoped (sign-out) clear takes that identity's temp file with it.
+		assert.equal(await deleteGitHubActivityCacheFiles(dir, SCOPE_A), 2);
+		assert.deepEqual(await fs.promises.readdir(dir), [`agenttasks_${SCOPE_B}.snapshot.json.99.tmp`]);
+
+		// And a full (Clear Cache) clear leaves nothing behind at all.
+		assert.equal(await deleteGitHubActivityCacheFiles(dir), 1);
+		assert.deepEqual(await fs.promises.readdir(dir), []);
+	});
+});
+
+test('a temp file is attributed to its own scope, not to a scope named after the pid', async () => {
+	await withTempDir(async (dir) => {
+		await fs.promises.writeFile(path.join(dir, `repoprs_${SCOPE_A}.snapshot.json.7.tmp`), '{}', 'utf8');
+		const [file] = await listGitHubActivityCacheFiles(dir);
+		assert.equal(file.scope, SCOPE_A);
+	});
+});

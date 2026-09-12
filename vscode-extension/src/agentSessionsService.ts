@@ -585,8 +585,13 @@ export interface AgentSessionsCollection extends AgentSessionsResult {
 
 /** Timestamp used to spend the detail budget on the most recently active tasks first. */
 function taskSortAt(task: any): number {
-	const stamp = Date.parse(task?.updated_at ?? task?.created_at ?? '');
-	return Number.isFinite(stamp) ? stamp : 0;
+	// Fall back to `created_at` whenever `updated_at` is missing *or* unparseable — a task with a
+	// malformed timestamp is uncacheable and so always needs a detail call, which makes losing its
+	// newest-first priority (and being dropped by the budget) the worst possible outcome for it.
+	const updated = Date.parse(task?.updated_at ?? '');
+	if (Number.isFinite(updated)) { return updated; }
+	const created = Date.parse(task?.created_at ?? '');
+	return Number.isFinite(created) ? created : 0;
 }
 
 /**
@@ -766,6 +771,15 @@ async function collectAccountTasks(
 		upsertRow(rows, key, resolved?.owner ?? '', resolved?.repo ?? '', 'account');
 		if (existingCandidate) {
 			if (existingCandidate.discovery !== 'account') { existingCandidate.discovery = 'both'; }
+			// The two listings disagree about which repository this task belongs to — it moved, or
+			// was re-attributed once its bare repository ID resolved. The repo-scoped listing is the
+			// more specific source, so the row attribution stays as it is, but the cached aggregate
+			// under the contested key can no longer be trusted to describe current usage. Marking
+			// the candidate uncacheable forces a fresh detail fetch and keeps the stale aggregate
+			// from being folded into (or re-persisted for) the wrong repository's row.
+			if (resolved && repoKey(resolved.owner, resolved.repo) !== existingCandidate.key) {
+				existingCandidate.updatedAt = '';
+			}
 			continue;
 		}
 		candidates.set(task.id, {
@@ -885,6 +899,15 @@ export async function collectAgentSessions(options: CollectAgentSessionsOptions)
 	}
 	const outcomes = await foldTaskDetails(selected, options, rows, reportProgress);
 
+	// A selected task whose detail call failed contributed nothing, so its row's totals are short
+	// even though it was counted as scanned. Mark those rows (and the whole result) partial now
+	// that the outcomes are known — before this, a repo could show an under-count as complete.
+	const failed = selected.filter((candidate) => outcomes.get(candidate.cacheKey) === undefined);
+	for (const candidate of failed) {
+		const row = rows.get(candidate.key);
+		if (row) { row.partial = true; }
+	}
+
 	const listingComplete = workspaceComplete && account.available && account.complete;
 	const repos = sortRepoRows(Array.from(rows.values()));
 	return {
@@ -898,8 +921,9 @@ export async function collectAgentSessions(options: CollectAgentSessionsOptions)
 		fetchedAt: new Date().toISOString(),
 		accountTasksAvailable: account.available,
 		accountTasksError: account.error,
-		// Lower bound whenever the detail budget was short OR a listing did not enumerate fully.
-		partial: needsDetail.length > selected.length || !listingComplete,
+		// Lower bound whenever the detail budget was short, a detail call failed, or a listing did
+		// not enumerate fully.
+		partial: needsDetail.length > selected.length || failed.length > 0 || !listingComplete,
 		taskRecords: buildTaskRecords(candidates, cachedByKey, new Set(selected.map(c => c.cacheKey)), outcomes),
 		listingComplete,
 	};
@@ -954,28 +978,38 @@ function buildTaskRecords(
 	const records: AgentTaskRecord[] = [];
 	for (const candidate of candidates.values()) {
 		if (candidate.updatedAt === '') { continue; }
-		const cached = cachedByKey.get(candidate.cacheKey);
-		const stillValid = cached?.updatedAt === candidate.updatedAt;
-		const previousAttempts = stillValid ? (cached?.detailAttempts ?? 0) : 0;
-		const wasAttempted = attempted.has(candidate.cacheKey);
-		const fresh = wasAttempted ? outcomes.get(candidate.cacheKey) : undefined;
-		const aggregate = fresh ?? (stillValid && cached?.detailOk ? cached.aggregate : undefined);
-		const failedNow = wasAttempted && fresh === undefined;
-		records.push({
-			key: candidate.cacheKey,
-			id: candidate.id,
-			repoKey: candidate.key,
-			owner: candidate.owner,
-			repo: candidate.repo,
-			discovery: candidate.discovery,
-			updatedAt: candidate.updatedAt,
-			aggregate,
-			detailOk: aggregate !== undefined,
-			// A fresh success resets the count; a failure increments it; a task the budget never
-			// reached keeps the count it already had, so its retry history is not silently lost.
-			detailAttempts: aggregate !== undefined ? 0 : previousAttempts + (failedNow ? 1 : 0),
-			lastSeenAt: now,
-		});
+		records.push(buildTaskRecord(candidate, cachedByKey.get(candidate.cacheKey), attempted, outcomes, now));
 	}
 	return records;
+}
+
+/** The record for one task: what is known about its detail now, and what was known before. */
+function buildTaskRecord(
+	candidate: AgentTaskCandidate,
+	cached: AgentTaskRecord | undefined,
+	attempted: Set<string>,
+	outcomes: Map<string, AgentTaskAggregate | undefined>,
+	now: string,
+): AgentTaskRecord {
+	const stillValid = cached?.updatedAt === candidate.updatedAt;
+	const previousAttempts = stillValid ? (cached?.detailAttempts ?? 0) : 0;
+	const wasAttempted = attempted.has(candidate.cacheKey);
+	const fresh = wasAttempted ? outcomes.get(candidate.cacheKey) : undefined;
+	const aggregate = fresh ?? (stillValid && cached?.detailOk ? cached.aggregate : undefined);
+	const failedNow = wasAttempted && fresh === undefined;
+	return {
+		key: candidate.cacheKey,
+		id: candidate.id,
+		repoKey: candidate.key,
+		owner: candidate.owner,
+		repo: candidate.repo,
+		discovery: candidate.discovery,
+		updatedAt: candidate.updatedAt,
+		aggregate,
+		detailOk: aggregate !== undefined,
+		// A fresh success resets the count; a failure increments it; a task the budget never
+		// reached keeps the count it already had, so its retry history is not silently lost.
+		detailAttempts: aggregate !== undefined ? 0 : previousAttempts + (failedNow ? 1 : 0),
+		lastSeenAt: now,
+	};
 }

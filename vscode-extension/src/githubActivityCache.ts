@@ -34,8 +34,16 @@ import * as path from 'path';
  */
 export const GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS = 60_000;
 
-/** Filenames written by the GitHub-activity caches, for bulk clearing and scope eviction. */
-const GITHUB_ACTIVITY_CACHE_FILE_PATTERN = /^(repoprs|agenttasks)_(.+)\.snapshot\.json$/;
+/**
+ * Filenames written by the GitHub-activity caches, for bulk clearing and scope eviction.
+ *
+ * The optional `.<pid>.tmp` tail matters: both caches write atomically by creating
+ * `<name>.snapshot.json.<pid>.tmp` and renaming it into place. If the extension host dies between
+ * the two, that temp file is left behind holding a **complete** private envelope. Matching only the
+ * final name would let Clear Cache and sign-out report success while that copy survived on disk,
+ * outside the advertised cleanup and outside the storage budget.
+ */
+const GITHUB_ACTIVITY_CACHE_FILE_PATTERN = /^(repoprs|agenttasks)_(.+?)\.snapshot\.json(?:\.\d+\.tmp)?$/;
 
 /**
  * Normalize a GitHub host into a stable, filename-safe slug. `api.github.com`, `github.com` and

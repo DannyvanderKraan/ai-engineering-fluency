@@ -752,8 +752,14 @@ export function summarizeRepoPrRecords(records: readonly RepoPrRecord[], userLog
 
 /** Outcome of revalidating one repo's cached PR records against a fresh listing. */
 export interface RepoPrReconciliation {
-	/** The records to serve and to write back to the cache. */
+	/** Every record to write back to the cache: the listed ones plus any retained unverified. */
 	records: RepoPrRecord[];
+	/**
+	 * Only the records the current listing actually enumerated. This is what the panel counts:
+	 * including a retained-unverified record would let a PR that has since been deleted inflate
+	 * the total, which would make "lower bound" a lie in the one direction that matters.
+	 */
+	listed: RepoPrRecord[];
 	/** How many cached records were reused because their `updated_at` matched exactly. */
 	reused: number;
 	/** How many records were (re)computed: new, changed, or previously uncacheable PRs. */
@@ -771,27 +777,40 @@ export interface RepoPrReconciliation {
  * - A PR that is new, whose timestamp moved, or whose timestamp is missing/invalid on either side
  *   is **recomputed** from the listing payload.
  * - A cached record the listing did not mention is removed **only when `listingComplete`**. On an
- *   error, a timeout or a capped listing, absence proves nothing, so the record is retained and the
- *   caller marks the repo `partial` — a lower bound, never a silently shortened total.
+ *   error, a timeout or a capped listing, absence proves nothing, so the record is *retained for the
+ *   cache* — but it is deliberately left out of `listed`, so it can never inflate the count the
+ *   panel shows. A retained record that has aged out of the window is dropped outright: keeping it
+ *   would eventually have the cache asserting membership of a window the PR no longer belongs to.
+ *
+ * @param options.since Start of the window being counted; retained records older than this are
+ *   dropped rather than carried forward. Omit only when the caller has no window (tests).
  */
 export function reconcileRepoPrRecords(
 	cached: readonly RepoPrRecord[] | undefined,
 	listedPrs: readonly any[],
-	options: { listingComplete: boolean },
+	options: { listingComplete: boolean; since?: Date },
 ): RepoPrReconciliation {
 	const cachedByNumber = indexCachedPrRecords(cached);
 	const listed = projectListedPrs(listedPrs, cachedByNumber);
+	const records = [...listed.records];
 
 	let removed = 0;
 	let retainedUnverified = 0;
 	for (const [number, record] of cachedByNumber) {
 		if (listed.seen.has(number)) { continue; }
-		if (options.listingComplete) { removed++; continue; }
-		listed.records.push(record);
+		if (options.listingComplete || isOutsideWindow(record, options.since)) { removed++; continue; }
+		records.push(record);
 		retainedUnverified++;
 	}
 
-	return { records: listed.records, reused: listed.reused, recomputed: listed.recomputed, removed, retainedUnverified };
+	return { records, listed: listed.records, reused: listed.reused, recomputed: listed.recomputed, removed, retainedUnverified };
+}
+
+/** Whether a cached record's PR was created before the window currently being counted. */
+function isOutsideWindow(record: RepoPrRecord, since: Date | undefined): boolean {
+	if (!since) { return false; }
+	const created = Date.parse(record.createdAt);
+	return Number.isFinite(created) && created < since.getTime();
 }
 
 /** Walk the fresh listing, reusing each cached record whose timestamp still matches exactly. */
@@ -808,7 +827,12 @@ function projectListedPrs(
 		if (!fresh) {
 			// Uncacheable (no number or no valid timestamp): count it this pass without caching it.
 			const uncacheable = projectRepoPr(pr);
-			if (uncacheable) { records.push(uncacheable); recomputed++; }
+			if (!uncacheable) { continue; }
+			// Still mark a real PR number as seen. The listing has spoken for this PR, so its stale
+			// cached record must not *also* be retained — that would count the same PR twice.
+			if (uncacheable.number >= 0) { seen.add(uncacheable.number); }
+			records.push(uncacheable);
+			recomputed++;
 			continue;
 		}
 		seen.add(fresh.number);

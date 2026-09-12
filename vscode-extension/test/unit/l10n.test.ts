@@ -357,8 +357,9 @@ test('l10n: GitHub activity freshness banner labels resolve in English', () => {
 		'usage.githubActivity.revalidatingBody': 'Showing the cached snapshot from {0} while it is refreshed.',
 		'usage.githubActivity.updated': '🕒 Updated {0} · next refresh after {1}.',
 		'usage.githubActivity.unknownNextRefresh': 'unknown',
-		'usage.githubActivity.cachePolicy': 'Cached and refreshed at most once an hour, by a single VS Code window, to keep GitHub API usage low.',
+		'usage.githubActivity.cachePolicy': 'Automatically revalidated at most once an hour, by a single VS Code window, to keep GitHub API usage low — Refresh now asks for one straight away.',
 		'usage.githubActivity.partialTitle': 'Partial data — the figures below are a lower bound.',
+		'usage.githubActivity.retryHint': 'Use Refresh now above to retry — details are in the extension Output channel.',
 		'usage.githubActivity.partialRepoPrs': 'At least one repository listing did not complete (an error, a timeout, or the page cap), so some pull requests in the window are not counted.',
 		'usage.githubActivity.partialAgentTasks': 'Some tasks were not detailed this pass — the task-detail budget was exhausted, or a task listing did not complete.',
 	};
@@ -379,8 +380,9 @@ test('l10n: GitHub activity freshness banner labels resolve in zh-cn', () => {
 			'usage.githubActivity.revalidatingBody': '刷新期间显示 {0} 的缓存快照。',
 			'usage.githubActivity.updated': '🕒 更新于 {0} · 下次刷新在 {1} 之后。',
 			'usage.githubActivity.unknownNextRefresh': '未知',
-			'usage.githubActivity.cachePolicy': '由单个 VS Code 窗口缓存并最多每小时刷新一次，以降低 GitHub API 用量。',
+			'usage.githubActivity.cachePolicy': '由单个 VS Code 窗口最多每小时自动重新校验一次，以降低 GitHub API 用量 —「立即刷新」会马上请求一次。',
 			'usage.githubActivity.partialTitle': '数据不完整 — 下方数字为下限值。',
+			'usage.githubActivity.retryHint': '使用上方的「立即刷新」重试 — 详细信息见扩展的输出通道。',
 			'usage.githubActivity.partialRepoPrs': '至少有一个仓库的列表未能完整枚举（出错、超时或达到分页上限），因此时间窗口内的部分拉取请求未被计入。',
 			'usage.githubActivity.partialAgentTasks': '本次未获取全部任务的明细 — 任务明细预算已用尽，或任务列表未能完整枚举。',
 		};

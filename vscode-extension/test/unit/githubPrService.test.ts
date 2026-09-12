@@ -739,3 +739,57 @@ test('fetchRepoPrs reports an incomplete listing on an error', async () => {
 	assert.equal(result.complete, false);
 	assert.ok(result.error);
 });
+
+// --- Review follow-ups (PR #2073) -------------------------------------------
+
+test('reconcileRepoPrRecords keeps retained records out of the counted set', () => {
+	// An incomplete listing retains a cached PR so the next pass can still reuse it, but that PR
+	// might have been deleted — counting it would turn the advertised lower bound into an overcount.
+	const cached = [toRepoPrRecord(rawPr({ number: 1 }))!, toRepoPrRecord(rawPr({ number: 2 }))!];
+	const result = reconcileRepoPrRecords(cached, [rawPr({ number: 1 })], { listingComplete: false });
+	assert.deepEqual(result.listed.map((r) => r.number), [1], 'only the listing is counted');
+	assert.deepEqual(result.records.map((r) => r.number).sort(), [1, 2], 'both are still cached');
+	assert.equal(summarizeRepoPrRecords(result.listed).totalPrs, 1);
+});
+
+test('reconcileRepoPrRecords does not count an uncacheable PR twice', () => {
+	// The listing reports PR #1 with a broken timestamp, so it cannot be cached — but it has been
+	// spoken for, and an incomplete listing must not also retain the older cached record for it.
+	const cached = [toRepoPrRecord(rawPr({ number: 1, title: 'Cached' }))!];
+	const result = reconcileRepoPrRecords(cached, [rawPr({ number: 1, updated_at: 'nope' })], { listingComplete: false });
+	assert.equal(result.listed.length, 1);
+	assert.equal(result.records.length, 1);
+	assert.equal(result.retainedUnverified, 0);
+});
+
+test('reconcileRepoPrRecords drops a retained record that has aged out of the window', () => {
+	const since = new Date('2026-08-01T00:00:00Z');
+	const inWindow = toRepoPrRecord(rawPr({ number: 1, created_at: '2026-08-10T00:00:00Z' }))!;
+	const expired = toRepoPrRecord(rawPr({ number: 2, created_at: '2026-06-01T00:00:00Z' }))!;
+	const result = reconcileRepoPrRecords([inWindow, expired], [], { listingComplete: false, since });
+	assert.deepEqual(result.records.map((r) => r.number), [1], 'the expired PR is not carried forward');
+	assert.equal(result.removed, 1);
+	assert.equal(result.retainedUnverified, 1);
+});
+
+test('reconcileRepoPrRecords still retains an in-window record with no since given', () => {
+	const cached = [toRepoPrRecord(rawPr({ number: 1, created_at: '2020-01-01T00:00:00Z' }))!];
+	const result = reconcileRepoPrRecords(cached, [], { listingComplete: false });
+	assert.equal(result.retainedUnverified, 1);
+});
+
+test('fetchRepoPrs returns the pages it collected before an error, not nothing', () => {
+	// Those PRs are real; discarding them would understate the repo for no gain.
+	const since = new Date('2026-01-01T00:00:00Z');
+	let page = 0;
+	return fetchRepoPrs('rajbos', 'repo', 'token', since, async () => {
+		page++;
+		return page === 1
+			? { prs: Array.from({ length: 100 }, (_, i) => rawPr({ number: i, created_at: '2026-08-10T00:00:00Z' })) }
+			: { prs: [], statusCode: 500, error: 'boom' };
+	}).then((result) => {
+		assert.equal(result.prs.length, 100);
+		assert.equal(result.complete, false);
+		assert.ok(result.error);
+	});
+});

@@ -43,6 +43,7 @@ export interface WebviewLocalization {
 	'usage.githubActivity.cachePolicy': string;
 	'usage.githubActivity.partialTitle': string;
 	'usage.githubActivity.unknownNextRefresh': string;
+	'usage.githubActivity.retryHint': string;
 	'usage.githubActivity.partialRepoPrs': string;
 	'usage.githubActivity.partialAgentTasks': string;
 
@@ -123,9 +124,10 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'usage.githubActivity.revalidatingTitle': 'Revalidating.',
 	'usage.githubActivity.revalidatingBody': 'Showing the cached snapshot from {0} while it is refreshed.',
 	'usage.githubActivity.updated': '🕒 Updated {0} · next refresh after {1}.',
-	'usage.githubActivity.cachePolicy': 'Cached and refreshed at most once an hour, by a single VS Code window, to keep GitHub API usage low.',
+	'usage.githubActivity.cachePolicy': 'Automatically revalidated at most once an hour, by a single VS Code window, to keep GitHub API usage low — Refresh now asks for one straight away.',
 	'usage.githubActivity.partialTitle': 'Partial data — the figures below are a lower bound.',
 	'usage.githubActivity.unknownNextRefresh': 'unknown',
+	'usage.githubActivity.retryHint': 'Use Refresh now above to retry — details are in the extension Output channel.',
 	'usage.githubActivity.partialRepoPrs': 'At least one repository listing did not complete (an error, a timeout, or the page cap), so some pull requests in the window are not counted.',
 	'usage.githubActivity.partialAgentTasks': 'Some tasks were not detailed this pass — the task-detail budget was exhausted, or a task listing did not complete.',
 	'details.editorSection.show': 'Show Usage by Editor',
