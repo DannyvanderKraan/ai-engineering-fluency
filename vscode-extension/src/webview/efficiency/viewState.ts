@@ -1,0 +1,148 @@
+// Efficiency view scope state — the time preset, resolution, drill-down stack
+// and categorical filters shared by the tabs that are allowed to carry them.
+//
+// Kept out of main.ts (and free of DOM access) so the state transitions that
+// decide what the charts show — drill in, drill back, switch preset, narrow to
+// an editor — are unit-testable without a browser.
+import {
+	DEFAULT_EFFICIENCY_RANGE_ID,
+	EFFICIENCY_RANGE_OPTIONS,
+	availableResolutions,
+	buildEfficiencyBuckets,
+	drillRangeForBucket,
+	resolveBucketResolution,
+	resolveEfficiencyRange,
+} from '../../../../src/efficiencyAnalysis';
+import type {
+	EfficiencyBucket,
+	EfficiencyBucketResolution,
+	EfficiencyRange,
+	EfficiencyRangeId,
+	EfficiencyResolution,
+} from '../../../../src/efficiencyAnalysis';
+
+/**
+ * The user's current scope. Persisted verbatim through the webview state API,
+ * so every field has to survive a round trip through JSON and an older shape
+ * has to degrade to the defaults rather than to `undefined`.
+ */
+export interface EfficiencyScopeState {
+	/** Selected time preset. Ignored while a drill-down is active. */
+	rangeId: EfficiencyRangeId;
+	/** Selected bucket width, or `auto` to derive it from the range span. */
+	resolution: EfficiencyResolution;
+	/** Editor display name to scope to; empty string means every editor. */
+	editor: string;
+	/** Underlying model vendor to narrow the Models tab to; empty means every vendor. */
+	vendor: string;
+	/** Drill-down stack, outermost first. The last entry is the active range. */
+	drill: EfficiencyRange[];
+}
+
+/** How deep a drill-down chain may go before the Back trail stops being useful. */
+const MAX_DRILL_DEPTH = 4;
+
+export function defaultScopeState(): EfficiencyScopeState {
+	return { rangeId: DEFAULT_EFFICIENCY_RANGE_ID, resolution: 'auto', editor: '', vendor: '', drill: [] };
+}
+
+const RANGE_IDS = new Set<string>(EFFICIENCY_RANGE_OPTIONS.map(o => o.id));
+const RESOLUTIONS = new Set<string>(['auto', 'daily', 'weekly', 'monthly']);
+
+function isRange(value: unknown): value is EfficiencyRange {
+	if (typeof value !== 'object' || value === null) { return false; }
+	const r = value as Partial<EfficiencyRange>;
+	return typeof r.startKey === 'string' && typeof r.endKey === 'string'
+		&& typeof r.label === 'string' && r.startKey <= r.endKey;
+}
+
+/**
+ * Coerces a persisted (possibly older, possibly absent) state blob into a valid
+ * scope. Anything unrecognised falls back to the default rather than being
+ * carried forward, so a stale field can never select a range that no longer exists.
+ */
+export function normalizeScopeState(raw: unknown): EfficiencyScopeState {
+	const base = defaultScopeState();
+	if (typeof raw !== 'object' || raw === null) { return base; }
+	const r = raw as Partial<EfficiencyScopeState>;
+	return {
+		rangeId: typeof r.rangeId === 'string' && RANGE_IDS.has(r.rangeId) ? r.rangeId as EfficiencyRangeId : base.rangeId,
+		resolution: typeof r.resolution === 'string' && RESOLUTIONS.has(r.resolution) ? r.resolution as EfficiencyResolution : base.resolution,
+		editor: typeof r.editor === 'string' ? r.editor : base.editor,
+		vendor: typeof r.vendor === 'string' ? r.vendor : base.vendor,
+		drill: Array.isArray(r.drill) ? r.drill.filter(isRange).slice(0, MAX_DRILL_DEPTH).map(d => ({ ...d, id: 'custom' as const })) : base.drill,
+	};
+}
+
+/** True while the view is looking at a drilled-into range rather than a preset. */
+export function isDrilled(state: EfficiencyScopeState): boolean {
+	return state.drill.length > 0;
+}
+
+/** The range currently being charted: the deepest drill-down, else the preset. */
+export function activeRange(state: EfficiencyScopeState, now: Date): EfficiencyRange {
+	return state.drill.at(-1) ?? resolveEfficiencyRange(state.rangeId, now);
+}
+
+/** The concrete bucket width for the active range. */
+export function activeResolution(state: EfficiencyScopeState, now: Date): EfficiencyBucketResolution {
+	return resolveBucketResolution(state.resolution, activeRange(state, now));
+}
+
+/** The buckets currently on the x-axis. */
+export function activeBuckets(state: EfficiencyScopeState, now: Date): EfficiencyBucket[] {
+	const range = activeRange(state, now);
+	return buildEfficiencyBuckets(range, resolveBucketResolution(state.resolution, range));
+}
+
+/** The resolutions the resolution picker may offer for the active range. */
+export function activeResolutionOptions(state: EfficiencyScopeState, now: Date): EfficiencyBucketResolution[] {
+	return availableResolutions(activeRange(state, now));
+}
+
+/** Only aggregated buckets contain days to drill into; a daily point is already the floor. */
+export function canDrillInto(resolution: EfficiencyBucketResolution): boolean {
+	return resolution !== 'daily';
+}
+
+/**
+ * Pushes the days behind one bucket onto the drill stack and switches to daily
+ * resolution. A daily bucket (or a stack at its depth limit) is returned
+ * unchanged, so a click that cannot drill is inert rather than misleading.
+ */
+export function drillInto(state: EfficiencyScopeState, bucket: EfficiencyBucket): EfficiencyScopeState {
+	if (!canDrillInto(bucket.resolution) || state.drill.length >= MAX_DRILL_DEPTH) { return state; }
+	return { ...state, resolution: 'daily', drill: [...state.drill, drillRangeForBucket(bucket)] };
+}
+
+/**
+ * Pops one level off the drill stack, restoring the preceding range. Resolution
+ * returns to `auto` once the stack is empty so the preset is charted the way it
+ * was before the drill-down.
+ */
+export function drillBack(state: EfficiencyScopeState): EfficiencyScopeState {
+	if (state.drill.length === 0) { return state; }
+	const drill = state.drill.slice(0, -1);
+	return { ...state, drill, resolution: drill.length === 0 ? 'auto' : 'daily' };
+}
+
+/** Selecting a preset leaves any drill-down behind — the preset *is* the new scope. */
+export function selectRange(state: EfficiencyScopeState, rangeId: EfficiencyRangeId): EfficiencyScopeState {
+	return { ...state, rangeId, resolution: 'auto', drill: [] };
+}
+
+/** Human, screen-reader-friendly description of what is currently charted. */
+export function describeScope(state: EfficiencyScopeState, now: Date): string {
+	const range = activeRange(state, now);
+	const resolution = activeResolution(state, now);
+	const editor = state.editor ? state.editor : 'all editors';
+	return `${range.label}, ${resolution} buckets, ${editor}`;
+}
+
+/** True when the range reaches further back than the behavioural session window. */
+export function rangeExceedsBehaviorWindow(state: EfficiencyScopeState, now: Date, behaviorWindowDays: number | undefined): boolean {
+	if (!behaviorWindowDays || behaviorWindowDays <= 0) { return false; }
+	const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (behaviorWindowDays - 1));
+	const cutoffKey = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, '0')}-${String(cutoff.getDate()).padStart(2, '0')}`;
+	return activeRange(state, now).startKey < cutoffKey;
+}

@@ -74,6 +74,11 @@ const INTERACTIVE_SELECTOR = [
   'a[href^="command:"]',
   'input[type="checkbox"]',
   'input[type="radio"]',
+  // A <select> is never "clicked" into a new value by Playwright's click — the
+  // native picker is not part of the page — so it needs the change-event path
+  // below. Without it, every dropdown in the extension (chart filters, the
+  // Efficiency scope toolbar) ships silently unvalidated.
+  'select',
 ].join(', ');
 
 /** Reads the extension-side handled-command set once, for the unhandled check. */
@@ -110,6 +115,16 @@ const TAG_CONTROLS = (selector) => {
     }
     el.setAttribute('data-smoke-id', String(index));
     const label = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+    // For a <select>, record a value other than the current one so the driver
+    // can change it; a select with one usable option has nothing to exercise.
+    let selectValue = null;
+    if (el instanceof HTMLSelectElement) {
+      const option = Array.from(el.options).find((o) => !o.disabled && o.value !== el.value);
+      if (!option) {
+        continue;
+      }
+      selectValue = option.value;
+    }
     // A segmented control's current option, a checked radio: re-clicking it is
     // meant to be inert, so a no-op there is not evidence of broken wiring.
     const alreadySelected =
@@ -125,6 +140,7 @@ const TAG_CONTROLS = (selector) => {
       classes: el.className && typeof el.className === 'string' ? el.className.slice(0, 80) : null,
       label: label || null,
       alreadySelected,
+      selectValue,
     });
     index++;
   }
@@ -229,12 +245,20 @@ async function clickControl(page, control) {
 
   const locator = page.locator(`[data-smoke-id="${control.index}"]`);
   try {
-    await locator.click({ timeout: 1500, force: false, noWaitAfter: true });
+    if (control.tag === 'select') {
+      // selectOption fires input+change the way a user picking an option does;
+      // a plain click only opens the native picker, which the page never sees.
+      await locator.selectOption(control.selectValue, { timeout: 1500 });
+    } else {
+      await locator.click({ timeout: 1500, force: false, noWaitAfter: true });
+    }
   } catch (error) {
-    return { status: 'skipped', reason: `not clickable in this pass: ${String(error.message).split('\n')[0]}` };
+    return { status: 'skipped', reason: `not ${control.tag === 'select' ? 'selectable' : 'clickable'} in this pass: ${String(error.message).split('\n')[0]}` };
   }
 
-  await page.waitForTimeout(120);
+  // A select change usually triggers a full re-render; give it the same settle
+  // window a click gets before reading the signature back.
+  await page.waitForTimeout(control.tag === 'select' ? 250 : 120);
 
   const [posted, errors, after] = await Promise.all([
     page.evaluate(() => window.__HARNESS_POSTED_MESSAGES__.slice()),
@@ -301,13 +325,15 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
         view: view.id,
         kind: 'dead-control',
         control: where,
-        detail: 'clicking it posts no message to the host and changes nothing on screen',
+        detail: control.tag === 'select'
+          ? 'changing its value posts no message to the host and changes nothing on screen'
+          : 'clicking it posts no message to the host and changes nothing on screen',
       });
     }
     if (outcome.status === 'error') {
       findings.push({
         view: view.id,
-        kind: 'click-threw',
+        kind: control.tag === 'select' ? 'change-threw' : 'click-threw',
         control: where,
         detail: outcome.errors.join(' | ').slice(0, 400),
       });
@@ -416,7 +442,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log('\n✅ Every control does something when clicked.\n');
+  console.log('\n✅ Every control does something when clicked or changed.\n');
   process.exit(0);
 }
 
