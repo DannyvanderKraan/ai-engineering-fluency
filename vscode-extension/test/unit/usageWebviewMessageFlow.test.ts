@@ -703,6 +703,74 @@ test('remembers the "Other models" open state across a leaderboard re-render', a
 	assert.equal(detailsAfterSort.open, true, 'the open state must survive the re-render');
 });
 
+/**
+ * Context-reference counts with a clear split: #file and #selection used recently, everything
+ * else untouched. `lastMonth` activity on #clipboard checks that only today + last-30-days
+ * decide the split, matching contextRefRecentTotal().
+ */
+function buildStatsWithContextRefLongTail(): Record<string, unknown> {
+	const stats = buildStats() as any;
+	const refs = (today: number, last30: number, clipboard = 0): Record<string, unknown> => ({
+		total: today + last30, byKind: {}, byPath: {},
+		file: today, selection: last30, clipboard,
+	});
+	stats.today.contextReferences = refs(6, 0);
+	stats.last30Days.contextReferences = refs(0, 40);
+	stats.month.contextReferences = refs(0, 30);
+	stats.lastMonth.contextReferences = refs(0, 0, 9);
+	return stats;
+}
+
+test('collapses context-reference kinds with no recent usage into a closed "Other references" group', async () => {
+	const harness = await bootWebview(buildStatsWithContextRefLongTail());
+
+	const details = harness.window.document.getElementById('ctx-ref-other');
+	assert.ok(details, 'expects a collapsible "Other references" group in the DOM');
+	assert.equal(details.open, false, 'the group must be collapsed by default');
+
+	const mainRows = harness.window.document.querySelectorAll(
+		'#section-context-references > .ctx-ref-table-wrap tbody tr');
+	const mainLabels = [...mainRows].map((row) => row.textContent);
+	assert.ok(mainLabels.some((label) => label.includes('#file')), '#file was used today, so it stays visible');
+	assert.ok(mainLabels.some((label) => label.includes('#selection')), '#selection was used in the last 30 days');
+	assert.ok(
+		!mainLabels.some((label) => label.includes('#clipboard')),
+		'#clipboard was only used last month, so it belongs in the long tail, not the main table',
+	);
+
+	const otherRows = details.querySelectorAll('tbody tr');
+	assert.ok(otherRows.length > 0, 'the unused kinds must still be rendered, just collapsed');
+	assert.match(
+		details.querySelector('summary').textContent,
+		new RegExp(`Other references \\(${otherRows.length},`),
+		'the summary count must match the rows it hides',
+	);
+
+	// Every descriptor still renders somewhere: collapsing the tail must never drop a kind.
+	assert.equal(mainRows.length + otherRows.length, 21, 'expects all 21 reference kinds accounted for');
+});
+
+test('remembers the "Other references" open state across a re-render', async () => {
+	const harness = await bootWebview(buildStatsWithContextRefLongTail());
+
+	const details = harness.window.document.getElementById('ctx-ref-other');
+	assert.equal(details.open, false);
+
+	// Mirror a real click on <summary>, then dispatch the `toggle` event the webview listens
+	// for in the capture phase (`toggle` does not bubble).
+	details.open = true;
+	details.dispatchEvent(new harness.window.Event('toggle'));
+
+	// A fresh stats payload rebuilds the whole view, recreating the <details> from scratch;
+	// without the persisted flag it would snap back to collapsed.
+	harness.post({ command: 'updateStats', data: buildStatsWithContextRefLongTail() });
+	await harness.settle();
+
+	const afterRerender = harness.window.document.getElementById('ctx-ref-other');
+	assert.ok(afterRerender, 'expects the "Other references" group to still exist after a re-render');
+	assert.equal(afterRerender.open, true, 'the open state must survive the re-render');
+});
+
 test('collapses the long tail of low-activity workspaces into an "Other" row on Workspace Health', async () => {
 	const harness = await bootWebview(buildStatsWithLongTailWorkspaces());
 

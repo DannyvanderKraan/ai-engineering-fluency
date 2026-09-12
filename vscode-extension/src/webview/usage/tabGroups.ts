@@ -13,17 +13,21 @@
 /** A group tab: the id used in `data-group`, its label, and the leaf tabs it owns, in order. */
 export interface UsageTabGroup {
 	id: string;
-	label: string;
+	/**
+	 * Webview localization key for the label, not the label itself — resolved and escaped at
+	 * render time so the strip translates with the rest of the view.
+	 */
+	labelKey: string;
 	/** Codicon name without the `codicon-` prefix. */
 	icon: string;
 	tabs: string[];
 }
 
 export const USAGE_TAB_GROUPS: readonly UsageTabGroup[] = [
-	{ id: 'usage', label: 'Usage', icon: 'graph', tabs: ['activity', 'sessions'] },
-	{ id: 'workspace', label: 'Workspace', icon: 'folder-opened', tabs: ['tools', 'health', 'worktrees'] },
-	{ id: 'github', label: 'GitHub', icon: 'github', tabs: ['repos', 'agent'] },
-	{ id: 'coaching', label: 'Coaching', icon: 'mortar-board', tabs: ['insights', 'corrections'] },
+	{ id: 'usage', labelKey: 'usage.group.usage', icon: 'graph', tabs: ['activity', 'sessions'] },
+	{ id: 'workspace', labelKey: 'usage.group.workspace', icon: 'folder-opened', tabs: ['tools', 'health', 'worktrees'] },
+	{ id: 'github', labelKey: 'usage.group.github', icon: 'github', tabs: ['repos', 'agent'] },
+	{ id: 'coaching', labelKey: 'usage.group.coaching', icon: 'mortar-board', tabs: ['insights', 'corrections'] },
 ];
 
 /** The group that owns `tabId`, falling back to the first group for an unknown tab. */

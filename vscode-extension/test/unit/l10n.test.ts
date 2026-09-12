@@ -196,6 +196,58 @@ test('l10n: usage context-pressure keys resolve in zh-cn', () => {
 	}
 });
 
+test('l10n: usage tab-group, band and context-reference keys resolve in English', () => {
+	// These back the Usage view's group tab strip, the Activity tab's band headings, and the
+	// collapsed context-reference long tail. A missing key renders the raw key as a tab label
+	// or section heading.
+	const expected: Record<string, string> = {
+		'usage.group.usage': 'Usage',
+		'usage.group.workspace': 'Workspace',
+		'usage.group.github': 'GitHub',
+		'usage.group.coaching': 'Coaching',
+		'usage.band.overview.title': 'Overview',
+		'usage.band.spend.title': 'Spend & models',
+		'usage.band.context.title': 'Context',
+		'usage.contextWindow.compactionHeading': 'Context compaction',
+		'usage.contextRefs.noneRecent': 'No context references recorded today or in the last 30 days.',
+	};
+	for (const [key, english] of Object.entries(expected)) {
+		assert.equal(t(key), english, `English value for ${key}`);
+	}
+	assert.match(t('usage.band.overview.subtitle'), /interaction modes/);
+	assert.match(t('usage.band.spend.subtitle'), /how hard they were asked to think/);
+	assert.match(t('usage.band.context.subtitle'), /what gets compacted away/);
+	// The count is a placeholder, not concatenated, so a locale can reposition it.
+	assert.equal(
+		t('usage.contextRefs.otherSummary', '4'),
+		'Other references (4, no usage today or in the last 30 days)',
+	);
+});
+
+test('l10n: usage tab-group, band and context-reference keys resolve in zh-cn', () => {
+	mock.setLanguage('zh-cn');
+	try {
+		const expected: Record<string, string> = {
+			'usage.group.usage': '使用情况',
+			'usage.group.workspace': '工作区',
+			'usage.group.coaching': '改进建议',
+			'usage.band.overview.title': '概览',
+			'usage.band.spend.title': '花费与模型',
+			'usage.band.context.title': '上下文',
+			'usage.contextWindow.compactionHeading': '上下文压缩',
+		};
+		for (const [key, chinese] of Object.entries(expected)) {
+			assert.equal(t(key), chinese, `zh-cn value for ${key}`);
+		}
+		// "GitHub" is a proper noun and stays untranslated — asserted so a future bulk
+		// translation pass doesn't quietly localize a product name.
+		assert.equal(t('usage.group.github'), 'GitHub');
+		assert.equal(t('usage.contextRefs.otherSummary', '4'), '其他引用（4 个，今天和最近 30 天均未使用）');
+	} finally {
+		mock.setLanguage('en');
+	}
+});
+
 test("l10n: what's-new notification keys resolve in English", () => {
 	// The two buttons on the one-a-day new-feature notification. A missing key
 	// here would put a raw `whatsNew.takeMeThere` on the button, which is the

@@ -4178,6 +4178,21 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'usage.contextPressure.nearLimitLabel': l10n.t('usage.contextPressure.nearLimitLabel'),
 			'usage.contextPressure.worstFill': l10n.t('usage.contextPressure.worstFill'),
 			'usage.contextPressure.nearLimitTooltip': l10n.t('usage.contextPressure.nearLimitTooltip'),
+			// Usage view — tab group labels, Activity-tab band headings, context-reference long tail.
+			// otherSummary carries a {0} count resolved webview-side by localizeFormat().
+			'usage.group.usage': l10n.t('usage.group.usage'),
+			'usage.group.workspace': l10n.t('usage.group.workspace'),
+			'usage.group.github': l10n.t('usage.group.github'),
+			'usage.group.coaching': l10n.t('usage.group.coaching'),
+			'usage.band.overview.title': l10n.t('usage.band.overview.title'),
+			'usage.band.overview.subtitle': l10n.t('usage.band.overview.subtitle'),
+			'usage.band.spend.title': l10n.t('usage.band.spend.title'),
+			'usage.band.spend.subtitle': l10n.t('usage.band.spend.subtitle'),
+			'usage.band.context.title': l10n.t('usage.band.context.title'),
+			'usage.band.context.subtitle': l10n.t('usage.band.context.subtitle'),
+			'usage.contextRefs.otherSummary': l10n.t('usage.contextRefs.otherSummary'),
+			'usage.contextRefs.noneRecent': l10n.t('usage.contextRefs.noneRecent'),
+			'usage.contextWindow.compactionHeading': l10n.t('usage.contextWindow.compactionHeading'),
 			// Details view — collapsible "Usage by Editor" section heading tooltips
 			'details.editorSection.show': l10n.t('details.editorSection.show'),
 			'details.editorSection.hide': l10n.t('details.editorSection.hide'),

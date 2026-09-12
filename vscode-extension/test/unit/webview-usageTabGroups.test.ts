@@ -31,7 +31,7 @@ describe('USAGE_TAB_GROUPS', () => {
 
 	test('every group has a label, an icon, and at least one tab', () => {
 		for (const group of USAGE_TAB_GROUPS) {
-			assert.ok(group.label.length > 0, `${group.id} has no label`);
+			assert.ok(group.labelKey.length > 0, `${group.id} has no label key`);
 			assert.ok(group.icon.length > 0, `${group.id} has no icon`);
 			assert.ok(group.tabs.length > 0, `${group.id} has no tabs`);
 		}

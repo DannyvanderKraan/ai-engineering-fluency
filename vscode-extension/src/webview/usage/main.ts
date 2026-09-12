@@ -3658,7 +3658,7 @@ function buildTabStripHtml(stats: UsageAnalysisStats): string {
 	const buttons = usageLeafTabButtons(stats);
 	const activeGroup = groupOfUsageTab(activeTab);
 	const groupBar = USAGE_TAB_GROUPS.map(group =>
-		`<button class="group-tab ${group.id === activeGroup ? 'active' : ''}" data-group="${group.id}"><span class="codicon codicon-${group.icon}"></span> ${group.label}</button>`
+		`<button class="group-tab ${group.id === activeGroup ? 'active' : ''}" data-group="${group.id}"><span class="codicon codicon-${group.icon}"></span> ${escapeHtml(localize(group.labelKey))}</button>`
 	).join('\n\t\t\t\t');
 	const leafBars = USAGE_TAB_GROUPS.map(group =>
 		`<div class="tab-bar leaf-tabs" data-group="${group.id}"${group.id === activeGroup ? '' : ' style="display:none"'}>
@@ -4735,14 +4735,18 @@ function buildBillingComparisonSectionHtml(stats: UsageAnalysisStats): string {
  * it carries no meaning and anything near the bottom looks like leftovers. These headings give
  * the stack its groups back without splitting the tab or changing any section's own markup.
  *
- * Every argument is interpolated as HTML so a label can carry an entity (`&amp;`). Call it with
- * literals only — it is not an escaping boundary for session-derived text.
+ * Labels arrive as localization keys and are escaped after resolution, so a translated label
+ * containing `&` or a quote renders as text rather than as markup.
+ *
+ * `role="heading"` + `aria-level` rather than a bare `<div>`: the grouping is the point of this
+ * element, and a screen reader that cannot navigate to it still sees an ungrouped run of cards.
+ * The level is 3 — below the panel's own heading, above each section title.
  */
-function sectionGroupHeadingHtml(icon: string, label: string, subtitle: string): string {
+function sectionGroupHeadingHtml(icon: string, titleKey: string, subtitleKey: string): string {
 	return `
 		<div class="section-group-heading">
-			<div class="section-group-title"><span>${icon}</span><span>${label}</span></div>
-			<div class="section-group-subtitle">${subtitle}</div>
+			<div class="section-group-title" role="heading" aria-level="3"><span aria-hidden="true">${icon}</span><span>${escapeHtml(localize(titleKey))}</span></div>
+			<div class="section-group-subtitle">${escapeHtml(localize(subtitleKey))}</div>
 		</div>`;
 }
 
@@ -4777,19 +4781,19 @@ function buildActivityTabPanelHtml(
 	// signal that they answered a different question from the cost sections above them.
 	return `
 		<div id="tab-panel-activity" class="tab-panel"${activeTab !== 'activity' ? ' style="display:none"' : ''}>
-			${sectionGroupHeadingHtml('📊', 'Overview', 'How much you used AI assistants, and in which interaction modes.')}
+			${sectionGroupHeadingHtml('📊', 'usage.band.overview.title', 'usage.band.overview.subtitle')}
 			${sessionsSummaryHtml}
 			<!-- Mode Usage Section -->
 			${modeUsageHtml}
 
-			${sectionGroupHeadingHtml('💵', 'Spend &amp; models', 'What that usage cost, which models it ran on, and how hard they were asked to think.')}
+			${sectionGroupHeadingHtml('💵', 'usage.band.spend.title', 'usage.band.spend.subtitle')}
 			${billingComparisonHtml}
 			${modelCostHtml}
 			${multiModelHtml}
 			${modelEfficiencyHtml}
 			${thinkingEffortHtml}
 
-			${sectionGroupHeadingHtml('🧠', 'Context', 'What you feed the model: references you attach, how close requests come to the window limit, and what gets compacted away.')}
+			${sectionGroupHeadingHtml('🧠', 'usage.band.context.title', 'usage.band.context.subtitle')}
 			${contextRefsHtml}
 			${contextWindowHtml}
 		</div>`;
@@ -4922,7 +4926,7 @@ function renderAutomaticCompactions(stats: AutomaticCompactionStats | undefined)
 		? entries.join(', ')
 		: 'No automatic compactions detected';
 	return `
-		<h4 class="ctx-window-subheading">Context compaction</h4>
+		<h4 class="ctx-window-subheading">${escapeHtml(localize('usage.contextWindow.compactionHeading'))}</h4>
 		<div class="automatic-compactions-card"
 			title="Automatic compactions remove earlier messages to fit the context window and can affect response quality.">
 			<div>
@@ -5026,7 +5030,7 @@ function renderContextRefOtherHtml(otherRows: ContextRefRow[]): string {
 	if (otherRows.length === 0) { return ''; }
 	const body = otherRows.map(contextRefRowHtml).join('');
 	return `<details class="ctx-ref-other" id="ctx-ref-other"${contextRefOtherOpen ? ' open' : ''}>
-			<summary>Other references (${otherRows.length}, no usage today or in the last 30 days)</summary>
+			<summary>${escapeHtml(localizeFormat('usage.contextRefs.otherSummary', otherRows.length))}</summary>
 			<div class="ctx-ref-table-wrap">
 				<table class="ctx-ref-table">${CTX_REF_TABLE_HEAD}
 					<tbody>${body}</tbody>
@@ -5041,12 +5045,19 @@ function renderContextRefTable(
 ): string {
 	const sorted = rows.slice().sort((a, b) => b.last30 - a.last30);
 	// Reference kinds with nothing today and nothing in the last 30 days drop into a collapsed
-	// "Other" group rather than padding the table with zeroes. Totals in the footer stay
-	// whole-table totals, so collapsing the tail never changes the numbers it sums.
+	// "Other" group rather than padding the table with zeroes. The footer is computed from the
+	// stats, not from the rows above it, so collapsing the tail never changes what it sums.
+	//
+	// It is not the column sum of this table, and was not before this split either:
+	// getTotalContextRefs() counts the 17 reference-kind fields, while four of the rows here are
+	// derived metrics read from elsewhere on the same stats (Images, Prompt Files and Custom
+	// Prompts from `byKind`, Code Lines from `codeContextLines`). A period whose only activity is
+	// one of those four therefore shows a non-zero row over a zero total. The footer's tooltip
+	// says so rather than quietly presenting it as the table's sum.
 	const { active, other } = partitionContextRefRows(sorted);
 	const bodyRows = active.map(contextRefRowHtml).join('');
 	const emptyRow = active.length === 0
-		? '<tr><td class="ctx-ref-name" colspan="6" style="color: var(--text-muted);">No context references recorded today or in the last 30 days.</td></tr>'
+		? `<tr><td class="ctx-ref-name" colspan="6" style="color: var(--text-muted);">${escapeHtml(localize('usage.contextRefs.noneRecent'))}</td></tr>`
 		: '';
 	return `
 		<div class="ctx-ref-table-wrap">
@@ -5055,7 +5066,7 @@ function renderContextRefTable(
 					${bodyRows}${emptyRow}
 				</tbody>
 				<tfoot>
-					<tr class="ctx-ref-total">
+					<tr class="ctx-ref-total" title="Total across the reference kinds (#file, #selection, @workspace, instructions files and so on). The Images, Prompt Files, Custom Prompts and Code Lines rows are separate metrics and are not included in this total.">
 						<td class="ctx-ref-name">📊 Total References</td>
 						<td class="ctx-ref-num">${totals.today}</td>
 						<td class="ctx-ref-num">${totals.month}</td>

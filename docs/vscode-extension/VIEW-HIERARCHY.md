@@ -139,19 +139,26 @@ it is in everyone's muscle memory, and it competes for the nav row's limited wid
 
 ### The long-tail rule
 
-Any list that enumerates *everything the extension can detect* — reference kinds, models, tools,
-editors — shows the entries with recent usage and collapses the rest into an **"Other"
-`<details>`**, never dropping them. Three implementations share this shape:
+A list that enumerates *everything the extension can detect* — reference kinds, models, editors —
+shows the entries with recent usage and folds the rest into an **"Other" group**, never dropping
+them. Three implementations do this, via two different mechanisms:
 
-| List | Disclosure | "Recent" means |
-|---|---|---|
-| Context References | `.ctx-ref-other` (`usage/contextRefRows.ts`) | today + last 30 days > 0 |
-| Local Model Leaderboard | `.model-leaderboard-other` | above the long-tail turn share |
-| Details: Editor / Model Usage | per-table "Other" row | non-zero in any shown period |
+| List | Disclosure | Mechanism | "Recent" means |
+|---|---|---|---|
+| Context References | `.ctx-ref-other` (`usage/contextRefRows.ts`) | `<details>` + module flag | today + last 30 days > 0 |
+| Local Model Leaderboard | `.model-leaderboard-other` | `<details>` + module flag | above the long-tail turn share |
+| Details: Editor / Model Usage | per-table "Other" parent row | expandable row + its own state | non-zero in any shown period |
 
-The open/closed state lives in a module-level flag and is restored on re-render via a
-capture-phase `toggle` listener — `toggle` does not bubble, and every one of these tables is
-rebuilt from scratch whenever new stats arrive.
+For the two `<details>` ones, the open/closed state lives in a module-level flag restored on
+re-render via a **capture-phase** `toggle` listener — `toggle` does not bubble, and both tables
+are rebuilt from scratch whenever new stats arrive. The Details view predates that pattern and
+uses a clickable parent row instead; copy whichever matches the table you are adding to, not
+"the long-tail pattern" as if there were only one.
+
+**This is a rule for lists that preserve their tail, not for every list.** The Usage view's Tool
+Usage tables are the counter-example: `renderToolsTable()` sorts and truncates to its `limit`,
+so entries past the cut are simply not shown. That is a deliberate top-N table, not a long tail
+with a disclosure — don't "fix" it into one without deciding that showing every tool is wanted.
 
 ## Keeping this file honest
 
