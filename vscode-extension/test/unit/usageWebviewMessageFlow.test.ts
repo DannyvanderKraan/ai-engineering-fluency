@@ -703,6 +703,81 @@ test('remembers the "Other models" open state across a leaderboard re-render', a
 	assert.equal(detailsAfterSort.open, true, 'the open state must survive the re-render');
 });
 
+/** Which leaf tab is marked active, and which panel is the only visible one. */
+function activeTabState(harness: any): { button: string | undefined; panels: string[]; group: string | undefined } {
+	const doc = harness.window.document;
+	return {
+		button: doc.querySelector('.tab-button.active')?.getAttribute('data-tab') ?? undefined,
+		panels: [...doc.querySelectorAll('.tab-panel')]
+			.filter((p: any) => p.style.display !== 'none')
+			.map((p: any) => p.id),
+		group: doc.querySelector('.group-tab.active')?.getAttribute('data-group') ?? undefined,
+	};
+}
+
+test('switching group tabs moves to that group and shows only its panel', async () => {
+	const harness = await bootWebview(buildStats());
+
+	assert.deepEqual(activeTabState(harness), {
+		button: 'activity', panels: ['tab-panel-activity'], group: 'usage',
+	}, 'opens on My Activity under the Usage group');
+
+	harness.window.document.querySelector('.group-tab[data-group="github"]').click();
+
+	const after = activeTabState(harness);
+	assert.equal(after.group, 'github', 'the clicked group becomes active');
+	assert.equal(after.button, 'repos', "lands on the group's first leaf when none of its tabs was active");
+	assert.deepEqual(after.panels, ['tab-panel-repos'], 'exactly one panel is visible');
+
+	// Only the active group's leaf bar is on screen.
+	const visibleBars = [...harness.window.document.querySelectorAll('.leaf-tabs')]
+		.filter((bar: any) => bar.style.display !== 'none')
+		.map((bar: any) => bar.getAttribute('data-group'));
+	assert.deepEqual(visibleBars, ['github']);
+});
+
+test('returning to a group restores the leaf tab it was left on', async () => {
+	const harness = await bootWebview(buildStats());
+	const doc = harness.window.document;
+
+	// Start on a non-first leaf of the Workspace group.
+	doc.querySelector('.group-tab[data-group="workspace"]').click();
+	doc.querySelector('.tab-button[data-tab="worktrees"]').click();
+	assert.equal(activeTabState(harness).button, 'worktrees');
+
+	// Leave for another group, then come back.
+	doc.querySelector('.group-tab[data-group="coaching"]').click();
+	assert.equal(activeTabState(harness).group, 'coaching');
+	doc.querySelector('.group-tab[data-group="workspace"]').click();
+
+	assert.deepEqual(activeTabState(harness), {
+		button: 'worktrees', panels: ['tab-panel-worktrees'], group: 'workspace',
+	}, 'the group reopens on Worktrees, not on its first tab');
+});
+
+test('a deep-linked tab is remembered by its group even though it arrived before the panels existed', async () => {
+	// Regression: `switchTab` during the loading state sets activeTab but returns before
+	// recording the group, because no panel exists yet. Without seeding lastTabPerGroup at
+	// render time, leaving the group and returning dropped the user on its first tab instead.
+	// Boot into the loading state (no initial data), deep-link, then deliver the stats — the
+	// exact order the host produces when a notification action opens the panel.
+	const harness = await bootWebview(null);
+	harness.post({ command: 'switchTab', tab: 'worktrees' });
+	harness.post({ command: 'updateStats', data: buildStats() });
+	await harness.settle();
+	const doc = harness.window.document;
+
+	assert.equal(activeTabState(harness).button, 'worktrees', 'the deep link decides the opening tab');
+
+	doc.querySelector('.group-tab[data-group="github"]').click();
+	doc.querySelector('.group-tab[data-group="workspace"]').click();
+
+	assert.equal(
+		activeTabState(harness).button, 'worktrees',
+		'returning to the group must restore the deep-linked tab, not fall back to Tools',
+	);
+});
+
 /**
  * Context-reference counts with a clear split: #file and #selection used recently, everything
  * else untouched. `lastMonth` activity on #clipboard checks that only today + last-30-days

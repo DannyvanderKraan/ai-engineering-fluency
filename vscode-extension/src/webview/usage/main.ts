@@ -2433,8 +2433,9 @@ function runTabFirstVisitEffects(tab: string): void {
 
 /**
  * The leaf tab each group was last left on, so re-opening a group returns the user to where they
- * were instead of resetting them to its first tab. Not persisted: it describes this render's
- * navigation history, and a reload legitimately starts over from the restored `activeTab`.
+ * were instead of resetting them to its first tab. Lives only in memory, like `activeTab` itself
+ * — neither is written to `vscode.setState()` (`UsageWebviewState` holds only `aboutCollapsed`),
+ * so a panel that is disposed and recreated legitimately starts over at the default tab.
  */
 const lastTabPerGroup: Record<string, string> = {};
 
@@ -2475,6 +2476,12 @@ function activateUsageTab(tab: string): boolean {
 }
 
 function setupTabs(): void {
+	// Seed the remembered-leaf map from whatever tab this render opened on. activateUsageTab()
+	// records it on every later switch, but it bails before recording when no panel exists yet —
+	// which is exactly the case for a `switchTab` deep link that arrives while the view is still
+	// loading. Without this, opening on a deep-linked tab (the worktree notification's "Show Me",
+	// say), leaving its group and coming back would drop the user on the group's first tab.
+	lastTabPerGroup[groupOfUsageTab(activeTab)] = activeTab;
 	// The tab that is already on screen counts as opened — the user is reading it
 	// right now, whether or not they clicked anything to get here.
 	reportTabOpened(activeTab);
@@ -5066,7 +5073,7 @@ function renderContextRefTable(
 					${bodyRows}${emptyRow}
 				</tbody>
 				<tfoot>
-					<tr class="ctx-ref-total" title="Total across the reference kinds (#file, #selection, @workspace, instructions files and so on). The Images, Prompt Files, Custom Prompts and Code Lines rows are separate metrics and are not included in this total.">
+					<tr class="ctx-ref-total" title="${escapeHtml(localize('usage.contextRefs.totalTooltip'))}">
 						<td class="ctx-ref-name">📊 Total References</td>
 						<td class="ctx-ref-num">${totals.today}</td>
 						<td class="ctx-ref-num">${totals.month}</td>

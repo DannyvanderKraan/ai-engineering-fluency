@@ -45,6 +45,7 @@ export interface WebviewLocalization {
 	'usage.band.context.subtitle': string;
 	'usage.contextRefs.otherSummary': string;
 	'usage.contextRefs.noneRecent': string;
+	'usage.contextRefs.totalTooltip': string;
 	'usage.contextWindow.compactionHeading': string;
 
 	// Details view — collapsible "Usage by Editor" section heading tooltips
@@ -117,6 +118,7 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'usage.band.context.subtitle': 'What you feed the model: references you attach, how close requests come to the window limit, and what gets compacted away.',
 	'usage.contextRefs.otherSummary': 'Other references ({0}, no usage today or in the last 30 days)',
 	'usage.contextRefs.noneRecent': 'No context references recorded today or in the last 30 days.',
+	'usage.contextRefs.totalTooltip': 'Total across the reference kinds (#file, #selection, @workspace, instructions files and so on). The Images, Prompt Files, Custom Prompts and Code Lines rows are separate metrics and are not included in this total.',
 	'usage.contextWindow.compactionHeading': 'Context compaction',
 	'details.editorSection.show': 'Show Usage by Editor',
 	'details.editorSection.hide': 'Hide Usage by Editor',

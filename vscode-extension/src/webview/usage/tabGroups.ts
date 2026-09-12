@@ -6,8 +6,10 @@
  * same kind of thing. This mirrors the two-level strip the Diagnostics view already uses.
  *
  * **Leaf tab ids are unchanged and must stay that way.** They are the `viewTabOpened` telemetry
- * key, the persisted `activeTab`, the `switchTab` message payload, and the target of the What's
- * New view's "Take me there" deep links. Grouping them is chrome; renaming them is a migration.
+ * key the host records against, the `switchTab` message payload, and the target of the What's New
+ * view's "Take me there" deep links — all of which name a tab from outside this module. (The
+ * in-memory `activeTab` uses them too; it is not persisted — `UsageWebviewState` stores only
+ * `aboutCollapsed`.) Grouping them is chrome; renaming them would break those three callers.
  */
 
 /** A group tab: the id used in `data-group`, its label, and the leaf tabs it owns, in order. */

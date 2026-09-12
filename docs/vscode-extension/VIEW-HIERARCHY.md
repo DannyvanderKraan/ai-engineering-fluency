@@ -47,9 +47,14 @@ Nine tabs under four group tabs. The group strip and leaf strips are built by
 panel gets its own `build*TabPanelHtml` function.
 
 Leaf tab ids are deliberately unchanged from the flat nine-tab strip: they are the
-`viewTabOpened` telemetry key, the persisted `activeTab`, the `switchTab` message payload, and
-the target of the What's New view's "Take me there" deep links. Grouping them is chrome;
-renaming them would be a migration.
+`viewTabOpened` telemetry key the host records against, the `switchTab` message payload, and the
+target of the What's New view's "Take me there" deep links. Grouping them is chrome; renaming
+them would break those three callers.
+
+The active tab is *not* persisted — `UsageWebviewState` stores only `aboutCollapsed`, and
+`activeTab` resets to `activity` whenever the panel is recreated. Same for which leaf each group
+was last left on. Both are in-memory navigation state that survives re-renders within a session,
+not user settings.
 
 | Group | Tab | Content blocks |
 |---|---|---|
@@ -126,10 +131,10 @@ Use it when a view's tab strip **wraps or exceeds ~8 tabs** and the tabs fall in
 reader picks between before picking a tab. It is what keeps Diagnostics' 14 tabs and Usage
 Analysis' 9 legible.
 
-Keep the leaf tab ids exactly as they were and this costs no migration at all: the persisted
-`activeTab`, the `viewTabOpened` telemetry and any deep links keep working, and the owning group
-is derived from the tab rather than stored alongside it. Renaming leaf ids is what would be
-expensive — so don't, unless the rename is the point.
+Keep the leaf tab ids exactly as they were and this costs no migration at all: the
+`viewTabOpened` telemetry and any deep links keep working, and the owning group is derived from
+the tab rather than stored alongside it. Renaming leaf ids is what would be expensive — so don't,
+unless the rename is the point.
 
 ### 3. A new view
 

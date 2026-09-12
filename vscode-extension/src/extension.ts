@@ -4192,6 +4192,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'usage.band.context.subtitle': l10n.t('usage.band.context.subtitle'),
 			'usage.contextRefs.otherSummary': l10n.t('usage.contextRefs.otherSummary'),
 			'usage.contextRefs.noneRecent': l10n.t('usage.contextRefs.noneRecent'),
+			'usage.contextRefs.totalTooltip': l10n.t('usage.contextRefs.totalTooltip'),
 			'usage.contextWindow.compactionHeading': l10n.t('usage.contextWindow.compactionHeading'),
 			// Details view — collapsible "Usage by Editor" section heading tooltips
 			'details.editorSection.show': l10n.t('details.editorSection.show'),
