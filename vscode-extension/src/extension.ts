@@ -879,6 +879,11 @@ class CopilotTokenTracker implements vscode.Disposable {
 	// would survive an account or Enterprise-host switch and be published to the new session.
 	private _githubActivityScopeInMemory?: string;
 
+	// Bumped whenever cached GitHub activity is deliberately discarded (Clear Cache, sign-out).
+	// A refresh pass captures it at the start and re-checks before writing: the scope alone cannot
+	// catch a Clear Cache, which discards the data without changing who is signed in.
+	private _githubActivityGeneration = 0;
+
 	// Tool name mapping - loaded from toolNames.json for friendly display names
 	private toolNameMap: { [key: string]: string } = toolNamesData as { [key: string]: string };
 
@@ -2343,10 +2348,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			} catch (err) {
 				this.warn(`Failed to remove cached GitHub activity on sign-out: ${err}`);
 			}
-			this._lastRepoPrStats = undefined;
-			this._lastAgentSessionsData = undefined;
-			this._githubActivityScopeInMemory = undefined;
-			this.analysisMessageReplay.forget('repoPrStats', 'agentSessions');
+			this._discardInMemoryGitHubActivity('the user signed out of GitHub');
 			this.log('✅ Successfully signed out from GitHub');
 			vscode.window.showInformationMessage('Signed out from GitHub successfully.');
 
@@ -2447,8 +2449,9 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 * deleted, under an identity that is no longer signed in — so both the write and the publish
 	 * are gated on this.
 	 */
-	private _isGitHubActivityScopeCurrent(scope: string): boolean {
+	private _isGitHubActivityScopeCurrent(scope: string, generation: number): boolean {
 		if (this._githubSignedOutByUser) { return false; }
+		if (this._githubActivityGeneration !== generation) { return false; }
 		return this.githubActivityScope() === scope;
 	}
 
@@ -2458,6 +2461,9 @@ class CopilotTokenTracker implements vscode.Disposable {
 		this._lastAgentSessionsData = undefined;
 		this._githubActivityScopeInMemory = undefined;
 		this.analysisMessageReplay.forget('repoPrStats', 'agentSessions');
+		// Any pass already in flight belongs to the generation being discarded, so its result must
+		// not be written or published afterwards — otherwise a clear would visibly undo itself.
+		this._githubActivityGeneration++;
 		this.log(`🔐 Discarded the in-memory GitHub activity snapshots — ${reason}`);
 	}
 
@@ -2581,13 +2587,14 @@ class CopilotTokenTracker implements vscode.Disposable {
 		const session = await vscode.authentication.getSession(getGitHubAuthProviderId(), ['read:user'], { silent: true });
 		if (!session) { return; }
 		const scope = this.githubActivityScope(session.account.label);
+		const generation = this._githubActivityGeneration;
 		const cachePath = getRepoPrCachePath(this.context.globalStorageUri.fsPath, scope);
 		// A forced (user-triggered) refresh skips the TTL check only — it still respects the
 		// cross-window lock below, so two windows can never collect the same data at once.
 		if (!force && canServeRepoPrSnapshot(await readRepoPrSnapshot(cachePath), since, Date.now())) { return; }
 
 		let acquired = false;
-		try { acquired = await this.cacheManager.acquireRepoPrLock(); }
+		try { acquired = await this.cacheManager.acquireRepoPrLock(scope); }
 		catch (err) { this.warn(`Failed to acquire repo-PRs lock: ${err}`); }
 		if (!acquired) {
 			this.log('⏭️ Repository PRs refresh skipped — another window is refreshing the shared snapshot');
@@ -2599,7 +2606,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		// this forced pass would just repeat it.
 		if (force && isRepoPrSnapshotFresh((await readRepoPrSnapshot(cachePath))?.fetchedAt, Date.now(), GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS)) {
 			this.log('⏭️ Repository PRs manual refresh skipped — another window refreshed it moments ago');
-			try { await this.cacheManager.releaseRepoPrLock(); }
+			try { await this.cacheManager.releaseRepoPrLock(scope); }
 			catch (err) { this.warn(`Failed to release repo-PRs lock: ${err}`); }
 			return;
 		}
@@ -2607,15 +2614,15 @@ class CopilotTokenTracker implements vscode.Disposable {
 		this._repoPrRefreshInFlight = true;
 		// Heartbeat the lock: a slow API pass must not look stale to another window, which would
 		// let it start the same collection in parallel.
-		const heartbeat = setInterval(() => { void this.cacheManager.renewRepoPrLock(); }, 60 * 1000);
+		const heartbeat = setInterval(() => { void this.cacheManager.renewRepoPrLock(scope); }, 60 * 1000);
 		try {
-			await this.refreshRepoPrStatsSnapshot(session.accessToken, session.account.label, since, cachePath, scope);
+			await this.refreshRepoPrStatsSnapshot(session.accessToken, session.account.label, since, cachePath, scope, generation);
 		} catch (err) {
 			this.warn(`Repository PRs refresh failed: ${err}`);
 		} finally {
 			clearInterval(heartbeat);
 			this._repoPrRefreshInFlight = false;
-			try { await this.cacheManager.releaseRepoPrLock(); }
+			try { await this.cacheManager.releaseRepoPrLock(scope); }
 			catch (err) { this.warn(`Failed to release repo-PRs lock: ${err}`); }
 		}
 	}
@@ -2653,15 +2660,19 @@ class CopilotTokenTracker implements vscode.Disposable {
 	}
 
 	/** Collect the snapshot from every discovered workspace repo, write it to disk and publish it. */
-	private async refreshRepoPrStatsSnapshot(token: string, userLogin: string | undefined, since: Date, cachePath: string, scope: string): Promise<void> {
+	private async refreshRepoPrStatsSnapshot(token: string, userLogin: string | undefined, since: Date, cachePath: string, scope: string, generation: number): Promise<void> {
 		const workspacePaths = this._buildWorkspacePaths();
 		const discoveryStart = Date.now();
 		const repos = await discoverGitHubRepos(workspacePaths, getConfiguredGitHubEnterpriseUri());
 		this.log(`🔎 Refreshing repository PRs snapshot: discovered ${repos.length} GitHub repo(s) across ${workspacePaths.length} workspace path(s) in ${((Date.now() - discoveryStart) / 1000).toFixed(1)}s`);
 		const existingSnapshot = await readRepoPrSnapshot(cachePath);
 		if (shouldPreserveRepoPrSnapshotForEmptyDiscovery(existingSnapshot, since, repos.length)) {
-			this.log('🔎 Repository PR discovery found no workspace repos; preserving the existing shared snapshot');
-			await this.publishRepoPrStats(existingSnapshot!.data);
+			// Guarded like the write below: this republishes data read before the awaits above, and
+			// must not reach the panel if the identity changed or the cache was cleared meanwhile.
+			if (this._isGitHubActivityScopeCurrent(scope, generation)) {
+				this.log('🔎 Repository PR discovery found no workspace repos; preserving the existing shared snapshot');
+				await this.publishRepoPrStats(existingSnapshot!.data);
+			}
 			return;
 		}
 		await this.analysisMessageReplay.publish('repoPrStats', { command: 'repoPrStatsProgress', total: repos.length, done: 0 });
@@ -2689,8 +2700,8 @@ class CopilotTokenTracker implements vscode.Disposable {
 
 		// Sign-out, an account/host switch or a Clear Cache may have happened while this pass ran.
 		// Writing now would recreate a deliberately deleted file under a stale identity.
-		if (!this._isGitHubActivityScopeCurrent(scope)) {
-			this.log('🔎 Repository PRs snapshot discarded — the GitHub identity changed while it was being collected');
+		if (!this._isGitHubActivityScopeCurrent(scope, generation)) {
+			this.log('🔎 Repository PRs snapshot discarded — the GitHub identity changed, or the cache was cleared, while it was being collected');
 			return;
 		}
 
@@ -2814,13 +2825,14 @@ class CopilotTokenTracker implements vscode.Disposable {
 		const session = await vscode.authentication.getSession(getGitHubAuthProviderId(), ['read:user'], { silent: true });
 		if (!session) { return; }
 		const scope = this.githubActivityScope(session.account.label);
+		const generation = this._githubActivityGeneration;
 		const cachePath = getAgentTasksCachePath(this.context.globalStorageUri.fsPath, scope);
 		// A forced (user-triggered) refresh skips the TTL check only — the cross-window lock below
 		// still applies, so a manual refresh can never duplicate another window's in-flight pass.
 		if (!force && canServeAgentTasksSnapshot(await readAgentTasksSnapshot(cachePath), since, Date.now())) { return; }
 
 		let acquired = false;
-		try { acquired = await this.cacheManager.acquireAgentTasksLock(); }
+		try { acquired = await this.cacheManager.acquireAgentTasksLock(scope); }
 		catch (err) { this.warn(`Failed to acquire agent tasks lock: ${err}`); }
 		if (!acquired) {
 			this.log('⏭️ Cloud agent refresh skipped — another window is refreshing the shared snapshot');
@@ -2831,7 +2843,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		// reaches across windows, which a per-window timestamp cannot do on its own.
 		if (force && isAgentTasksSnapshotFresh((await readAgentTasksSnapshot(cachePath))?.fetchedAt, Date.now(), GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS)) {
 			this.log('⏭️ Cloud agent manual refresh skipped — another window refreshed it moments ago');
-			try { await this.cacheManager.releaseAgentTasksLock(); }
+			try { await this.cacheManager.releaseAgentTasksLock(scope); }
 			catch (err) { this.warn(`Failed to release agent tasks lock: ${err}`); }
 			return;
 		}
@@ -2839,15 +2851,15 @@ class CopilotTokenTracker implements vscode.Disposable {
 		this._agentSessionsRefreshInFlight = true;
 		// Heartbeat the lock: a slow API pass must not look stale to another window, which would
 		// let it start the same collection in parallel.
-		const heartbeat = setInterval(() => { void this.cacheManager.renewAgentTasksLock(); }, 60 * 1000);
+		const heartbeat = setInterval(() => { void this.cacheManager.renewAgentTasksLock(scope); }, 60 * 1000);
 		try {
-			await this.refreshAgentSessionsSnapshot(session.accessToken, since, cachePath, scope);
+			await this.refreshAgentSessionsSnapshot(session.accessToken, since, cachePath, scope, generation);
 		} catch (err) {
 			this.warn(`Cloud agent session refresh failed: ${err}`);
 		} finally {
 			clearInterval(heartbeat);
 			this._agentSessionsRefreshInFlight = false;
-			try { await this.cacheManager.releaseAgentTasksLock(); }
+			try { await this.cacheManager.releaseAgentTasksLock(scope); }
 			catch (err) { this.warn(`Failed to release agent tasks lock: ${err}`); }
 		}
 	}
@@ -2857,7 +2869,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 * other people started there) with the account-wide task list (tasks started on github.com in
 	 * repos that aren't checked out here, and ad-hoc cloud chat tasks with no repository at all).
 	 */
-	private async refreshAgentSessionsSnapshot(token: string, since: Date, cachePath: string, scope: string): Promise<void> {
+	private async refreshAgentSessionsSnapshot(token: string, since: Date, cachePath: string, scope: string, generation: number): Promise<void> {
 		const workspaceRepos = await discoverGitHubRepos(this._buildWorkspacePaths(), getConfiguredGitHubEnterpriseUri());
 		const existingSnapshot = await readAgentTasksSnapshot(cachePath);
 		const cachedTasks = readAgentTaskRecords(existingSnapshot);
@@ -2877,8 +2889,8 @@ class CopilotTokenTracker implements vscode.Disposable {
 
 		// See refreshRepoPrStatsSnapshot(): never write a snapshot for an identity that is no longer
 		// the current one — the pass may have outlived a sign-out, a switch, or a Clear Cache.
-		if (!this._isGitHubActivityScopeCurrent(scope)) {
-			this.log('🤖 Cloud agent snapshot discarded — the GitHub identity changed while it was being collected');
+		if (!this._isGitHubActivityScopeCurrent(scope, generation)) {
+			this.log('🤖 Cloud agent snapshot discarded — the GitHub identity changed, or the cache was cleared, while it was being collected');
 			return;
 		}
 
@@ -2930,13 +2942,12 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 */
 	private async clearGitHubActivityCaches(): Promise<void> {
 		const removed = await deleteGitHubActivityCacheFiles(this.context.globalStorageUri.fsPath);
-		this._lastRepoPrStats = undefined;
-		this._lastAgentSessionsData = undefined;
 		this._lastManualGitHubActivityRefreshAt = undefined;
-		// The replay buffer retains the last message per feature and re-posts it whenever the
-		// webview announces readiness. Without forgetting them, recreating the Usage Analysis
-		// document would repopulate both tabs from snapshots that have just been deleted.
-		this.analysisMessageReplay.forget('repoPrStats', 'agentSessions');
+		// Also forgets the replay buffer's retained messages — it re-posts the last message per
+		// feature whenever the webview announces readiness, so without this, recreating the Usage
+		// Analysis document would repopulate both tabs from snapshots that were just deleted — and
+		// bumps the generation so a refresh already in flight cannot write its result back.
+		this._discardInMemoryGitHubActivity('Clear Cache was run');
 		this.log(`Cleared ${removed} GitHub activity cache file(s)`);
 	}
 

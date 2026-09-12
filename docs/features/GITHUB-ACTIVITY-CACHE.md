@@ -52,6 +52,10 @@ Cache filenames carry a scope segment built from three things
 3. a **non-reversible SHA-256 hash** of the authenticated account label, truncated to 16 hex
    characters. The login itself is never written to disk or into a filename.
 
+An Enterprise host slug carries a short hash of the exact host alongside the readable part, because
+slugging alone is lossy: `ghe.internal.example` and `ghe-internal.example` would otherwise share a
+scope, and one host's private snapshots could be served for the other.
+
 So `repoprs_prod.github-com.1a2b3c4d5e6f7a8b.snapshot.json`. Signing out, switching accounts or
 repointing the Enterprise host lands on a different file rather than re-serving the previous
 identity's private data. Access tokens are never part of the scope and are never stored.
@@ -153,8 +157,19 @@ rebuilt by the next background refresh, exactly as a first-ever run does: one fu
 budgeted) pass, then incremental passes afterwards.
 
 The Repository PRs cache did **not** need a version bump: its rendered payload is unchanged and the
-per-PR records are purely additive, so an existing snapshot keeps rendering while it has no records
-and simply gains them on the next revalidation.
+per-PR records are purely additive, so a snapshot *at the new path* keeps rendering while it has no
+records and simply gains them on the next revalidation.
+
+Both caches do, however, get a **one-time invalidation from the scoping change itself**. Snapshots
+written before this change live at the unscoped `repoprs_prod.snapshot.json` /
+`agenttasks_prod.snapshot.json`; the new path carries the account and host, so the legacy file is
+never read. That is deliberate — an unscoped file cannot be shown to belong to the account now
+signed in, and serving it would be exactly the cross-identity leak the scoping exists to prevent.
+The cost is one refetch per install; the legacy files are then reclaimed by inactive-scope eviction.
+
+Note that the two GitHub-activity **locks** are scoped the same way as the snapshots they protect.
+A mode-only lock would let a window signed in as one account block a window signed in as another
+from refreshing its own, independent snapshot.
 
 ## Related
 

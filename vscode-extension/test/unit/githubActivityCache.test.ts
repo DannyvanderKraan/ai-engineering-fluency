@@ -30,9 +30,22 @@ test('normalizeGitHubHost folds the github.com spellings together', () => {
 });
 
 test('normalizeGitHubHost keeps enterprise hosts distinct from github.com', () => {
-	assert.equal(normalizeGitHubHost('api.octocat.ghe.com'), 'octocat-ghe-com');
-	assert.equal(normalizeGitHubHost('ghe.internal.example'), 'ghe-internal-example');
+	assert.match(normalizeGitHubHost('api.octocat.ghe.com'), /^octocat-ghe-com-[0-9a-f]{8}$/);
+	assert.equal(normalizeGitHubHost('api.octocat.ghe.com'), normalizeGitHubHost('octocat.ghe.com'));
 	assert.notEqual(normalizeGitHubHost('octocat.ghe.com'), normalizeGitHubHost('github.com'));
+});
+
+test('normalizeGitHubHost does not collapse two different enterprise hosts into one scope', () => {
+	// `ghe.internal.example` and `ghe-internal.example` slug identically; without the hash suffix
+	// they would share a cache scope and one host's private snapshots could serve the other.
+	const dotted = normalizeGitHubHost('ghe.internal.example');
+	const hyphenated = normalizeGitHubHost('ghe-internal.example');
+	assert.notEqual(dotted, hyphenated, `${dotted} vs ${hyphenated}`);
+	assert.match(dotted, /^ghe-internal-example-[0-9a-f]{8}$/);
+});
+
+test('normalizeGitHubHost stays filename-safe for a host with no usable characters', () => {
+	assert.match(normalizeGitHubHost('...'), /^host-[0-9a-f]{8}$/);
 });
 
 test('hashAccountIdentity is stable, case-insensitive and never reveals the login', () => {

@@ -49,13 +49,22 @@ const GITHUB_ACTIVITY_CACHE_FILE_PATTERN = /^(repoprs|agenttasks)_(.+?)\.snapsho
  * Normalize a GitHub host into a stable, filename-safe slug. `api.github.com`, `github.com` and
  * `www.github.com` are the same host as far as the cache is concerned; a GitHub Enterprise host
  * keeps its own identity so its data never satisfies a github.com request (and vice versa).
+ *
+ * Enterprise hosts carry a short hash of the exact canonical host alongside the readable slug.
+ * Collapsing separators alone is lossy — `ghe.internal.example` and `ghe-internal.example` both
+ * slug to `ghe-internal-example` — and two hosts sharing a scope would let one host's private
+ * snapshots be served for the other. github.com keeps its bare, readable slug: its aliases are
+ * deliberate, and it is the one host that cannot collide with an Enterprise host by construction
+ * (an Enterprise scope always carries a hash suffix).
  */
 export function normalizeGitHubHost(hostname: string | undefined): string {
 	const host = (hostname ?? '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
 	if (!host) { return 'github-com'; }
-	const bare = host.replace(/^(api|www)\./, '');
-	const canonical = bare === 'github.com' ? 'github.com' : bare;
-	return canonical.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'github-com';
+	const canonical = host.replace(/^(api|www)\./, '');
+	if (canonical === 'github.com') { return 'github-com'; }
+	const slug = canonical.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+	const digest = crypto.createHash('sha256').update(canonical).digest('hex').slice(0, 8);
+	return slug ? `${slug}-${digest}` : `host-${digest}`;
 }
 
 /**
