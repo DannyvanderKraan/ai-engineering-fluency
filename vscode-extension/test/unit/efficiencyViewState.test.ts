@@ -158,12 +158,26 @@ test('selectRange: keeps the categorical filters — changing the window is not 
 	assert.equal(next.vendor, 'Anthropic');
 });
 
-test('describeScope: announces range, bucket width and editor scope', () => {
-	assert.equal(describeScope(defaultScopeState(), NOW), 'Last 12 weeks, weekly buckets, all editors');
+const LABELS = { range: '12 weeks', resolution: 'Weekly', allEditors: 'All editors', allVendors: 'All vendors' };
+
+test('describeScope: announces every control in the toolbar, including the vendor filter', () => {
+	assert.equal(describeScope(defaultScopeState(), LABELS), '12 weeks, Weekly, All editors, All vendors');
 	assert.equal(
-		describeScope({ ...defaultScopeState(), rangeId: 'last30d', editor: 'Claude Code' }, NOW),
-		'Last 30 days, daily buckets, Claude Code',
+		describeScope({ ...defaultScopeState(), editor: 'Claude Code', vendor: 'Anthropic' }, LABELS),
+		'12 weeks, Weekly, Claude Code, Anthropic',
 	);
+});
+
+test('describeScope: a vendor change is reflected in the announcement', () => {
+	const before = describeScope(defaultScopeState(), LABELS);
+	const after = describeScope({ ...defaultScopeState(), vendor: 'OpenAI' }, LABELS);
+	assert.notEqual(before, after);
+	assert.ok(after.includes('OpenAI'));
+});
+
+test('describeScope: uses the caller-supplied localized labels verbatim', () => {
+	const zh = { range: '12 周', resolution: '按周', allEditors: '所有编辑器', allVendors: '所有厂商' };
+	assert.equal(describeScope(defaultScopeState(), zh), '12 周, 按周, 所有编辑器, 所有厂商');
 });
 
 test('rangeExceedsBehaviorWindow: true only when the range reaches past the session window', () => {

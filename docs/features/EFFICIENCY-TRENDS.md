@@ -103,13 +103,18 @@ support is worse than no filter, because it produces a confident wrong number.
 
 ## Vendor is not the biller
 
-The Models tab's vendor filter uses `getModelBillingProvider()` — **who trains
-and serves the model**. It is not `getBillingGroup(editor, model)`, which
-answers a different question: who charges you. A Claude model used through
-GitHub Copilot is an *Anthropic* model on a *GitHub Copilot* bill. Conflating
-the two would silently change which models the filter hides, so
-`getBillingGroup()` stays reserved for the actual-biller views (the Chart view's
-billing breakdown).
+The Models tab's vendor filter uses `getModelBillingProvider()` — **the model's
+own provider**. It is not `getBillingGroup(editor, model)`, which answers a
+different question: who charges you. A Claude model used through GitHub Copilot
+is an *Anthropic* model on a *GitHub Copilot* bill. Conflating the two would
+silently change which models the filter hides, so `getBillingGroup()` stays
+reserved for the actual-biller views (the Chart view's billing breakdown).
+
+One case blurs the distinction, and the filter does not pretend otherwise: a
+**BYOK custom endpoint** is labelled with the provider group the user
+configured for it (e.g. `Mistral (Custom)`), because that endpoint both serves
+and bills the call. The filter shows that label verbatim rather than guessing
+at the model behind the endpoint.
 
 ## Editor scoping and what it excludes
 
@@ -160,6 +165,9 @@ and the webview's filtered recomputation cannot drift apart.
 - Daily resolution concentrates each session's behavioural counters on its last
   active day; read daily retry/apply rates as "sessions that finished that day".
 - Editor attribution comes from the session file's location, so a session whose
-  editor cannot be identified is invisible to editor-scoped views.
+  editor cannot be identified is invisible to editor-scoped views. Those
+  sessions are bucketed under the `Unknown` sentinel, which is deliberately not
+  offered as a selectable editor — picking it would contradict the exclusion
+  the toolbar promises.
 - A filtered slice is a smaller sample. The existing sample floors still apply,
   which means narrow scopes legitimately show more "—" than the global view.

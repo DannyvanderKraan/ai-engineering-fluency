@@ -15,6 +15,7 @@ sumModelUsageTokens,
 computeFallbackDailyRollup,
 type SessionAggregateInput,
 type UtcDateRanges,
+	preferActualTokens,
 } from '../../../src/statsHelpers';
 import type { ModelUsage, EditorUsage, SessionFileCache, DailyRollupEntry } from '../../../src/types';
 import { scaleModelUsage, preserveAutoRouting, reconcileDebugLogModelUsage } from '../../../src/statsHelpers';
@@ -1376,4 +1377,23 @@ test('computeFallbackDailyRollup: no-ops when tokens or timestamp are missing', 
 
 	computeFallbackDailyRollup(dailyRollups, '2025-03-10T09:00:00.000Z', { tokens: 0 }, {}, 1);
 	assert.equal(Object.keys(dailyRollups).length, 0, 'zero tokens means no rollup entry');
+});
+
+// ── preferActualTokens ───────────────────────────────────────────────────────
+
+test('preferActualTokens: uses the exact API-reported count when there is one', () => {
+	assert.equal(preferActualTokens(5000, 4200), 5000);
+});
+
+test('preferActualTokens: falls back to the estimate when no exact count exists', () => {
+	// The regression this guards: `actualTokens` is 0, not undefined, for a
+	// session with no exact data — a `??` fallback would return 0 and silently
+	// drop the estimate.
+	assert.equal(preferActualTokens(0, 4200), 4200);
+	assert.equal(preferActualTokens(undefined, 4200), 4200);
+});
+
+test('preferActualTokens: a zero estimate stays zero rather than becoming undefined', () => {
+	assert.equal(preferActualTokens(0, 0), 0);
+	assert.equal(preferActualTokens(undefined, 0), 0);
 });

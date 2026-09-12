@@ -113,10 +113,10 @@ const TAG_CONTROLS = (selector) => {
     if (!isVisible(el)) {
       continue;
     }
-    el.setAttribute('data-smoke-id', String(index));
-    const label = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60);
-    // For a <select>, record a value other than the current one so the driver
-    // can change it; a select with one usable option has nothing to exercise.
+    // For a <select>, find a value other than the current one so the driver can
+    // change it; a select with one usable option has nothing to exercise. This
+    // runs *before* the id is assigned, so a skipped select never leaves a
+    // stale `data-smoke-id` for the next control's index to collide with.
     let selectValue = null;
     if (el instanceof HTMLSelectElement) {
       const option = Array.from(el.options).find((o) => !o.disabled && o.value !== el.value);
@@ -125,6 +125,8 @@ const TAG_CONTROLS = (selector) => {
       }
       selectValue = option.value;
     }
+    el.setAttribute('data-smoke-id', String(index));
+    const label = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60);
     // A segmented control's current option, a checked radio: re-clicking it is
     // meant to be inert, so a no-op there is not evidence of broken wiring.
     const alreadySelected =

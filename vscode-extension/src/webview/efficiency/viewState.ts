@@ -131,12 +131,32 @@ export function selectRange(state: EfficiencyScopeState, rangeId: EfficiencyRang
 	return { ...state, rangeId, resolution: 'auto', drill: [] };
 }
 
-/** Human, screen-reader-friendly description of what is currently charted. */
-export function describeScope(state: EfficiencyScopeState, now: Date): string {
-	const range = activeRange(state, now);
-	const resolution = activeResolution(state, now);
-	const editor = state.editor ? state.editor : 'all editors';
-	return `${range.label}, ${resolution} buckets, ${editor}`;
+/**
+ * Localized pieces the scope announcement is assembled from. Passed in rather
+ * than looked up here so this module stays free of the webview's localization
+ * singleton (and stays unit-testable without it).
+ */
+export interface ScopeDescriptionLabels {
+	/** Localized name of the active range, e.g. "12 weeks". */
+	range: string;
+	/** Localized bucket width, e.g. "Weekly". */
+	resolution: string;
+	/** Localized "all editors", used when no editor filter is active. */
+	allEditors: string;
+	/** Localized "all vendors", used when no vendor filter is active. */
+	allVendors: string;
+}
+
+/**
+ * Human, screen-reader-friendly description of what is currently charted.
+ *
+ * Mirrors every control in the toolbar — including the Model vendor filter,
+ * which otherwise would change the charts without announcing anything.
+ */
+export function describeScope(state: EfficiencyScopeState, labels: ScopeDescriptionLabels): string {
+	const editor = state.editor || labels.allEditors;
+	const vendor = state.vendor || labels.allVendors;
+	return `${labels.range}, ${labels.resolution}, ${editor}, ${vendor}`;
 }
 
 /** True when the range reaches further back than the behavioural session window. */

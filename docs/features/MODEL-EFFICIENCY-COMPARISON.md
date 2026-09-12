@@ -34,11 +34,14 @@ alternative the view refuses to offer: silently *aggregating* unlike models into
 one "vendor" row, which would blend different prices and different task mixes
 into a number that looks precise and means nothing.
 
-**Vendor is who trains and serves the model, not who bills you.** It comes from
+**Vendor is the model's own provider, not who bills you.** It comes from
 `getModelBillingProvider()`. A Claude model used through GitHub Copilot is an
 *Anthropic* model on a *GitHub Copilot* bill; `getBillingGroup(editor, model)`
 answers that second question and is deliberately **not** used here — it stays
 reserved for the actual-biller views such as the Chart view's billing breakdown.
+The exception is a BYOK custom endpoint, which carries the provider group the
+user configured for it (e.g. `Mistral (Custom)`) because that endpoint serves
+*and* bills the call; the filter surfaces that label as-is.
 
 Changing the vendor (or editor) re-points the A/B selection at models that still
 exist in the narrowed scope, so the comparison never silently keeps pointing at

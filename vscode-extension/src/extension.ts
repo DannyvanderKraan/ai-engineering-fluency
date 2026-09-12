@@ -305,7 +305,7 @@ import { classifySessionTask, buildClassificationInputFromUsageAnalysis, countDe
 
 // --- Stats helpers ---
 import { addModelUsage, addEditorUsage, addLanguageUsage, computeUtcDateRanges, aggregatePeriodStats, makePeriodAccumulator, computeSessionTotalTokens, computeSessionDurationMs, reconcileModelUsageToTotal, reconcileModelUsageToActualTokens, distributeModelUsageToDays, computeFallbackDailyRollup as _computeFallbackDailyRollup, type SessionAggregateInput } from '../../src/statsHelpers';
-import { scaleModelUsage, reconcileDebugLogModelUsage } from '../../src/statsHelpers';
+import { scaleModelUsage, reconcileDebugLogModelUsage, preferActualTokens } from '../../src/statsHelpers';
 
 // --- GitHub & agent sessions ---
 import {
@@ -4163,6 +4163,40 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 * Get localization strings for webviews based on the current VS Code language.
 	 * This provides localized button labels and other UI strings for webview panels.
 	 */
+	/**
+	 * Efficiency view — scope toolbar strings. Split out of
+	 * {@link getWebviewLocalization} to keep that method inside the file's
+	 * max-lines-per-function budget. Templates with {0} are resolved
+	 * webview-side by localizeFormat(), so they pass through unformatted.
+	 */
+	private getEfficiencyScopeLocalization(): Record<string, string> {
+		return {
+			'efficiency.scope.timeRangeGroup': l10n.t('efficiency.scope.timeRangeGroup'),
+			'efficiency.range.last30d': l10n.t('efficiency.range.last30d'),
+			'efficiency.range.last12w': l10n.t('efficiency.range.last12w'),
+			'efficiency.range.last6m': l10n.t('efficiency.range.last6m'),
+			'efficiency.range.last1y': l10n.t('efficiency.range.last1y'),
+			'efficiency.resolution.label': l10n.t('efficiency.resolution.label'),
+			'efficiency.resolution.auto': l10n.t('efficiency.resolution.auto'),
+			'efficiency.resolution.daily': l10n.t('efficiency.resolution.daily'),
+			'efficiency.resolution.weekly': l10n.t('efficiency.resolution.weekly'),
+			'efficiency.resolution.monthly': l10n.t('efficiency.resolution.monthly'),
+			'efficiency.scope.editorLabel': l10n.t('efficiency.scope.editorLabel'),
+			'efficiency.scope.allEditors': l10n.t('efficiency.scope.allEditors'),
+			'efficiency.scope.vendorLabel': l10n.t('efficiency.scope.vendorLabel'),
+			'efficiency.scope.allVendors': l10n.t('efficiency.scope.allVendors'),
+			'efficiency.scope.drillLabel': l10n.t('efficiency.scope.drillLabel'),
+			'efficiency.scope.drillPlaceholder': l10n.t('efficiency.scope.drillPlaceholder'),
+			'efficiency.scope.back': l10n.t('efficiency.scope.back'),
+			'efficiency.scope.backAria': l10n.t('efficiency.scope.backAria'),
+			'efficiency.scope.drillHintWeekly': l10n.t('efficiency.scope.drillHintWeekly'),
+			'efficiency.scope.drillHintMonthly': l10n.t('efficiency.scope.drillHintMonthly'),
+			'efficiency.scope.announce': l10n.t('efficiency.scope.announce'),
+			'efficiency.scope.behaviorGap': l10n.t('efficiency.scope.behaviorGap'),
+			'efficiency.scope.editorScoped': l10n.t('efficiency.scope.editorScoped'),
+		};
+	}
+
 	private getWebviewLocalization(): Record<string, string> {
 		const language = vscode.env.language;
 		
@@ -4223,6 +4257,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'logviewer.summary.timeline': l10n.t('logviewer.summary.timeline'),
 			'logviewer.summary.started': l10n.t('logviewer.summary.started'),
 			'logviewer.summary.lastActivity': l10n.t('logviewer.summary.lastActivity'),
+			...this.getEfficiencyScopeLocalization(),
 			// Current language for reference
 			'__language__': language
 		};
@@ -9573,7 +9608,7 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 			applies: ua?.applyUsage?.totalApplies,
 			codeBlocks: ua?.applyUsage?.totalCodeBlocks,
 			interactions: sessionData.interactions,
-			totalTokens: sessionData.actualTokens ?? sessionData.tokens,
+			totalTokens: preferActualTokens(sessionData.actualTokens, sessionData.tokens),
 			skillCalls,
 			editor,
 		};

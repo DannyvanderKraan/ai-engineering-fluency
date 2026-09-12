@@ -387,11 +387,24 @@ export function toEfficiencyDailyVolume(dailyStats: DailyTokenStats[], deps: Eff
 	});
 }
 
-/** Editor display names present in the payload, most-used first. */
+/**
+ * The label the editor detectors fall back to when a session's editor cannot
+ * be identified from its path. It is a sentinel, not an editor.
+ */
+export const UNKNOWN_EDITOR = 'Unknown';
+
+/**
+ * Selectable editor display names present in the payload, most-used first.
+ *
+ * The `Unknown` sentinel is deliberately omitted: those sessions are counted in
+ * the unfiltered totals and excluded from every editor scope, which is what the
+ * toolbar tells the user. Offering it as a scope would make that promise false.
+ */
 export function listEfficiencyEditors(volume: EfficiencyDailyVolume[]): string[] {
 	const tokensByEditor = new Map<string, number>();
 	for (const day of volume) {
 		for (const [editor, slice] of Object.entries(day.byEditor ?? {})) {
+			if (editor === UNKNOWN_EDITOR) { continue; }
 			tokensByEditor.set(editor, (tokensByEditor.get(editor) ?? 0) + slice.tokens);
 		}
 	}
@@ -1279,10 +1292,14 @@ export function selectModelDaysForEditor(days: ModelDailyInput[], editor?: strin
 /**
  * Underlying model vendors present in `days`, alphabetically.
  *
- * This is the vendor that *trains and serves* the model
- * ({@link getModelBillingProvider}), not whoever bills for the call — a Claude
- * model used through Copilot is an Anthropic model on a GitHub Copilot bill,
- * and conflating the two would make the filter lie.
+ * This is the model's own provider ({@link getModelBillingProvider}), not
+ * whoever bills for the call — a Claude model used through Copilot is an
+ * Anthropic model on a GitHub Copilot bill, and conflating the two would make
+ * the filter lie. The one place the two blur is a BYOK custom endpoint, which
+ * that helper labels with the user's own provider group (e.g.
+ * "Mistral (Custom)") because the call is served by, and billed by, that
+ * endpoint; the filter surfaces that label verbatim rather than guessing at
+ * the model behind it.
  */
 export function listModelVendors(days: ModelDailyInput[]): string[] {
 	const vendors = new Set<string>();

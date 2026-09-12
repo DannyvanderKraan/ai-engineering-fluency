@@ -16,6 +16,19 @@ import { getCustomProviderGroup } from './webview/shared/modelUtils';
  * Sessions from these editors should use `copilotPricing` when computing costs.
  * All other editors are billed directly by their own provider (use `provider` pricing).
  */
+/**
+ * The token count to trust for a session: the exact, API-reported count when
+ * there is one, otherwise the character-based estimate.
+ *
+ * `actualTokens` is `0` (or absent) rather than undefined when a session has no
+ * exact data, so a `??` fallback would treat that zero as authoritative and
+ * silently drop the estimate. This is the repository's canonical form of that
+ * check — see AGENTS.md, "CLI Must Reuse Shared Functions".
+ */
+export function preferActualTokens(actualTokens: number | undefined, estimatedTokens: number): number {
+	return actualTokens !== undefined && actualTokens > 0 ? actualTokens : estimatedTokens;
+}
+
 export const COPILOT_EDITOR_NAMES = new Set([
 	'VS Code', 'VS Code Insiders', 'VS Code Exploration',
 	'VS Code Server', 'VS Code Server (Insiders)', 'VSCodium',

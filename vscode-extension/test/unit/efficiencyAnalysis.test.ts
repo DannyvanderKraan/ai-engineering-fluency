@@ -27,6 +27,7 @@ import {
 	filterModelsByVendor,
 	listEfficiencyEditors,
 	listModelVendors,
+	UNKNOWN_EDITOR,
 	resolveBucketResolution,
 	resolveEfficiencyRange,
 	selectModelDaysForEditor,
@@ -1004,6 +1005,20 @@ test('listEfficiencyEditors: orders editors by tokens, largest first', () => {
 		volumeDay('2026-07-13', { 'VS Code': { tokens: 300, sessions: 1, interactions: 1, loc: 1 }, 'Claude Code': { tokens: 700, sessions: 1, interactions: 1, loc: 1 } }),
 	], flatDeps);
 	assert.deepEqual(listEfficiencyEditors(volume), ['Claude Code', 'VS Code']);
+});
+
+test('listEfficiencyEditors: omits the Unknown sentinel, which is not a selectable editor', () => {
+	const volume = toEfficiencyDailyVolume([
+		volumeDay('2026-07-13', {
+			'VS Code': { tokens: 300, sessions: 1, interactions: 1, loc: 1 },
+			[UNKNOWN_EDITOR]: { tokens: 900, sessions: 3, interactions: 3, loc: 3 },
+		}),
+	], flatDeps);
+	// Even though it is the largest bucket, it must not be offered as a scope —
+	// the toolbar promises those sessions are excluded from editor-scoped views.
+	assert.deepEqual(listEfficiencyEditors(volume), ['VS Code']);
+	// It still contributes to the unfiltered totals.
+	assert.equal(volume[0].tokens, 1200);
 });
 
 test('buildSkillUsageSeries: scoping to an editor keeps only that editor\'s invocations', () => {

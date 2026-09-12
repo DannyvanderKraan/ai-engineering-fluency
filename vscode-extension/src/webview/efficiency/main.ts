@@ -4,6 +4,8 @@
 // combined indexed chart that overlays the ratio series with output.
 import { navButtonsHtml } from '../shared/buttonConfig';
 import { setHtml } from '../shared/domUtils';
+import { createViewStateManager } from '../shared/viewState';
+import type { WebviewStateApi } from '../shared/viewState';
 import { escapeHtml, formatCompact, setCompactNumbers } from '../shared/formatUtils';
 import type { CacheBreakCause } from '../../../../src/cacheBreakage';
 import { wireExtensionPointButtons } from '../shared/extensionPoints';
@@ -62,7 +64,7 @@ import {
 	selectRange,
 } from './viewState';
 import type { EfficiencyScopeState } from './viewState';
-import { initializeWebviewLocalization, setCurrentLanguage } from '../shared/localization';
+import { initializeWebviewLocalization, localize, localizeFormat, setCurrentLanguage } from '../shared/localization';
 
 // Minimal structural types for the dynamically imported Chart.js bundle —
 // a `typeof import('chart.js/auto')` type-import trips TS1542 under CJS resolution.
@@ -137,18 +139,30 @@ const SCOPE_POLICY: Partial<Record<TabId, { editor: boolean; vendor: boolean }>>
 	models: { editor: true, vendor: true },
 };
 
-type PersistedState = { activeTab?: TabId; scope?: EfficiencyScopeState };
+/**
+ * Persisted view state. Goes through the shared `createViewStateManager` so a
+ * partial update never discards a field this view has not read yet.
+ */
+interface EfficiencyPersistedState extends Record<string, unknown> {
+	activeTab: TabId;
+	scope: EfficiencyScopeState;
+}
+
+const viewStateManager = createViewStateManager<EfficiencyPersistedState>(
+	vscode as WebviewStateApi<EfficiencyPersistedState>,
+	{ activeTab: 'trends', scope: defaultScopeState() },
+);
 
 let scope: EfficiencyScopeState = defaultScopeState();
 
 function restorePersistedState(): void {
-	const saved = vscode.getState() as PersistedState | undefined;
-	scope = normalizeScopeState(saved?.scope);
-	if (saved?.activeTab && TABS.some(t => t.id === saved.activeTab)) { activeTab = saved.activeTab; }
+	const saved = viewStateManager.restore();
+	scope = normalizeScopeState(saved.scope);
+	if (TABS.some(t => t.id === saved.activeTab)) { activeTab = saved.activeTab; }
 }
 
 function persistState(): void {
-	vscode.setState({ activeTab, scope });
+	viewStateManager.patch({ activeTab, scope });
 }
 
 /** The reference "now" for range maths — the moment the extension built this payload. */
@@ -239,36 +253,39 @@ function scopedModelDaily(d: EfficiencyViewData): typeof d.modelDaily {
 
 // ── Scope toolbar ──────────────────────────────────────────────────────
 
-const RESOLUTION_LABELS: Record<EfficiencyBucketResolution, string> = {
-	daily: 'Daily',
-	weekly: 'Weekly',
-	monthly: 'Monthly',
-};
+function resolutionLabel(resolution: EfficiencyBucketResolution): string {
+	return localize(`efficiency.resolution.${resolution}`);
+}
+
+/** Localized name of the active range: a preset's own label, or the drilled-into date span. */
+function rangeLabel(s: ScopedData): string {
+	return isDrilled(scope) ? s.range.label : localize(`efficiency.range.${scope.rangeId}`);
+}
 
 function rangeButtonsHtml(): string {
 	const buttons = EFFICIENCY_RANGE_OPTIONS.map(o => {
 		const active = !isDrilled(scope) && scope.rangeId === o.id;
-		return `<button type="button" class="scope-preset ${active ? 'active' : ''}" data-range="${o.id}" aria-pressed="${active}">${escapeHtml(o.label)}</button>`;
+		return `<button type="button" class="scope-preset ${active ? 'active' : ''}" data-range="${o.id}" aria-pressed="${active}">${escapeHtml(localize(`efficiency.range.${o.id}`))}</button>`;
 	}).join('');
-	return `<div class="scope-presets" role="group" aria-label="Time range">${buttons}</div>`;
+	return `<div class="scope-presets" role="group" aria-label="${escapeHtml(localize('efficiency.scope.timeRangeGroup'))}">${buttons}</div>`;
 }
 
 function resolutionSelectHtml(d: EfficiencyViewData): string {
 	const now = payloadNow(d);
 	const options = [
-		{ value: 'auto', label: `Auto (${RESOLUTION_LABELS[activeResolution(scope, now)].toLowerCase()})` },
-		...activeResolutionOptions(scope, now).map(r => ({ value: r, label: RESOLUTION_LABELS[r] })),
+		{ value: 'auto', label: localizeFormat('efficiency.resolution.auto', resolutionLabel(activeResolution(scope, now)).toLowerCase()) },
+		...activeResolutionOptions(scope, now).map(r => ({ value: r, label: resolutionLabel(r) })),
 	];
 	return selectHtml('eff-resolution', options, scope.resolution);
 }
 
 function editorSelectHtml(d: EfficiencyViewData): string {
-	const options = [{ value: '', label: 'All editors' }, ...(d.editors ?? []).map(e => ({ value: e, label: e }))];
+	const options = [{ value: '', label: localize('efficiency.scope.allEditors') }, ...(d.editors ?? []).map(e => ({ value: e, label: e }))];
 	return selectHtml('eff-editor', options, scope.editor);
 }
 
 function vendorSelectHtml(d: EfficiencyViewData): string {
-	const options = [{ value: '', label: 'All vendors' }, ...listModelVendors(d.modelDaily).map(v => ({ value: v, label: v }))];
+	const options = [{ value: '', label: localize('efficiency.scope.allVendors') }, ...listModelVendors(d.modelDaily).map(v => ({ value: v, label: v }))];
 	return selectHtml('eff-vendor', options, scope.vendor);
 }
 
@@ -283,22 +300,28 @@ function renderScopeToolbar(d: EfficiencyViewData, s: ScopedData): string {
 	const policy = SCOPE_POLICY[activeTab];
 	if (!policy || !s.supported) { return ''; }
 	const drill = isDrilled(scope)
-		? `<span class="scope-chip">🔍 ${escapeHtml(s.range.label)}<button type="button" id="eff-drill-back" class="scope-back" aria-label="Back to the previous range">↩ Back</button></span>`
+		? `<span class="scope-chip">🔍 ${escapeHtml(s.range.label)}<button type="button" id="eff-drill-back" class="scope-back" aria-label="${escapeHtml(localize('efficiency.scope.backAria'))}">${escapeHtml(localize('efficiency.scope.back'))}</button></span>`
 		: canDrillInto(s.resolution)
-			? `<span class="scope-hint">Click a ${s.resolution === 'weekly' ? 'week' : 'month'} on a chart to drill into its days</span>`
+			? `<span class="scope-hint">${escapeHtml(localize(`efficiency.scope.drillHint${s.resolution === 'weekly' ? 'Weekly' : 'Monthly'}`))}</span>`
 			: '';
+	const announcement = describeScope(scope, {
+		range: rangeLabel(s),
+		resolution: resolutionLabel(s.resolution),
+		allEditors: localize('efficiency.scope.allEditors'),
+		allVendors: localize('efficiency.scope.allVendors'),
+	});
 	return `
 		<div class="scope-toolbar">
 			${rangeButtonsHtml()}
-			<label class="scope-field">Resolution ${resolutionSelectHtml(d)}</label>
-			${policy.editor ? `<label class="scope-field">Editor ${editorSelectHtml(d)}</label>` : ''}
-			${policy.vendor ? `<label class="scope-field">Model vendor ${vendorSelectHtml(d)}</label>` : ''}
+			<label class="scope-field">${escapeHtml(localize('efficiency.resolution.label'))} ${resolutionSelectHtml(d)}</label>
+			${policy.editor ? `<label class="scope-field">${escapeHtml(localize('efficiency.scope.editorLabel'))} ${editorSelectHtml(d)}</label>` : ''}
+			${policy.vendor ? `<label class="scope-field">${escapeHtml(localize('efficiency.scope.vendorLabel'))} ${vendorSelectHtml(d)}</label>` : ''}
 			${drillSelectHtml(s)}
 			${drill}
 		</div>
-		<p class="scope-announce" role="status" aria-live="polite">Showing ${escapeHtml(describeScope(scope, payloadNow(d)))}.</p>
-		${s.behaviorGap ? `<p class="scope-caveat">⚠️ Session-derived metrics (active minutes, retry rate, apply rate, skills) are only collected for the last ${Math.round((d.behaviorWindowDays ?? 84) / 7)} weeks, so earlier buckets in this range show gaps rather than zeros.</p>` : ''}
-		${scope.editor ? `<p class="scope-caveat">Scoped to <b>${escapeHtml(scope.editor)}</b>. Sessions whose editor could not be determined are excluded from this view.</p>` : ''}`;
+		<p class="scope-announce" role="status" aria-live="polite">${escapeHtml(localizeFormat('efficiency.scope.announce', announcement))}</p>
+		${s.behaviorGap ? `<p class="scope-caveat">${escapeHtml(localizeFormat('efficiency.scope.behaviorGap', Math.round((d.behaviorWindowDays ?? 84) / 7)))}</p>` : ''}
+		${scope.editor ? `<p class="scope-caveat">${escapeHtml(localizeFormat('efficiency.scope.editorScoped', scope.editor))}</p>` : ''}`;
 }
 
 /** Shape Chart.js hands the click handler for the element under the cursor. */
@@ -324,8 +347,8 @@ function drillClickHandler(s: ScopedData): ((event: unknown, elements: ChartClic
  */
 function drillSelectHtml(s: ScopedData): string {
 	if (!canDrillInto(s.resolution) || s.buckets.length === 0) { return ''; }
-	const options = [{ value: '', label: 'Drill into…' }, ...s.buckets.map(b => ({ value: b.key, label: b.label }))];
-	return `<label class="scope-field">Drill ${selectHtml('eff-drill-pick', options, '')}</label>`;
+	const options = [{ value: '', label: localize('efficiency.scope.drillPlaceholder') }, ...s.buckets.map(b => ({ value: b.key, label: b.label }))];
+	return `<label class="scope-field">${escapeHtml(localize('efficiency.scope.drillLabel'))} ${selectHtml('eff-drill-pick', options, '')}</label>`;
 }
 
 // ── Formatting ─────────────────────────────────────────────────────────
@@ -479,8 +502,7 @@ function renderTrendsTab(d: EfficiencyViewData, s: ScopedData): string {
 
 /** Opening sentence of a scoped chart: what is on the x-axis, and over what window. */
 function bucketIntro(s: ScopedData): string {
-	const unit = s.resolution === 'daily' ? 'Daily' : s.resolution === 'weekly' ? 'Weekly' : 'Monthly';
-	return `${unit} ratios over ${s.range.label.toLowerCase()} (${s.points.length} ${s.resolution === 'daily' ? 'days' : s.resolution === 'weekly' ? 'weeks' : 'months'}).`;
+	return `${resolutionLabel(s.resolution)} ratios over ${s.range.label.toLowerCase()} (${s.points.length} ${s.resolution === 'daily' ? 'days' : s.resolution === 'weekly' ? 'weeks' : 'months'}).`;
 }
 
 function renderDeltasTab(d: EfficiencyViewData): string {
@@ -607,9 +629,9 @@ function renderSkillsTab(d: EfficiencyViewData, s: ScopedData): string {
 		${impactSection}`;
 }
 
-async function drawSkillsChart(s: ScopedData): Promise<void> {
+async function drawSkillsChart(s: ScopedData, generation: number): Promise<void> {
 	await loadChartModule();
-	if (!Chart) { return; }
+	if (!Chart || !isCurrentRender(generation)) { return; }
 	const canvas = document.getElementById('skills-chart') as HTMLCanvasElement | null;
 	if (!canvas) { return; }
 	const weeks = s.skills.weeks;
@@ -1102,7 +1124,7 @@ function renderModelsTab(d: EfficiencyViewData, s: ScopedData): string {
 		<p class="eff-section-note">Each axis is indexed so the better side scores 100. A larger shape is a better all-round profile; a spiky shape means the side wins on some dimensions and loses on others.</p>
 		<div class="model-radar-wrap"><canvas id="model-radar"></canvas></div>
 		<h3>Drift over time</h3>
-		<p class="eff-section-note">${escapeHtml(s.resolution === 'daily' ? 'Daily' : s.resolution === 'weekly' ? 'Weekly' : 'Monthly')} values for each side's model over ${escapeHtml(s.range.label.toLowerCase())}, so a model getting better — or quietly getting worse — is visible. Gaps are buckets where the model was not used. The head-to-head comparison above keeps its own window pickers.</p>
+		<p class="eff-section-note">${escapeHtml(resolutionLabel(s.resolution))} values for each side's model over ${escapeHtml(s.range.label.toLowerCase())}, so a model getting better — or quietly getting worse — is visible. Gaps are buckets where the model was not used. The head-to-head comparison above keeps its own window pickers.</p>
 		<div class="model-trend-controls"><label>Metric ${selectHtml('model-trend-metric', metricOptions, modelState.trendMetric)}</label></div>
 		<div class="model-trend-wrap"><canvas id="model-trend"></canvas></div>`;
 }
@@ -1138,10 +1160,10 @@ function radarAxes(cmp: ModelComparison): { row: ModelComparisonRow; scores: { a
 	return axes;
 }
 
-async function drawModelRadar(cmp: ModelComparison): Promise<void> {
+async function drawModelRadar(cmp: ModelComparison, generation: number): Promise<void> {
 	await loadChartModule();
 	const canvas = document.getElementById('model-radar') as HTMLCanvasElement | null;
-	if (!Chart || !canvas) { return; }
+	if (!Chart || !canvas || !isCurrentRender(generation)) { return; }
 	const axes = radarAxes(cmp);
 	if (axes.length < 3) {
 		setHtml(canvas.parentElement as HTMLElement, `<p class="eff-section-note">Not enough shared metrics between the two sides to draw a shape.</p>`);
@@ -1194,10 +1216,10 @@ function trendModels(): string[] {
 	return wanted.filter((m, i, arr) => m !== '' && arr.indexOf(m) === i);
 }
 
-async function drawModelTrend(d: EfficiencyViewData, s: ScopedData): Promise<void> {
+async function drawModelTrend(d: EfficiencyViewData, s: ScopedData, generation: number): Promise<void> {
 	await loadChartModule();
 	const canvas = document.getElementById('model-trend') as HTMLCanvasElement | null;
-	if (!Chart || !canvas) { return; }
+	if (!Chart || !canvas || !isCurrentRender(generation)) { return; }
 	const spec = MODEL_TREND_METRICS.find(m => m.id === modelState.trendMetric) ?? MODEL_TREND_METRICS[0];
 	const models = trendModels();
 	const colors = [cssVar('--vscode-charts-blue', '#60a5fa'), cssVar('--vscode-charts-orange', '#ff9f40')];
@@ -1236,20 +1258,37 @@ async function drawModelTrend(d: EfficiencyViewData, s: ScopedData): Promise<voi
 	} as never));
 }
 
-async function drawModelCharts(d: EfficiencyViewData, s: ScopedData): Promise<void> {
+async function drawModelCharts(d: EfficiencyViewData, s: ScopedData, generation: number): Promise<void> {
 	const cmp = buildModelComparison(d);
 	if (!cmp) { return; }
-	await drawModelRadar(cmp);
-	await drawModelTrend(d, s);
+	await drawModelRadar(cmp, generation);
+	if (!isCurrentRender(generation)) { return; }
+	await drawModelTrend(d, s, generation);
 }
 
 function destroyCharts(): void {
 	for (const c of liveCharts.splice(0)) { c.destroy(); }
 }
 
-async function drawTrendCharts(s: ScopedData): Promise<void> {
+/**
+ * Bumped by every render. Each async draw captures the value it started under
+ * and bails if a newer render has since begun.
+ *
+ * Without this, a draw that is still awaiting the dynamic Chart.js import when
+ * the user changes scope or tab resumes *after* `destroyCharts()` has run, and
+ * builds a chart from the stale payload onto the current canvas — a duplicate
+ * or wrong-data chart that the next `destroyCharts()` cannot pre-empt.
+ */
+let renderGeneration = 0;
+
+/** True while `generation` is still the render the page is showing. */
+function isCurrentRender(generation: number): boolean {
+	return generation === renderGeneration;
+}
+
+async function drawTrendCharts(s: ScopedData, generation: number): Promise<void> {
 	await loadChartModule();
-	if (!Chart) { return; }
+	if (!Chart || !isCurrentRender(generation)) { return; }
 	const labels = s.points.map(p => p.label);
 	const fg = cssVar('--vscode-descriptionForeground', '#999');
 	const grid = cssVar('--vscode-widget-border', 'rgba(128,128,128,0.2)');
@@ -1296,9 +1335,9 @@ function indexTo100(values: (number | null)[]): (number | null)[] {
 	return values.map(v => (v === null ? null : (v / base) * 100));
 }
 
-async function drawCombinedChart(s: ScopedData): Promise<void> {
+async function drawCombinedChart(s: ScopedData, generation: number): Promise<void> {
 	await loadChartModule();
-	if (!Chart) { return; }
+	if (!Chart || !isCurrentRender(generation)) { return; }
 	const canvas = document.getElementById('combined-chart') as HTMLCanvasElement | null;
 	if (!canvas) { return; }
 	const labels = s.points.map(p => p.label);
@@ -1383,6 +1422,7 @@ function render(): void {
 	const root = document.getElementById('root');
 	if (!root || !data) { return; }
 	setCompactNumbers(data.compactNumbers !== false);
+	const generation = ++renderGeneration;
 	destroyCharts();
 	// Snap back to a real tab if the selected one is no longer shown — e.g. the
 	// Prompt Cache tab after cache data disappeared — so the content and the
@@ -1406,10 +1446,10 @@ function render(): void {
 		</div>
 	`);
 	wireEvents();
-	if (activeTab === 'trends') { void drawTrendCharts(scoped); }
-	if (activeTab === 'skills' && scoped.hasSkills) { void drawSkillsChart(scoped); }
-	if (activeTab === 'combined') { void drawCombinedChart(scoped); }
-	if (activeTab === 'models') { void drawModelCharts(data, scoped); }
+	if (activeTab === 'trends') { void drawTrendCharts(scoped, generation); }
+	if (activeTab === 'skills' && scoped.hasSkills) { void drawSkillsChart(scoped, generation); }
+	if (activeTab === 'combined') { void drawCombinedChart(scoped, generation); }
+	if (activeTab === 'models') { void drawModelCharts(data, scoped, generation); }
 }
 
 /** Applies a scope transition: persist it and redraw, skipping a no-op change. */
