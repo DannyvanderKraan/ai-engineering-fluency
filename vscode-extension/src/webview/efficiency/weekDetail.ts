@@ -263,7 +263,7 @@ export function renderModelWeekDetail(detail: ModelWeekDetail | null): string {
 		: '';
 	const volume = detail.metrics === null ? '' : `
 		<dl class="week-raw">
-			${rawStat(localize('efficiency.week.sessions'), detail.metrics.sessions.toString())}
+			${rawStat(localize('efficiency.week.sessions'), formatCompact(detail.metrics.sessions))}
 			${rawStat(localize('efficiency.week.tokens'), formatCompact(detail.metrics.tokens))}
 			${rawStat(localize('efficiency.week.loc'), formatCompact(detail.metrics.loc))}
 			${rawStat(localize('efficiency.week.cost'), `$${detail.metrics.cost.toFixed(2)}`)}

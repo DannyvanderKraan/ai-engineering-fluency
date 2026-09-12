@@ -49,6 +49,7 @@ import {
 	trendMetricForDelta,
 } from './weekDetail';
 import { initializeWebviewLocalization, localize, setCurrentLanguage } from '../shared/localization';
+import { registerMessageHandler } from '../shared/messageHandler';
 
 // Minimal structural types for the dynamically imported Chart.js bundle —
 // a `typeof import('chart.js/auto')` type-import trips TS1542 under CJS resolution.
@@ -1300,7 +1301,14 @@ function wireModelControls(): void {
 /** Wires the horizon buttons, the week selector, and the two contextual navigation buttons. */
 function wireZoomControls(): void {
 	document.querySelectorAll<HTMLButtonElement>('.eff-range-btn').forEach(btn => {
-		btn.addEventListener('click', () => { requestRange(btn.dataset.range as EfficiencyTrendRangeId); });
+		btn.addEventListener('click', () => {
+			// Only ask the host to rebuild for a horizon the payload actually offers —
+			// the dataset value is markup, not a typed value.
+			const range = btn.dataset.range;
+			if (range && data?.trendRanges.some(r => r.id === range)) {
+				requestRange(range as EfficiencyTrendRangeId);
+			}
+		});
 	});
 	document.getElementById('eff-week-select')?.addEventListener('change', ev => {
 		const value = (ev.target as HTMLSelectElement).value;
@@ -1308,10 +1316,16 @@ function wireZoomControls(): void {
 		renderAndRestoreFocus('#eff-week-select');
 	});
 	document.querySelectorAll<HTMLButtonElement>('[data-focus-trend]').forEach(btn => {
-		btn.addEventListener('click', () => { focusTrendCard(btn.dataset.focusTrend ?? ''); });
+		btn.addEventListener('click', () => {
+			const metric = btn.dataset.focusTrend;
+			if (metric) { focusTrendCard(metric); }
+		});
 	});
 	document.querySelectorAll<HTMLButtonElement>('[data-focus-model]').forEach(btn => {
-		btn.addEventListener('click', () => { focusModelContext(btn.dataset.focusModel ?? ''); });
+		btn.addEventListener('click', () => {
+			const model = btn.dataset.focusModel;
+			if (model) { focusModelContext(model); }
+		});
 	});
 }
 
@@ -1362,8 +1376,10 @@ async function bootstrap(): Promise<void> {
 		return;
 	}
 	zoomState.range = data.trendRange ?? DEFAULT_EFFICIENCY_TREND_RANGE;
-	window.addEventListener('message', event => {
-		const message = event.data as { command?: string; data?: EfficiencyViewData } | undefined;
+	// The shared handler verifies the message origin before dispatching; a raw
+	// `window.addEventListener('message', …)` would accept a horizon payload from
+	// anywhere that can reach this document.
+	registerMessageHandler<{ command?: string; data?: EfficiencyViewData } | undefined>(message => {
 		if (message?.command === 'updateEfficiency' && message.data) {
 			applyEfficiencyUpdate(message.data);
 		}
