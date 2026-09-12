@@ -102,6 +102,10 @@ export interface WebviewLocalization {
 	'efficiency.week.better': string;
 	'efficiency.week.worse': string;
 	'efficiency.week.partialChip': string;
+	'efficiency.horizon.range12w': string;
+	'efficiency.horizon.range26w': string;
+	'efficiency.horizon.range52w': string;
+	'efficiency.week.editTurns': string;
 	// HydraFusion Routing section (log viewer) and its Session Steps Overview integration
 	'hydrafusion.table.cost': string;
 	'hydrafusion.turn.costTooltip': string;
@@ -170,7 +174,7 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'logviewer.summary.lastActivity': 'Last activity',
 	'efficiency.horizon.label': 'Horizon',
 	'efficiency.horizon.hint': 'Applies to the weekly charts on this page. Month vs Month and Cost Attribution keep their own fixed windows.',
-	'efficiency.horizon.loading': 'Loading the wider horizon…',
+	'efficiency.horizon.loading': 'Loading the selected horizon…',
 	'efficiency.week.label': 'Selected week',
 	'efficiency.week.none': 'No week selected',
 	'efficiency.week.hint': 'You can also click a point on a chart.',
@@ -205,6 +209,10 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'efficiency.week.better': 'better',
 	'efficiency.week.worse': 'worse',
 	'efficiency.week.partialChip': 'Partial week',
+	'efficiency.horizon.range12w': '12 weeks',
+	'efficiency.horizon.range26w': '26 weeks',
+	'efficiency.horizon.range52w': '52 weeks',
+	'efficiency.week.editTurns': 'Edit turns',
 	'hydrafusion.table.cost': 'Cost',
 	'hydrafusion.turn.costTooltip': 'Cost for this turn',
 	'hydrafusion.turn.jumpToStepTooltip': 'Jump to step #{0} in the Session Steps Overview below',

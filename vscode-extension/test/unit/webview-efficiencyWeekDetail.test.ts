@@ -117,17 +117,25 @@ test('renderRangeControls: offers every horizon and marks the selected one witho
 	assert.ok(html.includes('id="eff-range-label"'));
 });
 
+test('renderRangeControls: button text comes from the localization bundle, not the payload prose', () => {
+	// The payload's `label` is locale-neutral data; the webview resolves the
+	// display text by range id so a zh-CN webview does not render English here.
+	const html = renderRangeControls([{ id: '26w', weeks: 26, label: 'NOT-THE-BUNDLE-TEXT' }], '26w', false);
+	assert.ok(html.includes('26 weeks'), html);
+	assert.ok(!html.includes('NOT-THE-BUNDLE-TEXT'), html);
+});
+
 test('renderRangeControls: a pending horizon is announced, not enforced by disabling the buttons', () => {
 	const loading = renderRangeControls(EFFICIENCY_TREND_RANGES, '12w', true);
 	assert.ok(loading.includes('aria-busy="true"'));
 	assert.ok(loading.includes('role="status"'));
-	assert.ok(loading.includes('Loading the wider horizon'));
+	assert.ok(loading.includes('Loading the selected horizon'));
 	// Disabling would drop keyboard focus mid-interaction and block a second choice.
 	assert.ok(!loading.includes('disabled'));
 
 	const idle = renderRangeControls(EFFICIENCY_TREND_RANGES, '12w', false);
 	assert.ok(idle.includes('aria-busy="false"'));
-	assert.ok(!idle.includes('Loading the wider horizon'));
+	assert.ok(!idle.includes('Loading the selected horizon'));
 });
 
 // ── Week selector ────────────────────────────────────────────────────────────
@@ -220,6 +228,17 @@ test('renderSkillWeekDetail: lists the week’s skills and escapes their names',
 	assert.ok(!html.includes('<img src=x'));
 });
 
+test('renderSkillWeekDetail: carries the same raw volume as the other tabs when the week is supplied', () => {
+	const trends = buildSkillUsageTrends([{ dayKey: '2026-07-14', skillCalls: { graphify: 2 } }], deps, 12);
+	const week = buildEfficiencyWeekDetail(series(), '2026-07-13', NOW);
+	const html = renderSkillWeekDetail(buildSkillWeekDetail(trends, '2026-07-13', NOW), week);
+	for (const label of ['Raw volume', 'Sessions', 'Tokens', 'Turns', 'Lines changed', 'Estimated cost']) {
+		assert.ok(html.includes(label), `${label} missing from the skills drill-down`);
+	}
+	// Still shows the skill-specific part.
+	assert.ok(html.includes('Skill invocations this week'));
+});
+
 test('renderSkillWeekDetail: a week with no invocations says so instead of rendering an empty table', () => {
 	const trends = buildSkillUsageTrends([], deps, 12);
 	const html = renderSkillWeekDetail(buildSkillWeekDetail(trends, '2026-07-13', NOW));
@@ -230,22 +249,43 @@ test('renderSkillWeekDetail: a week with no invocations says so instead of rende
 
 test('renderModelWeekDetail: an unused model reports unavailability rather than a zeroed profile', () => {
 	const modelSeries = buildModelWeeklySeries([modelDay('2026-07-14', { kimi: { sessions: 4, sessionShare: 4, inputTokens: 1000, outputTokens: 200, cost: 1 } })], 'kimi', NOW, 12);
-	const html = renderModelWeekDetail(buildModelWeekDetail(modelSeries, 'kimi', modelSeries[0].weekKey, NOW));
+	const html = renderModelWeekDetail([buildModelWeekDetail(modelSeries, 'kimi', modelSeries[0].weekKey, NOW)]);
 	assert.ok(html.includes('was not used in this week'));
 	assert.ok(html.includes('>—<'));
+});
+
+test('renderModelWeekDetail: describes every compared model, so a click on either series is not misattributed', () => {
+	const days = [modelDay('2026-07-14', {
+		kimi: { sessions: 6, sessionShare: 6, editTurns: 20, inputTokens: 90_000, outputTokens: 10_000, cost: 4 },
+		qwen: { sessions: 3, sessionShare: 3, editTurns: 12, inputTokens: 40_000, outputTokens: 5_000, cost: 1 },
+	})];
+	const details = ['kimi', 'qwen'].map(model =>
+		buildModelWeekDetail(buildModelWeeklySeries(days, model, NOW, 12), model, '2026-07-13', NOW));
+	const html = renderModelWeekDetail(details);
+	assert.ok(html.includes('kimi'), html);
+	assert.ok(html.includes('qwen'), html);
+	// One live region, one block per model.
+	assert.equal(html.match(/id="eff-week-detail"/g)?.length, 1);
+	assert.equal(html.match(/class="week-model-block"/g)?.length, 2);
+	// Raw volume includes the edit turns backing the turn-based ratios.
+	assert.ok(html.includes('Edit turns'));
+});
+
+test('renderModelWeekDetail: no models selected falls back to the empty region', () => {
+	assert.ok(renderModelWeekDetail([]).includes('No week selected.'));
 });
 
 test('renderModelWeekDetail: keeps the sample-floor caveats visible under "Read with care"', () => {
 	const thin = { sessions: 1, sessionShare: 1, calls: 2, editTurns: 2, oneShotEditTurns: 1, retries: 1, inputTokens: 900, outputTokens: 100, cost: 1 };
 	const modelSeries = buildModelWeeklySeries([modelDay('2026-07-14', { kimi: thin })], 'kimi', NOW, 12);
-	const html = renderModelWeekDetail(buildModelWeekDetail(modelSeries, 'kimi', '2026-07-13', NOW));
+	const html = renderModelWeekDetail([buildModelWeekDetail(modelSeries, 'kimi', '2026-07-13', NOW)]);
 	assert.ok(html.includes('Read with care'));
 	assert.ok(html.includes('session equivalents'));
 	assert.ok(html.includes('edit turns'));
 });
 
 test('renderModelWeekDetail: with no selection it falls back to the same empty live region', () => {
-	const html = renderModelWeekDetail(null);
+	const html = renderModelWeekDetail([null]);
 	assert.ok(html.includes('aria-live="polite"'));
 	assert.ok(html.includes('No week selected.'));
 });

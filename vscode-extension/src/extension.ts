@@ -4258,6 +4258,10 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'efficiency.week.better': l10n.t('efficiency.week.better'),
 			'efficiency.week.worse': l10n.t('efficiency.week.worse'),
 			'efficiency.week.partialChip': l10n.t('efficiency.week.partialChip'),
+			'efficiency.horizon.range12w': l10n.t('efficiency.horizon.range12w'),
+			'efficiency.horizon.range26w': l10n.t('efficiency.horizon.range26w'),
+			'efficiency.horizon.range52w': l10n.t('efficiency.horizon.range52w'),
+			'efficiency.week.editTurns': l10n.t('efficiency.week.editTurns'),
 			// HydraFusion Routing section (log viewer) and its Session Steps Overview integration.
 			// Templates with {0} are resolved webview-side by localizeFormat(), so they are passed
 			// through unformatted here.
@@ -9583,10 +9587,17 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 	}
 
 	private async refreshEfficiencyPanel(): Promise<void> {
-		if (!this.efficiencyPanel) { return; }
+		const panel = this.efficiencyPanel;
+		if (!panel) { return; }
 		this.log('🔄 Refreshing Efficiency view');
-		const data = await this.buildEfficiencyViewData(true, this.efficiencyTrendRange);
-		this.efficiencyPanel.webview.html = this.getEfficiencyHtml(this.efficiencyPanel.webview, data);
+		const range = this.efficiencyTrendRange;
+		const data = await this.buildEfficiencyViewData(true, range);
+		// Same guard as the horizon path: the panel may have been closed, or a new
+		// horizon requested, while this rebuild was running. Re-setting the HTML
+		// then would resurrect a disposed panel or stamp a stale horizon over a
+		// newer one.
+		if (this.efficiencyPanel !== panel || this.efficiencyTrendRange !== range) { return; }
+		panel.webview.html = this.getEfficiencyHtml(panel.webview, data);
 	}
 
 	/**

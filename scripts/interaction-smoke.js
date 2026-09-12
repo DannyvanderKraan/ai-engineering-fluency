@@ -384,14 +384,33 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
   const results = [];
   const findings = [];
 
-  // Clicks first, then dropdown changes: a click can reveal a `<select>` that
-  // was not in the first enumeration, and the select pass re-enumerates anyway.
-  const passes = [
-    ...controls.map((control) => ({ control, run: () => clickControl(page, control) })),
-    ...(await page.evaluate(TAG_SELECTS)).map((control) => ({ control, run: () => changeSelect(page, control) })),
-  ];
+  // A worklist, not two fixed passes. Clicking a tab replaces the whole subtree,
+  // so the `<select>` controls visible right now are only the ones on the tab
+  // that happens to be open: enumerating dropdowns once, at the end, would cover
+  // whichever tab was left showing and silently skip every other tab's. Instead,
+  // re-enumerate after each interaction and append any dropdown not yet seen.
+  const queue = controls.map((control) => ({ control, run: () => clickControl(page, control) }));
+  const seenSelects = new Set();
 
-  for (const { control, run } of passes) {
+  // Newly-found dropdowns go in *directly after* the interaction that revealed
+  // them, not at the end of the queue: appending would only get to a tab's
+  // dropdowns after every remaining tab click had already navigated away from it.
+  const enqueueNewSelects = async (at) => {
+    const fresh = [];
+    for (const control of await page.evaluate(TAG_SELECTS)) {
+      if (seenSelects.has(control.key)) {
+        continue;
+      }
+      seenSelects.add(control.key);
+      fresh.push({ control, run: () => changeSelect(page, control) });
+    }
+    queue.splice(at, 0, ...fresh);
+  };
+
+  await enqueueNewSelects(0);
+
+  for (let cursor = 0; cursor < queue.length; cursor++) {
+    const { control, run } = queue[cursor];
     if (isolate && results.length > 0) {
       await page.close();
       page = await openPage(browser, pageFile, view, defaults);
@@ -400,6 +419,8 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
 
     const outcome = await run();
     results.push({ ...control, ...outcome });
+    // This interaction may have revealed a tab's dropdowns for the first time.
+    await enqueueNewSelects(cursor + 1);
 
     const where = `${control.tag}${control.id ? `#${control.id}` : ''}${control.label ? ` "${control.label}"` : ''}`;
 

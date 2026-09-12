@@ -551,3 +551,8 @@
 	outline: 2px solid var(--vscode-focusBorder);
 	outline-offset: 2px;
 }
+.week-model-block + .week-model-block {
+	margin-top: 16px;
+	padding-top: 14px;
+	border-top: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.25));
+}

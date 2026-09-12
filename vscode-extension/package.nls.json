@@ -243,7 +243,7 @@
   "logviewer.summary.lastActivity": "Last activity",
   "efficiency.horizon.label": "Horizon",
   "efficiency.horizon.hint": "Applies to the weekly charts on this page. Month vs Month and Cost Attribution keep their own fixed windows.",
-  "efficiency.horizon.loading": "Loading the wider horizon…",
+  "efficiency.horizon.loading": "Loading the selected horizon…",
   "efficiency.week.label": "Selected week",
   "efficiency.week.none": "No week selected",
   "efficiency.week.hint": "You can also click a point on a chart.",
@@ -287,5 +287,9 @@
   "hydrafusion.overview.showLegsTooltip": "Show the HydraFusion legs behind this step",
   "hydrafusion.overview.legsCaption": "⚡ HydraFusion legs for step #{0} — total",
   "hydrafusion.overview.modelChangedTooltip": "Model changed from the previous step",
-  "hydrafusion.overview.expandHint": "⚡ expand a step to see the HydraFusion legs behind it"
+  "hydrafusion.overview.expandHint": "⚡ expand a step to see the HydraFusion legs behind it",
+  "efficiency.horizon.range12w": "12 weeks",
+  "efficiency.horizon.range26w": "26 weeks",
+  "efficiency.horizon.range52w": "52 weeks",
+  "efficiency.week.editTurns": "Edit turns"
 }

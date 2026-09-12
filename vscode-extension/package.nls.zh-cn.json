@@ -245,7 +245,7 @@
   "logviewer.summary.lastActivity": "最后活动",
   "efficiency.horizon.label": "时间范围",
   "efficiency.horizon.hint": "仅作用于本页的周度图表。“月度对比”和“成本归因”保留各自固定的时间窗口。",
-  "efficiency.horizon.loading": "正在加载更长的时间范围…",
+  "efficiency.horizon.loading": "正在加载所选时间范围…",
   "efficiency.week.label": "选定周",
   "efficiency.week.none": "未选择任何周",
   "efficiency.week.hint": "也可以点击图表上的数据点。",
@@ -289,5 +289,9 @@
   "hydrafusion.overview.showLegsTooltip": "显示此步骤背后的 HydraFusion 环节",
   "hydrafusion.overview.legsCaption": "⚡ 步骤 #{0} 的 HydraFusion 环节 — 共计",
   "hydrafusion.overview.modelChangedTooltip": "模型较上一步骤有变化",
-  "hydrafusion.overview.expandHint": "⚡ 展开步骤以查看其背后的 HydraFusion 环节"
+  "hydrafusion.overview.expandHint": "⚡ 展开步骤以查看其背后的 HydraFusion 环节",
+  "efficiency.horizon.range12w": "12 周",
+  "efficiency.horizon.range26w": "26 周",
+  "efficiency.horizon.range52w": "52 周",
+  "efficiency.week.editTurns": "编辑轮次"
 }

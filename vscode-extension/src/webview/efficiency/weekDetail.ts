@@ -69,6 +69,18 @@ export function clampSelectedWeek(weekKeys: readonly string[], selected: string 
 // ── Controls ───────────────────────────────────────────────────────────
 
 /**
+ * A horizon's button text. The payload carries a locale-neutral `label` so the
+ * pure module stays translation-free; the webview resolves the display text from
+ * the bundle by range id, and falls back to the payload's label if a key is ever
+ * missing.
+ */
+function rangeLabel(range: EfficiencyTrendRange): string {
+	const key = `efficiency.horizon.range${range.id}`;
+	const localized = localize(key);
+	return localized === key ? range.label : localized;
+}
+
+/**
  * The horizon selector. Toggle buttons in a labelled group: the selected state
  * is exposed through `aria-pressed` rather than colour alone, and the group is
  * reachable and operable from the keyboard like any other button. `loading` only
@@ -81,7 +93,7 @@ export function renderRangeControls(
 ): string {
 	const buttons = ranges.map(r => {
 		const isSelected = r.id === selected;
-		return `<button type="button" class="eff-range-btn${isSelected ? ' active' : ''}" data-range="${escapeHtml(r.id)}" aria-pressed="${isSelected ? 'true' : 'false'}">${escapeHtml(r.label)}</button>`;
+		return `<button type="button" class="eff-range-btn${isSelected ? ' active' : ''}" data-range="${escapeHtml(r.id)}" aria-pressed="${isSelected ? 'true' : 'false'}">${escapeHtml(rangeLabel(r))}</button>`;
 	}).join('');
 	// The buttons stay enabled while a horizon is loading: disabling them would
 	// drop keyboard focus mid-interaction, and a second choice must be allowed to
@@ -133,9 +145,9 @@ function changeCell(m: WeekDetailMetric): string {
 	return `<span class="delta-change ${cls}">${escapeHtml(`${arrow} ${Math.abs(m.deltaPct).toFixed(0)}%${word}`)}</span>`;
 }
 
-function metricRow(m: WeekDetailMetric): string {
+function metricRow(m: WeekDetailMetric, showReasons: boolean): string {
 	const unavailable = m.value === null;
-	const reason = unavailable && m.unavailableReason
+	const reason = showReasons && unavailable && m.unavailableReason
 		? `<div class="week-unavailable">${escapeHtml(m.unavailableReason)}</div>`
 		: '';
 	return `
@@ -147,7 +159,12 @@ function metricRow(m: WeekDetailMetric): string {
 			</tr>`;
 }
 
-function metricTable(metrics: readonly WeekDetailMetric[]): string {
+/**
+ * `showReasons` is off when one sentence above the table already explains every
+ * row — repeating "X was not used in this week" twelve times buries the numbers
+ * rather than explaining them.
+ */
+function metricTable(metrics: readonly WeekDetailMetric[], showReasons = true): string {
 	return `
 		<table class="attr-shift-table week-metric-table">
 			<thead><tr>
@@ -156,7 +173,7 @@ function metricTable(metrics: readonly WeekDetailMetric[]): string {
 				<th class="num">${escapeHtml(localize('efficiency.week.colPrior'))}</th>
 				<th class="num">${escapeHtml(localize('efficiency.week.colChange'))}</th>
 			</tr></thead>
-			<tbody>${metrics.map(metricRow).join('')}</tbody>
+			<tbody>${metrics.map(m => metricRow(m, showReasons)).join('')}</tbody>
 		</table>`;
 }
 
@@ -190,6 +207,24 @@ function rawStat(label: string, value: string): string {
 	return `<div class="week-raw-stat"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`;
 }
 
+/** The raw-volume block every tab's drill-down shows above its ratios. */
+function rawVolumeBlock(stats: { label: string; value: string }[]): string {
+	return `
+		<h4 class="week-detail-sub">${escapeHtml(localize('efficiency.week.rawHeading'))}</h4>
+		<dl class="week-raw">${stats.map(stat => rawStat(stat.label, stat.value)).join('')}</dl>`;
+}
+
+/** The week's sessions, tokens, turns, lines changed and cost, in that order. */
+function weekVolumeStats(detail: EfficiencyWeekDetail): { label: string; value: string }[] {
+	return [
+		{ label: localize('efficiency.week.sessions'), value: formatCompact(detail.sessions) },
+		{ label: localize('efficiency.week.tokens'), value: formatCompact(detail.tokens) },
+		{ label: localize('efficiency.week.turns'), value: formatCompact(detail.interactions) },
+		{ label: localize('efficiency.week.loc'), value: formatCompact(detail.loc) },
+		{ label: localize('efficiency.week.cost'), value: `$${detail.cost.toFixed(2)}` },
+	];
+}
+
 /** Wraps a detail body in the live region the selection updates in place. */
 function detailRegion(body: string): string {
 	return `<div class="week-detail" id="eff-week-detail" role="region" aria-label="${escapeHtml(localize('efficiency.week.detailHeading'))}" aria-live="polite" tabindex="-1">${body}</div>`;
@@ -202,25 +237,21 @@ function emptyDetailBody(): string {
 /** The selected week of the efficiency trends: raw volume, ratios, prior-week change, coverage. */
 export function renderWeekDetail(detail: EfficiencyWeekDetail | null): string {
 	if (!detail) { return detailRegion(emptyDetailBody()); }
-	const raw = [
-		rawStat(localize('efficiency.week.sessions'), formatCompact(detail.sessions)),
-		rawStat(localize('efficiency.week.tokens'), formatCompact(detail.tokens)),
-		rawStat(localize('efficiency.week.turns'), formatCompact(detail.interactions)),
-		rawStat(localize('efficiency.week.loc'), formatCompact(detail.loc)),
-		rawStat(localize('efficiency.week.cost'), `$${detail.cost.toFixed(2)}`),
-	].join('');
 	return detailRegion(`
 		${detailHead(detail.label, detail.rangeLabel, detail.isPartial)}
-		<h4 class="week-detail-sub">${escapeHtml(localize('efficiency.week.rawHeading'))}</h4>
-		<dl class="week-raw">${raw}</dl>
+		${rawVolumeBlock(weekVolumeStats(detail))}
 		<h4 class="week-detail-sub">${escapeHtml(localize('efficiency.week.ratiosHeading'))}</h4>
 		${priorLine(detail.priorLabel)}
 		${metricTable(detail.metrics)}
 		${coverageList(localize('efficiency.week.coverageHeading'), detail.coverageNotes)}`);
 }
 
-/** The selected week of the Tools & Skills trends. */
-export function renderSkillWeekDetail(detail: SkillWeekDetail | null): string {
+/**
+ * The selected week of the Tools & Skills trends. `week` carries the same raw
+ * volume the other tabs show, so the drill-down is genuinely common across tabs
+ * rather than a skills-only view of the same week.
+ */
+export function renderSkillWeekDetail(detail: SkillWeekDetail | null, week: EfficiencyWeekDetail | null = null): string {
 	if (!detail) { return detailRegion(emptyDetailBody()); }
 	const rows = detail.skills.map(s => `
 			<tr>
@@ -243,6 +274,7 @@ export function renderSkillWeekDetail(detail: SkillWeekDetail | null): string {
 		</table>`;
 	return detailRegion(`
 		${detailHead(detail.label, detail.rangeLabel, detail.isPartial)}
+		${week ? rawVolumeBlock(weekVolumeStats(week)) : ''}
 		${priorLine(detail.priorLabel)}
 		${metricTable(detail.metrics)}
 		<h4 class="week-detail-sub">${escapeHtml(localize('efficiency.week.skillsHeading'))}</h4>
@@ -250,29 +282,40 @@ export function renderSkillWeekDetail(detail: SkillWeekDetail | null): string {
 		${coverageList(localize('efficiency.week.coverageHeading'), detail.coverageNotes)}`);
 }
 
-/**
- * The selected model and week on the Models tab. Every existing sample floor,
- * task-mix and mixed-model-session caveat travels with the detail and is shown
- * here — zooming into one week must not make a comparison look more certain
- * than the head-to-head table it came from.
- */
-export function renderModelWeekDetail(detail: ModelWeekDetail | null): string {
-	if (!detail) { return detailRegion(emptyDetailBody()); }
+/** One model's profile for the selected week. */
+function modelWeekBody(detail: ModelWeekDetail): string {
 	const unused = detail.metrics === null
 		? `<p class="eff-section-note">${escapeHtml(localizeFormat('efficiency.week.modelUnused', detail.displayName))}</p>`
 		: '';
-	const volume = detail.metrics === null ? '' : `
-		<dl class="week-raw">
-			${rawStat(localize('efficiency.week.sessions'), formatCompact(detail.metrics.sessions))}
-			${rawStat(localize('efficiency.week.tokens'), formatCompact(detail.metrics.tokens))}
-			${rawStat(localize('efficiency.week.loc'), formatCompact(detail.metrics.loc))}
-			${rawStat(localize('efficiency.week.cost'), `$${detail.metrics.cost.toFixed(2)}`)}
-		</dl>`;
-	return detailRegion(`
+	const volume = detail.metrics === null ? '' : rawVolumeBlock([
+		{ label: localize('efficiency.week.sessions'), value: formatCompact(detail.metrics.sessions) },
+		{ label: localize('efficiency.week.tokens'), value: formatCompact(detail.metrics.tokens) },
+		{ label: localize('efficiency.week.editTurns'), value: formatCompact(detail.metrics.editTurns) },
+		{ label: localize('efficiency.week.loc'), value: formatCompact(detail.metrics.loc) },
+		{ label: localize('efficiency.week.cost'), value: `$${detail.metrics.cost.toFixed(2)}` },
+	]);
+	return `
 		${detailHead(`${detail.displayName} · ${detail.label}`, detail.rangeLabel, detail.isPartial)}
 		${unused}
 		${volume}
 		${priorLine(detail.priorLabel)}
-		${metricTable(detail.rows)}
-		${coverageList(localize('efficiency.week.caveatsHeading'), detail.caveats)}`);
+		${metricTable(detail.rows, detail.metrics !== null)}
+		${coverageList(localize('efficiency.week.caveatsHeading'), detail.caveats)}`;
+}
+
+/**
+ * The selected week on the Models tab, with one profile per model currently on
+ * the drift chart. Both compared models are shown rather than only slot A: a
+ * click lands on whichever series was under the pointer, so reporting one model
+ * would attribute the wrong profile to the clicked point — and a keyboard user
+ * picking the same week from the selector must see exactly what the click shows.
+ *
+ * Every existing sample floor, task-mix and mixed-model-session caveat travels
+ * with each detail — zooming into one week must not make a comparison look more
+ * certain than the head-to-head table it came from.
+ */
+export function renderModelWeekDetail(details: readonly (ModelWeekDetail | null)[]): string {
+	const present = details.filter((d): d is ModelWeekDetail => d !== null);
+	if (present.length === 0) { return detailRegion(emptyDetailBody()); }
+	return detailRegion(present.map(d => `<div class="week-model-block">${modelWeekBody(d)}</div>`).join(''));
 }

@@ -370,13 +370,14 @@ function renderSkillsTab(d: EfficiencyViewData): string {
 		<p class="eff-section-note">${d.skillTrends.totalCalls} skill invocations across ${d.skillTrends.topSkills.length} skill${d.skillTrends.topSkills.length === 1 ? '' : 's'} in the last ${d.skillTrends.weeks.length} weeks. Bars stack invocations per skill; the line is the share of sessions that used any skill.</p>
 		${zoomControls(d)}
 		<div class="combined-wrap"><canvas id="skills-chart"></canvas></div>
-		${renderSkillWeekDetail(selectedSkillWeekDetail(d))}
+		${renderSkillWeekDetail(selectedSkillWeekDetail(d), selectedWeekDetail(d))}
 		${impactSection}`;
 }
 
 async function drawSkillsChart(d: EfficiencyViewData): Promise<void> {
+	const generation = renderGeneration;
 	await loadChartModule();
-	if (!Chart) { return; }
+	if (!Chart || !isCurrentRender(generation)) { return; }
 	const canvas = document.getElementById('skills-chart') as HTMLCanvasElement | null;
 	if (!canvas) { return; }
 	const weeks = d.skillTrends.weeks;
@@ -840,7 +841,7 @@ function renderModelsTab(d: EfficiencyViewData): string {
 		<div class="model-trend-controls"><label>Metric ${selectHtml('model-trend-metric', metricOptions, modelState.trendMetric)}</label></div>
 		${zoomControls(d)}
 		<div class="model-trend-wrap"><canvas id="model-trend"></canvas></div>
-		${renderModelWeekDetail(selectedModelWeekDetail(d))}`;
+		${renderModelWeekDetail(selectedModelWeekDetails(d))}`;
 }
 
 
@@ -875,9 +876,10 @@ function radarAxes(cmp: ModelComparison): { row: ModelComparisonRow; scores: { a
 }
 
 async function drawModelRadar(cmp: ModelComparison): Promise<void> {
+	const generation = renderGeneration;
 	await loadChartModule();
 	const canvas = document.getElementById('model-radar') as HTMLCanvasElement | null;
-	if (!Chart || !canvas) { return; }
+	if (!Chart || !canvas || !isCurrentRender(generation)) { return; }
 	const axes = radarAxes(cmp);
 	if (axes.length < 3) {
 		setHtml(canvas.parentElement as HTMLElement, `<p class="eff-section-note">Not enough shared metrics between the two sides to draw a shape.</p>`);
@@ -931,9 +933,10 @@ function trendModels(): string[] {
 }
 
 async function drawModelTrend(d: EfficiencyViewData): Promise<void> {
+	const generation = renderGeneration;
 	await loadChartModule();
 	const canvas = document.getElementById('model-trend') as HTMLCanvasElement | null;
-	if (!Chart || !canvas) { return; }
+	if (!Chart || !canvas || !isCurrentRender(generation)) { return; }
 	const spec = MODEL_TREND_METRICS.find(m => m.id === modelState.trendMetric) ?? MODEL_TREND_METRICS[0];
 	const now = payloadNow(d);
 	const models = trendModels();
@@ -974,10 +977,27 @@ async function drawModelTrend(d: EfficiencyViewData): Promise<void> {
 }
 
 async function drawModelCharts(d: EfficiencyViewData): Promise<void> {
+	const generation = renderGeneration;
 	const cmp = buildModelComparison(d);
 	if (!cmp) { return; }
 	await drawModelRadar(cmp);
+	if (!isCurrentRender(generation)) { return; }
 	await drawModelTrend(d);
+}
+
+/**
+ * Bumped by every `render()`. The draw functions await `loadChartModule()` before
+ * constructing anything, so a render that happens during that await would leave
+ * the earlier draw to build a chart on a canvas the new render has already
+ * replaced — `destroyCharts()` cannot cancel an instance that does not exist
+ * yet. Each draw captures the generation it belongs to and abandons itself when
+ * it is no longer current.
+ */
+let renderGeneration = 0;
+
+/** True while `generation` is still the render being drawn for. */
+function isCurrentRender(generation: number): boolean {
+	return generation === renderGeneration;
 }
 
 function destroyCharts(): void {
@@ -985,8 +1005,9 @@ function destroyCharts(): void {
 }
 
 async function drawTrendCharts(d: EfficiencyViewData): Promise<void> {
+	const generation = renderGeneration;
 	await loadChartModule();
-	if (!Chart) { return; }
+	if (!Chart || !isCurrentRender(generation)) { return; }
 	const labels = d.weekly.map(w => w.label);
 	const weekKeys = d.weekly.map(w => w.weekKey);
 	const fg = cssVar('--vscode-descriptionForeground', '#999');
@@ -1034,8 +1055,9 @@ function indexTo100(values: (number | null)[]): (number | null)[] {
 }
 
 async function drawCombinedChart(d: EfficiencyViewData): Promise<void> {
+	const generation = renderGeneration;
 	await loadChartModule();
-	if (!Chart) { return; }
+	if (!Chart || !isCurrentRender(generation)) { return; }
 	const canvas = document.getElementById('combined-chart') as HTMLCanvasElement | null;
 	if (!canvas) { return; }
 	const labels = d.weekly.map(w => w.label);
@@ -1158,12 +1180,18 @@ function selectedSkillWeekDetail(d: EfficiencyViewData): SkillWeekDetail | null 
 		: buildSkillWeekDetail(d.skillTrends, zoomState.selectedWeek, payloadNow(d));
 }
 
-/** The selected week for the model currently in slot A, or null when no week is selected. */
-function selectedModelWeekDetail(d: EfficiencyViewData): ModelWeekDetail | null {
-	if (zoomState.selectedWeek === null || modelState.modelA === '') { return null; }
+/**
+ * The selected week for every model currently drawn on the drift chart. A click
+ * can land on either series, so both compared models are described rather than
+ * only slot A — otherwise clicking model B's point would report model A's
+ * profile for it.
+ */
+function selectedModelWeekDetails(d: EfficiencyViewData): (ModelWeekDetail | null)[] {
+	const weekKey = zoomState.selectedWeek;
+	if (weekKey === null) { return []; }
 	const now = payloadNow(d);
-	const series = buildModelWeeklySeries(d.modelDaily, modelState.modelA, now, d.trendRangeWeeks);
-	return buildModelWeekDetail(series, modelState.modelA, zoomState.selectedWeek, now);
+	return trendModels().map(model =>
+		buildModelWeekDetail(buildModelWeeklySeries(d.modelDaily, model, now, d.trendRangeWeeks), model, weekKey, now));
 }
 
 /** The horizon selector and the keyboard-accessible week selector, in that order. */
@@ -1253,6 +1281,7 @@ function render(): void {
 	const root = document.getElementById('root');
 	if (!root || !data) { return; }
 	setCompactNumbers(data.compactNumbers !== false);
+	renderGeneration += 1;
 	destroyCharts();
 	// Snap back to a real tab if the selected one is no longer shown — e.g. the
 	// Prompt Cache tab after cache data disappeared — so the content and the

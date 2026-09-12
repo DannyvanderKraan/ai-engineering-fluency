@@ -305,7 +305,7 @@ test('l10n: Efficiency horizon and week drill-down labels resolve in English', (
 	const expected: Record<string, string> = {
 		'efficiency.horizon.label': 'Horizon',
 		'efficiency.horizon.hint': 'Applies to the weekly charts on this page. Month vs Month and Cost Attribution keep their own fixed windows.',
-		'efficiency.horizon.loading': 'Loading the wider horizon…',
+		'efficiency.horizon.loading': 'Loading the selected horizon…',
 		'efficiency.week.label': 'Selected week',
 		'efficiency.week.none': 'No week selected',
 		'efficiency.week.hint': 'You can also click a point on a chart.',
@@ -340,6 +340,10 @@ test('l10n: Efficiency horizon and week drill-down labels resolve in English', (
 		'efficiency.week.better': 'better',
 		'efficiency.week.worse': 'worse',
 		'efficiency.week.partialChip': 'Partial week',
+		'efficiency.horizon.range12w': '12 weeks',
+		'efficiency.horizon.range26w': '26 weeks',
+		'efficiency.horizon.range52w': '52 weeks',
+		'efficiency.week.editTurns': 'Edit turns',
 	};
 	for (const [key, english] of Object.entries(expected)) {
 		assert.equal(t(key), english, `English value for ${key}`);
@@ -352,7 +356,7 @@ test('l10n: Efficiency horizon and week drill-down labels resolve in zh-cn', () 
 		const expected: Record<string, string> = {
 			'efficiency.horizon.label': '时间范围',
 			'efficiency.horizon.hint': '仅作用于本页的周度图表。“月度对比”和“成本归因”保留各自固定的时间窗口。',
-			'efficiency.horizon.loading': '正在加载更长的时间范围…',
+			'efficiency.horizon.loading': '正在加载所选时间范围…',
 			'efficiency.week.label': '选定周',
 			'efficiency.week.none': '未选择任何周',
 			'efficiency.week.hint': '也可以点击图表上的数据点。',
@@ -387,6 +391,10 @@ test('l10n: Efficiency horizon and week drill-down labels resolve in zh-cn', () 
 			'efficiency.week.better': '更好',
 			'efficiency.week.worse': '更差',
 			'efficiency.week.partialChip': '未完整的周',
+			'efficiency.horizon.range12w': '12 周',
+			'efficiency.horizon.range26w': '26 周',
+			'efficiency.horizon.range52w': '52 周',
+			'efficiency.week.editTurns': '编辑轮次',
 		};
 		for (const [key, chinese] of Object.entries(expected)) {
 			assert.equal(t(key), chinese, `zh-cn value for ${key}`);
