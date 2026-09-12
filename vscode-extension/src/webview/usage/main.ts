@@ -36,6 +36,7 @@ import type { ModelPricing, ModelEfficiencyUsage, ModelEfficiencyCounters } from
 import { sanitizeCustomizationMatrix } from './customizationSanitizer';
 import { applyBillingFields, type CopilotApiBalance } from './billingStatsSanitizer';
 import { billingExtGroupCostsHtml } from './billingCoverage';
+import { partitionContextRefRows, type ContextRefRow } from './contextRefRows';
 import { sanitizeAgentSessionsData, toSafeNumber, toSafeHttpUrl, type AgentRepoSummary, type AgentSessionsResult } from './agentSessionsSanitizer';
 import { isSwitchableTab } from './switchableTabs';
 import { placeBubbleLabels, scaleBubbleRadius, type BubbleLabelPlacement } from './modelLeaderboard';
@@ -4631,6 +4632,24 @@ function buildBillingComparisonSectionHtml(stats: UsageAnalysisStats): string {
 		</div>`;
 }
 
+/**
+ * Heading that opens a band of related sections within a tab.
+ *
+ * A tab with nine sibling `.section` cards reads as one flat list, so a section's position in
+ * it carries no meaning and anything near the bottom looks like leftovers. These headings give
+ * the stack its groups back without splitting the tab or changing any section's own markup.
+ *
+ * Every argument is interpolated as HTML so a label can carry an entity (`&amp;`). Call it with
+ * literals only — it is not an escaping boundary for session-derived text.
+ */
+function sectionGroupHeadingHtml(icon: string, label: string, subtitle: string): string {
+	return `
+		<div class="section-group-heading">
+			<div class="section-group-title"><span>${icon}</span><span>${label}</span></div>
+			<div class="section-group-subtitle">${subtitle}</div>
+		</div>`;
+}
+
 function buildActivityTabPanelHtml(
 	stats: UsageAnalysisStats,
 	multiModelHtml: string,
@@ -4656,17 +4675,26 @@ function buildActivityTabPanelHtml(
 	const contextRefsHtml = safeSectionHtml('Context References', () => buildContextRefsHtml(stats, todayTotalRefs, last30DaysTotalRefs));
 	const modelEfficiencyHtml = safeSectionHtml('Model Efficiency', () => buildModelEfficiencySectionHtml(stats));
 	const contextWindowHtml = safeSectionHtml('Context Window', () => buildContextWindowSectionHtml(stats));
+	// Three bands, in the order the questions get asked: what did I do, what did it cost,
+	// and how much context did it take. Before this grouping, Thinking Effort and Context
+	// Window trailed off the bottom of an undifferentiated stack of nine sections with no
+	// signal that they answered a different question from the cost sections above them.
 	return `
 		<div id="tab-panel-activity" class="tab-panel"${activeTab !== 'activity' ? ' style="display:none"' : ''}>
+			${sectionGroupHeadingHtml('📊', 'Overview', 'How much you used AI assistants, and in which interaction modes.')}
 			${sessionsSummaryHtml}
-			${billingComparisonHtml}
 			<!-- Mode Usage Section -->
 			${modeUsageHtml}
-			${contextRefsHtml}
-			${multiModelHtml}
+
+			${sectionGroupHeadingHtml('💵', 'Spend &amp; models', 'What that usage cost, which models it ran on, and how hard they were asked to think.')}
+			${billingComparisonHtml}
 			${modelCostHtml}
+			${multiModelHtml}
 			${modelEfficiencyHtml}
 			${thinkingEffortHtml}
+
+			${sectionGroupHeadingHtml('🧠', 'Context', 'What you feed the model: references you attach, how close requests come to the window limit, and what gets compacted away.')}
+			${contextRefsHtml}
 			${contextWindowHtml}
 		</div>`;
 }
@@ -4798,6 +4826,7 @@ function renderAutomaticCompactions(stats: AutomaticCompactionStats | undefined)
 		? entries.join(', ')
 		: 'No automatic compactions detected';
 	return `
+		<h4 class="ctx-window-subheading">Context compaction</h4>
 		<div class="automatic-compactions-card"
 			title="Automatic compactions remove earlier messages to fit the context window and can affect response quality.">
 			<div>
@@ -4809,8 +4838,9 @@ function renderAutomaticCompactions(stats: AutomaticCompactionStats | undefined)
 }
 
 /**
- * Bottom-of-tab section: largest request per period vs the long-context
- * pricing threshold, fullest CLI window, and context tiers used.
+ * Context band section: largest request per period vs the long-context pricing threshold,
+ * fullest CLI window, context tiers used, and the automatic compactions that context pressure
+ * forced over the last 7 days.
  */
 function buildContextWindowSectionHtml(stats: UsageAnalysisStats): string {
 	const cw30 = stats.last30Days.contextWindow;
@@ -4834,8 +4864,8 @@ function buildContextWindowSectionHtml(stats: UsageAnalysisStats): string {
 					${renderContextWindowPeriodHtml(stats.lastMonth.contextWindow, stats.lastMonth.contextPressure)}
 				</div>
 			</div>
-			${renderAutomaticCompactions(stats.autoCompactionsLast7Days)}
 			${bar}
+			${renderAutomaticCompactions(stats.autoCompactionsLast7Days)}
 		</div>`;
 }
 
@@ -4843,15 +4873,6 @@ interface ContextRefDescriptor {
 	label: string;
 	title?: string;
 	get: (cr: ContextReferenceUsage) => number;
-}
-
-interface ContextRefRow {
-	label: string;
-	title?: string;
-	last30: number;
-	month: number;
-	lastMonth: number;
-	today: number;
 }
 
 function numCell(value: number, extraClass = ''): string {
@@ -4879,21 +4900,15 @@ function sparklineCell(lastMonth: number, month: number, today: number): string 
 	}).join('')}</svg></td>`;
 }
 
-function renderContextRefTable(
-	rows: ContextRefRow[],
-	totals: { last30: number; month: number; lastMonth: number; today: number },
-): string {
-	const bodyRows = rows
-		.slice()
-		.sort((a, b) => b.last30 - a.last30)
-		.map((row) => {
-			const titleAttr = row.title ? ` title="${escapeHtml(row.title)}"` : '';
-			return `<tr${titleAttr}><td class="ctx-ref-name">${row.label}</td>${numCell(row.today, row.today > 0 ? 'ctx-ref-today-active' : '')}${numCell(row.month)}${numCell(row.lastMonth)}${numCell(row.last30)}${sparklineCell(row.lastMonth, row.month, row.today)}</tr>`;
-		})
-		.join('');
-	return `
-		<div class="ctx-ref-table-wrap">
-			<table class="ctx-ref-table">
+/** Whether the collapsed "Other references" long-tail group is expanded. Persists across re-renders. */
+let contextRefOtherOpen = false;
+
+function contextRefRowHtml(row: ContextRefRow): string {
+	const titleAttr = row.title ? ` title="${escapeHtml(row.title)}"` : '';
+	return `<tr${titleAttr}><td class="ctx-ref-name">${row.label}</td>${numCell(row.today, row.today > 0 ? 'ctx-ref-today-active' : '')}${numCell(row.month)}${numCell(row.lastMonth)}${numCell(row.last30)}${sparklineCell(row.lastMonth, row.month, row.today)}</tr>`;
+}
+
+const CTX_REF_TABLE_HEAD = `
 				<thead>
 					<tr>
 						<th class="ctx-ref-name">Reference</th>
@@ -4903,9 +4918,45 @@ function renderContextRefTable(
 						<th class="ctx-ref-num">Last 30 Days</th>
 						<th class="ctx-ref-spark" title="Trend: Last Month → This Month → Today">Trend</th>
 					</tr>
-				</thead>
+				</thead>`;
+
+/**
+ * The unused-reference long tail, collapsed behind a disclosure.
+ *
+ * These rows are still rendered — a reference kind you have never used is worth discovering —
+ * but they are not worth 14 rows of dead zeroes above the fold.
+ */
+function renderContextRefOtherHtml(otherRows: ContextRefRow[]): string {
+	if (otherRows.length === 0) { return ''; }
+	const body = otherRows.map(contextRefRowHtml).join('');
+	return `<details class="ctx-ref-other" id="ctx-ref-other"${contextRefOtherOpen ? ' open' : ''}>
+			<summary>Other references (${otherRows.length}, no usage today or in the last 30 days)</summary>
+			<div class="ctx-ref-table-wrap">
+				<table class="ctx-ref-table">${CTX_REF_TABLE_HEAD}
+					<tbody>${body}</tbody>
+				</table>
+			</div>
+		</details>`;
+}
+
+function renderContextRefTable(
+	rows: ContextRefRow[],
+	totals: { last30: number; month: number; lastMonth: number; today: number },
+): string {
+	const sorted = rows.slice().sort((a, b) => b.last30 - a.last30);
+	// Reference kinds with nothing today and nothing in the last 30 days drop into a collapsed
+	// "Other" group rather than padding the table with zeroes. Totals in the footer stay
+	// whole-table totals, so collapsing the tail never changes the numbers it sums.
+	const { active, other } = partitionContextRefRows(sorted);
+	const bodyRows = active.map(contextRefRowHtml).join('');
+	const emptyRow = active.length === 0
+		? '<tr><td class="ctx-ref-name" colspan="6" style="color: var(--text-muted);">No context references recorded today or in the last 30 days.</td></tr>'
+		: '';
+	return `
+		<div class="ctx-ref-table-wrap">
+			<table class="ctx-ref-table">${CTX_REF_TABLE_HEAD}
 				<tbody>
-					${bodyRows}
+					${bodyRows}${emptyRow}
 				</tbody>
 				<tfoot>
 					<tr class="ctx-ref-total">
@@ -4918,7 +4969,8 @@ function renderContextRefTable(
 					</tr>
 				</tfoot>
 			</table>
-		</div>`;
+		</div>
+		${renderContextRefOtherHtml(other)}`;
 }
 
 function buildContextRefCardsHtml(stats: UsageAnalysisStats, todayTotalRefs: number, last30DaysTotalRefs: number): string {
@@ -4993,7 +5045,7 @@ function buildContextRefsHtml(stats: UsageAnalysisStats, todayTotalRefs: number,
 	` : '';
 	return `
 		<!-- Context References Section -->
-		<div class="section">
+		<div class="section" id="section-context-references">
 			<div class="section-title"><span>🔗</span><span>Context References</span></div>
 			<div class="section-subtitle">How often you reference files, selections, symbols, and workspace context</div>
 			${buildContextRefCardsHtml(stats, todayTotalRefs, last30DaysTotalRefs)}
@@ -5389,6 +5441,23 @@ function handleEfficiencySortClick(th: HTMLElement): void {
 	rerenderModelEfficiencyContent();
 }
 
+/**
+ * Remembers whether the "Other references" disclosure is open.
+ *
+ * The <details> is recreated on every re-render, which would otherwise snap it back to
+ * collapsed the moment new stats arrive. `toggle` doesn't bubble, so listen in the capture phase.
+ */
+function setupContextRefSection(): void {
+	const section = document.getElementById('section-context-references');
+	if (!section) { return; }
+	section.addEventListener('toggle', (event) => {
+		const target = event.target as HTMLElement;
+		if (target.id === 'ctx-ref-other') {
+			contextRefOtherOpen = (target as HTMLDetailsElement).open;
+		}
+	}, true);
+}
+
 /** Wires sortable headers, chart controls, and the low-usage filter. */
 function setupModelEfficiencySection(): void {
 	const section = document.getElementById('section-model-efficiency');
@@ -5588,6 +5657,7 @@ function renderLayout(stats: UsageAnalysisStats): void {
 	renderRepositoryHygienePanels();
 	setupTabs();
 	setupModelEfficiencySection();
+	setupContextRefSection();
 	renderModelEfficiencyPeriodSelector();
 	renderSessionsLookbackSelector();
 	setupWorktreesHandlers();
