@@ -864,6 +864,22 @@ test('getWeekBounds: the current week is partial with only the elapsed days coun
 	assert.equal(bounds.endKey, '2026-07-19');
 });
 
+test('getWeekBounds: the seventh day starting does not make a running week complete', () => {
+	// Sunday 2026-07-12, 10:00 — the last day of the 2026-07-06 week has begun but
+	// the week is still accruing sessions, so it must not read as complete.
+	const sundayMorning = new Date(2026, 6, 12, 10, 0, 0);
+	const bounds = getWeekBounds('2026-07-06', sundayMorning);
+	assert.equal(bounds.elapsedDays, 7, 'all seven days have started');
+	assert.equal(bounds.isPartial, true, 'but the week has not finished');
+});
+
+test('getWeekBounds: the week becomes complete once the next one begins', () => {
+	const nextMonday = new Date(2026, 6, 13, 0, 0, 1);
+	const bounds = getWeekBounds('2026-07-06', nextMonday);
+	assert.equal(bounds.isPartial, false);
+	assert.equal(bounds.elapsedDays, 7);
+});
+
 test('getWeekBounds: a week entirely in the future has no elapsed days', () => {
 	const bounds = getWeekBounds('2026-07-20', NOW);
 	assert.equal(bounds.elapsedDays, 0);
@@ -1008,10 +1024,20 @@ test('buildModelWeekDetail: null for a week outside the series', () => {
 	assert.equal(buildModelWeekDetail(series, 'kimi', '2020-01-06', NOW), null);
 });
 
+test('buildModelWeekDetail: an unused week still discloses that the week is still running', () => {
+	// The model is absent from the current, partial week: the coverage disclosure
+	// belongs to the week, not to the model, so it must survive the null profile.
+	const series = buildModelWeeklySeries([modelDay('2026-07-07', { kimi: solidModel({}) })], 'kimi', NOW, 12);
+	const detail = buildModelWeekDetail(series, 'kimi', '2026-07-13', NOW)!;
+	assert.equal(detail.metrics, null);
+	assert.ok(detail.caveats.some(c => c.includes('still running')), detail.caveats.join(' | '));
+});
+
 test('buildModelWeekDetail: a week the model was not used yields null metrics, not zeroes', () => {
 	const series = buildModelWeeklySeries([modelDay('2026-07-14', { kimi: solidModel({}) })], 'kimi', NOW, 12);
 	const detail = buildModelWeekDetail(series, 'kimi', series[0].weekKey, NOW)!;
 	assert.equal(detail.metrics, null);
+	// A complete past week the model never touched has nothing to caveat.
 	assert.equal(detail.caveats.length, 0);
 	for (const row of detail.rows) {
 		assert.equal(row.value, null, `${row.id} value`);

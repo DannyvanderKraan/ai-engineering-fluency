@@ -1146,6 +1146,19 @@ const zoomState: {
 	focusTrendMetric: null,
 };
 
+/**
+ * A selector that finds the currently focused control again after `render()`
+ * has replaced the subtree it lived in, or null when focus is not on one of
+ * this view's controls.
+ */
+function focusedControlSelector(): string | null {
+	const active = document.activeElement as HTMLElement | null;
+	if (!active || active === document.body) { return null; }
+	if (active.id) { return `#${active.id}`; }
+	const range = active.dataset?.range;
+	return range ? `.eff-range-btn[data-range="${range}"]` : null;
+}
+
 /** Re-renders, then puts focus back where the user left it — `render()` replaces the whole subtree. */
 function renderAndRestoreFocus(selector: string | null): void {
 	render();
@@ -1254,6 +1267,9 @@ function focusModelContext(model: string): void {
 	if (data) {
 		initModelState(data);
 		if (listComparableModels(data.modelDaily).some(m => m.model === model)) {
+			// Swap rather than overwrite: assigning a model that already sits in slot B
+			// would open the tab comparing it with itself.
+			if (modelState.modelB === model) { modelState.modelB = modelState.modelA; }
 			modelState.modelA = model;
 		}
 	}
@@ -1390,11 +1406,14 @@ function wireEvents(): void {
  * different week.
  */
 function applyEfficiencyUpdate(next: EfficiencyViewData): void {
+	// The payload lands asynchronously, so whatever the user focused while waiting
+	// must survive this render too — not just the one that sent the request.
+	const focus = focusedControlSelector();
 	data = { ...next, localization: data?.localization };
 	zoomState.range = next.trendRange;
 	zoomState.rangeLoading = false;
 	zoomState.selectedWeek = clampSelectedWeek(next.weekly.map(w => w.weekKey), zoomState.selectedWeek);
-	render();
+	renderAndRestoreFocus(focus);
 }
 
 async function bootstrap(): Promise<void> {

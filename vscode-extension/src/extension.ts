@@ -228,6 +228,7 @@ import {
   EFFICIENCY_TREND_RANGES,
   type EfficiencySessionInput,
   type EfficiencyTrendRangeId,
+  type ValueSignals,
   type EfficiencyViewData,
   type ModelDailyInput,
   type PeriodVolumeTotals,
@@ -4160,6 +4161,57 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 * Get localization strings for webviews based on the current VS Code language.
 	 * This provides localized button labels and other UI strings for webview panels.
 	 */
+	/**
+	 * Efficiency view — horizon selector and selected-week drill-down strings.
+	 * Split out of {@link getWebviewLocalization} to keep that method within the
+	 * per-function line budget as key sets grow.
+	 */
+	private getEfficiencyWebviewLocalization(): Record<string, string> {
+		return {
+				'efficiency.horizon.label': l10n.t('efficiency.horizon.label'),
+				'efficiency.horizon.hint': l10n.t('efficiency.horizon.hint'),
+				'efficiency.horizon.loading': l10n.t('efficiency.horizon.loading'),
+				'efficiency.week.label': l10n.t('efficiency.week.label'),
+				'efficiency.week.none': l10n.t('efficiency.week.none'),
+				'efficiency.week.hint': l10n.t('efficiency.week.hint'),
+				'efficiency.week.detailHeading': l10n.t('efficiency.week.detailHeading'),
+				'efficiency.week.empty': l10n.t('efficiency.week.empty'),
+				'efficiency.week.rawHeading': l10n.t('efficiency.week.rawHeading'),
+				'efficiency.week.sessions': l10n.t('efficiency.week.sessions'),
+				'efficiency.week.tokens': l10n.t('efficiency.week.tokens'),
+				'efficiency.week.turns': l10n.t('efficiency.week.turns'),
+				'efficiency.week.loc': l10n.t('efficiency.week.loc'),
+				'efficiency.week.cost': l10n.t('efficiency.week.cost'),
+				'efficiency.week.ratiosHeading': l10n.t('efficiency.week.ratiosHeading'),
+				'efficiency.week.colMetric': l10n.t('efficiency.week.colMetric'),
+				'efficiency.week.colValue': l10n.t('efficiency.week.colValue'),
+				'efficiency.week.colPrior': l10n.t('efficiency.week.colPrior'),
+				'efficiency.week.colChange': l10n.t('efficiency.week.colChange'),
+				'efficiency.week.priorIs': l10n.t('efficiency.week.priorIs'),
+				'efficiency.week.noPrior': l10n.t('efficiency.week.noPrior'),
+				'efficiency.week.coverageHeading': l10n.t('efficiency.week.coverageHeading'),
+				'efficiency.week.skillsHeading': l10n.t('efficiency.week.skillsHeading'),
+				'efficiency.week.colSkill': l10n.t('efficiency.week.colSkill'),
+				'efficiency.week.colCalls': l10n.t('efficiency.week.colCalls'),
+				'efficiency.week.colShare': l10n.t('efficiency.week.colShare'),
+				'efficiency.week.noSkills': l10n.t('efficiency.week.noSkills'),
+				'efficiency.week.modelHeading': l10n.t('efficiency.week.modelHeading'),
+				'efficiency.week.modelUnused': l10n.t('efficiency.week.modelUnused'),
+				'efficiency.week.caveatsHeading': l10n.t('efficiency.week.caveatsHeading'),
+				'efficiency.week.unavailable': l10n.t('efficiency.week.unavailable'),
+				'efficiency.deltas.showTrend': l10n.t('efficiency.deltas.showTrend'),
+				'efficiency.deltas.noTrend': l10n.t('efficiency.deltas.noTrend'),
+				'efficiency.attribution.showModel': l10n.t('efficiency.attribution.showModel'),
+				'efficiency.week.better': l10n.t('efficiency.week.better'),
+				'efficiency.week.worse': l10n.t('efficiency.week.worse'),
+				'efficiency.week.partialChip': l10n.t('efficiency.week.partialChip'),
+				'efficiency.horizon.range12w': l10n.t('efficiency.horizon.range12w'),
+				'efficiency.horizon.range26w': l10n.t('efficiency.horizon.range26w'),
+				'efficiency.horizon.range52w': l10n.t('efficiency.horizon.range52w'),
+				'efficiency.week.editTurns': l10n.t('efficiency.week.editTurns'),
+		};
+	}
+
 	private getWebviewLocalization(): Record<string, string> {
 		const language = vscode.env.language;
 		
@@ -4220,48 +4272,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'logviewer.summary.timeline': l10n.t('logviewer.summary.timeline'),
 			'logviewer.summary.started': l10n.t('logviewer.summary.started'),
 			'logviewer.summary.lastActivity': l10n.t('logviewer.summary.lastActivity'),
-			// Efficiency view — horizon selector and selected-week drill-down
-			'efficiency.horizon.label': l10n.t('efficiency.horizon.label'),
-			'efficiency.horizon.hint': l10n.t('efficiency.horizon.hint'),
-			'efficiency.horizon.loading': l10n.t('efficiency.horizon.loading'),
-			'efficiency.week.label': l10n.t('efficiency.week.label'),
-			'efficiency.week.none': l10n.t('efficiency.week.none'),
-			'efficiency.week.hint': l10n.t('efficiency.week.hint'),
-			'efficiency.week.detailHeading': l10n.t('efficiency.week.detailHeading'),
-			'efficiency.week.empty': l10n.t('efficiency.week.empty'),
-			'efficiency.week.rawHeading': l10n.t('efficiency.week.rawHeading'),
-			'efficiency.week.sessions': l10n.t('efficiency.week.sessions'),
-			'efficiency.week.tokens': l10n.t('efficiency.week.tokens'),
-			'efficiency.week.turns': l10n.t('efficiency.week.turns'),
-			'efficiency.week.loc': l10n.t('efficiency.week.loc'),
-			'efficiency.week.cost': l10n.t('efficiency.week.cost'),
-			'efficiency.week.ratiosHeading': l10n.t('efficiency.week.ratiosHeading'),
-			'efficiency.week.colMetric': l10n.t('efficiency.week.colMetric'),
-			'efficiency.week.colValue': l10n.t('efficiency.week.colValue'),
-			'efficiency.week.colPrior': l10n.t('efficiency.week.colPrior'),
-			'efficiency.week.colChange': l10n.t('efficiency.week.colChange'),
-			'efficiency.week.priorIs': l10n.t('efficiency.week.priorIs'),
-			'efficiency.week.noPrior': l10n.t('efficiency.week.noPrior'),
-			'efficiency.week.coverageHeading': l10n.t('efficiency.week.coverageHeading'),
-			'efficiency.week.skillsHeading': l10n.t('efficiency.week.skillsHeading'),
-			'efficiency.week.colSkill': l10n.t('efficiency.week.colSkill'),
-			'efficiency.week.colCalls': l10n.t('efficiency.week.colCalls'),
-			'efficiency.week.colShare': l10n.t('efficiency.week.colShare'),
-			'efficiency.week.noSkills': l10n.t('efficiency.week.noSkills'),
-			'efficiency.week.modelHeading': l10n.t('efficiency.week.modelHeading'),
-			'efficiency.week.modelUnused': l10n.t('efficiency.week.modelUnused'),
-			'efficiency.week.caveatsHeading': l10n.t('efficiency.week.caveatsHeading'),
-			'efficiency.week.unavailable': l10n.t('efficiency.week.unavailable'),
-			'efficiency.deltas.showTrend': l10n.t('efficiency.deltas.showTrend'),
-			'efficiency.deltas.noTrend': l10n.t('efficiency.deltas.noTrend'),
-			'efficiency.attribution.showModel': l10n.t('efficiency.attribution.showModel'),
-			'efficiency.week.better': l10n.t('efficiency.week.better'),
-			'efficiency.week.worse': l10n.t('efficiency.week.worse'),
-			'efficiency.week.partialChip': l10n.t('efficiency.week.partialChip'),
-			'efficiency.horizon.range12w': l10n.t('efficiency.horizon.range12w'),
-			'efficiency.horizon.range26w': l10n.t('efficiency.horizon.range26w'),
-			'efficiency.horizon.range52w': l10n.t('efficiency.horizon.range52w'),
-			'efficiency.week.editTurns': l10n.t('efficiency.week.editTurns'),
+			...this.getEfficiencyWebviewLocalization(),
 			// HydraFusion Routing section (log viewer) and its Session Steps Overview integration.
 			// Templates with {0} are resolved webview-side by localizeFormat(), so they are passed
 			// through unformatted here.
@@ -9707,12 +9718,41 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 		return payload;
 	}
 
+	/**
+	 * Outcome-shaped value signals for the trailing window: shipped pull requests
+	 * (when the user has loaded PR stats), apply rate and lines per dollar.
+	 */
+	private buildEfficiencyValueSignals(curDays: DailyTokenStats[], applyUsage: ApplyButtonUsage | undefined, now: Date): ValueSignals {
+		const curCost = curDays.reduce((s, d) => s + this.calculateEstimatedCost(d.modelUsage, 'copilot'), 0);
+		const curLoc = curDays.reduce((s, d) => s + (d.linesAdded ?? 0) + (d.linesRemoved ?? 0), 0);
+		const prStats = this._lastRepoPrStats?.authenticated ? this._lastRepoPrStats : undefined;
+		const sumRepos = (pick: (r: RepoPrInfo) => number | undefined): number | null =>
+			prStats ? prStats.repos.reduce((s, r) => s + (pick(r) ?? 0), 0) : null;
+		return _computeValueSignals({
+			userPrs: sumRepos(r => r.userAuthoredPrs),
+			mergedPrs: sumRepos(r => r.userMergedPrs),
+			aiPrs: sumRepos(r => r.aiAuthoredPrs),
+			prsSince: prStats?.since ?? null,
+			periodCost: curCost,
+			applyUsage,
+			linesChanged: curLoc,
+			now,
+		});
+	}
+
 	private async buildEfficiencyViewData(
 		forceRecalc = false,
 		rangeId: EfficiencyTrendRangeId = DEFAULT_EFFICIENCY_TREND_RANGE,
 	): Promise<EfficiencyViewData> {
 		const now = new Date();
 		const range = _resolveTrendRange(rangeId);
+		if (forceRecalc) {
+			// Drop every horizon's memoized inputs, not just the one being rebuilt:
+			// otherwise switching back to a narrower horizon after a refresh would
+			// serve session inputs collected before it, missing the new sessions the
+			// refresh was asked to pick up.
+			this.lastEfficiencySessionInputs.clear();
+		}
 		const dailyStats = (!forceRecalc && this.lastFullDailyStats) ? this.lastFullDailyStats : await this.calculateDailyStats();
 		const usage = await this.calculateUsageAnalysisStats(!forceRecalc);
 		const sessionInputs = await this.collectEfficiencySessionInputs(range.weeks, !forceRecalc);
@@ -9738,21 +9778,7 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 			this.monthVolumeTotals(dailyStats, monthKey),
 			this.monthVolumeTotals(dailyStats, lastMonthKey),
 		);
-		const curCost = curDays.reduce((s, d) => s + this.calculateEstimatedCost(d.modelUsage, 'copilot'), 0);
-		const curLoc = curDays.reduce((s, d) => s + (d.linesAdded ?? 0) + (d.linesRemoved ?? 0), 0);
-		const prStats = this._lastRepoPrStats?.authenticated ? this._lastRepoPrStats : undefined;
-		const sumRepos = (pick: (r: RepoPrInfo) => number | undefined): number | null =>
-			prStats ? prStats.repos.reduce((s, r) => s + (pick(r) ?? 0), 0) : null;
-		const value = _computeValueSignals({
-			userPrs: sumRepos(r => r.userAuthoredPrs),
-			mergedPrs: sumRepos(r => r.userMergedPrs),
-			aiPrs: sumRepos(r => r.aiAuthoredPrs),
-			prsSince: prStats?.since ?? null,
-			periodCost: curCost,
-			applyUsage: usage.last30Days.applyUsage,
-			linesChanged: curLoc,
-			now,
-		});
+		const value = this.buildEfficiencyValueSignals(curDays, usage.last30Days.applyUsage, now);
 		return {
 			trendRange: range.id,
 			trendRangeWeeks: range.weeks,

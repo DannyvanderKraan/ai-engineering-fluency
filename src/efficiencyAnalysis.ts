@@ -274,9 +274,14 @@ export function getWeekBounds(weekKey: string, now: Date): WeekBounds {
 	const asUtcDay = (d: Date): number => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
 	const elapsed = Math.floor((asUtcDay(now) - asUtcDay(monday)) / 86_400_000) + 1;
 	const elapsedDays = Math.max(0, Math.min(7, elapsed));
+	// Partiality is "has this week finished?", not "have 7 days started?". On the
+	// Sunday the seventh day has begun but the week is still accruing sessions,
+	// so counting days would call an in-progress week complete for a whole day.
+	const nextMonday = new Date(monday);
+	nextMonday.setDate(monday.getDate() + 7);
 	const startKey = fmtKey(monday);
 	const endKey = fmtKey(sunday);
-	return { startKey, endKey, rangeLabel: formatDateRangeLabel(startKey, endKey), isPartial: elapsedDays < 7, elapsedDays };
+	return { startKey, endKey, rangeLabel: formatDateRangeLabel(startKey, endKey), isPartial: now < nextMonday, elapsedDays };
 }
 
 /** One metric of a selected week, next to the same metric in the previous week. */
@@ -1681,7 +1686,11 @@ function modelWeekCaveats(
 	bounds: WeekBounds,
 	priorLabel: string | null,
 ): string[] {
-	if (!metrics) { return []; }
+	const partialNote = bounds.isPartial
+		? [`This week is still running (${bounds.elapsedDays} of 7 days), so its sample is smaller than a full week's.`]
+		: [];
+	// The week's own disclosure applies whether or not the model was used in it.
+	if (!metrics) { return partialNote; }
 	const caveats = [...modelSampleCaveats(metrics)];
 	if (isMixedModelHeavy(metrics)) { caveats.push(MIXED_MODEL_CAVEAT); }
 	if (prior) {
@@ -1690,9 +1699,7 @@ function modelWeekCaveats(
 			caveats.push(`This week's task mix differs from ${priorLabel ?? 'the previous week'} by ${Math.round(divergence * 100)}%, so part of any movement reflects the work rather than the model.`);
 		}
 	}
-	if (bounds.isPartial) {
-		caveats.push(`This week is still running (${bounds.elapsedDays} of 7 days), so its sample is smaller than a full week's.`);
-	}
+	caveats.push(...partialNote);
 	return caveats;
 }
 
