@@ -715,6 +715,39 @@ function activeTabState(harness: any): { button: string | undefined; panels: str
 	};
 }
 
+test('a deep link to a lazy-loaded tab still requests its data', async () => {
+	// Regression: activateUsageTab() returns before runTabFirstVisitEffects() when no panel
+	// exists yet, which is the state a `switchTab` message arrives in during loading. Without
+	// replaying the effects at render time, Repository PRs opened via a deep link rendered its
+	// panel and then sat on the loading placeholder, because loadRepoPrStats was never posted.
+	const harness = await bootWebview(null);
+	harness.post({ command: 'switchTab', tab: 'repos' });
+	harness.post({ command: 'updateStats', data: buildStats() });
+	await harness.settle();
+
+	assert.equal(activeTabState(harness).button, 'repos', 'the deep link decides the opening tab');
+	assert.ok(
+		harness.posted.some((m: any) => m.command === 'loadRepoPrStats'),
+		'the opening tab must request its own data, not wait for the user to switch away and back',
+	);
+});
+
+test('group tabs expose which one is selected to assistive technology', async () => {
+	const harness = await bootWebview(buildStats());
+	const pressed = (): string[] => [...harness.window.document.querySelectorAll('.group-tab')]
+		.filter((b: any) => b.getAttribute('aria-pressed') === 'true')
+		.map((b: any) => b.getAttribute('data-group'));
+
+	assert.deepEqual(pressed(), ['usage'], 'the open group is the only one marked pressed at render');
+
+	harness.window.document.querySelector('.group-tab[data-group="coaching"]').click();
+
+	assert.deepEqual(pressed(), ['coaching'], 'aria-pressed follows the group, not just the CSS class');
+	// Every group button carries the attribute, so none reads as an untoggled plain button.
+	const all = [...harness.window.document.querySelectorAll('.group-tab')];
+	assert.ok(all.every((b: any) => b.hasAttribute('aria-pressed')), 'every group tab is a toggle');
+});
+
 test('switching group tabs moves to that group and shows only its panel', async () => {
 	const harness = await bootWebview(buildStats());
 

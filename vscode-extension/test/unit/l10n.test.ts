@@ -210,6 +210,7 @@ test('l10n: usage tab-group, band and context-reference keys resolve in English'
 		'usage.band.context.title': 'Context',
 		'usage.contextWindow.compactionHeading': 'Context compaction',
 		'usage.contextRefs.noneRecent': 'No context references recorded today or in the last 30 days.',
+		'usage.contextRefs.totalTooltip': 'Total across the reference kinds (#file, #selection, @workspace, instructions files and so on). The Images, Prompt Files, Custom Prompts and Code Lines rows are separate metrics and are not included in this total.',
 	};
 	for (const [key, english] of Object.entries(expected)) {
 		assert.equal(t(key), english, `English value for ${key}`);

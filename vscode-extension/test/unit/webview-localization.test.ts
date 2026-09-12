@@ -62,6 +62,7 @@ test('localize: the context-pressure defaults are present without any payload', 
 		'usage.contextRefs.otherSummary',
 		'usage.contextRefs.noneRecent',
 		'usage.contextWindow.compactionHeading',
+		'usage.contextRefs.totalTooltip',
 	]) {
 		assert.notEqual(localize(key), key, `${key} should have a built-in English default`);
 	}

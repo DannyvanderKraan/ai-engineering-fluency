@@ -2442,7 +2442,11 @@ const lastTabPerGroup: Record<string, string> = {};
 /** Shows one group's leaf tab bar and marks its group button active. Does not change which leaf is active. */
 function activateUsageGroup(groupId: string): void {
 	document.querySelectorAll<HTMLElement>('.group-tab').forEach(btn => {
-		btn.classList.toggle('active', btn.getAttribute('data-group') === groupId);
+		const selected = btn.getAttribute('data-group') === groupId;
+		btn.classList.toggle('active', selected);
+		// The `active` class is a paint-only signal. Without aria-pressed a screen reader hears
+		// four identical buttons and cannot tell which group is open.
+		btn.setAttribute('aria-pressed', String(selected));
 	});
 	document.querySelectorAll<HTMLElement>('.leaf-tabs').forEach(bar => {
 		bar.style.display = bar.getAttribute('data-group') === groupId ? 'flex' : 'none';
@@ -2485,6 +2489,12 @@ function setupTabs(): void {
 	// The tab that is already on screen counts as opened — the user is reading it
 	// right now, whether or not they clicked anything to get here.
 	reportTabOpened(activeTab);
+	// …and it counts as a first visit. activateUsageTab() bails before reaching these effects
+	// when no panel exists yet, so a `switchTab` deep link to Repository PRs or Cloud Agent
+	// would render its panel and then sit on the loading placeholder forever, because nothing
+	// ever posted loadRepoPrStats/loadAgentSessions. Both are guarded by their own loaded
+	// flags, so replaying them here is idempotent.
+	runTabFirstVisitEffects(activeTab);
 	document.querySelectorAll<HTMLElement>('.tab-button').forEach(button => {
 		button.addEventListener('click', () => {
 			const tab = button.getAttribute('data-tab');
@@ -3665,7 +3675,7 @@ function buildTabStripHtml(stats: UsageAnalysisStats): string {
 	const buttons = usageLeafTabButtons(stats);
 	const activeGroup = groupOfUsageTab(activeTab);
 	const groupBar = USAGE_TAB_GROUPS.map(group =>
-		`<button class="group-tab ${group.id === activeGroup ? 'active' : ''}" data-group="${group.id}"><span class="codicon codicon-${group.icon}"></span> ${escapeHtml(localize(group.labelKey))}</button>`
+		`<button class="group-tab ${group.id === activeGroup ? 'active' : ''}" data-group="${group.id}" aria-pressed="${group.id === activeGroup}"><span class="codicon codicon-${group.icon}" aria-hidden="true"></span> ${escapeHtml(localize(group.labelKey))}</button>`
 	).join('\n\t\t\t\t');
 	const leafBars = USAGE_TAB_GROUPS.map(group =>
 		`<div class="tab-bar leaf-tabs" data-group="${group.id}"${group.id === activeGroup ? '' : ' style="display:none"'}>
