@@ -10,12 +10,14 @@ import {
 	isRepoPrEnvelopeUsable,
 	isRepoPrSnapshotFresh,
 	nextRepoPrRefreshAt,
+	pruneRepoPrRecords,
+	readRepoPrRecords,
 	readRepoPrSnapshot,
 	shouldPreserveRepoPrSnapshotForEmptyDiscovery,
 	writeRepoPrSnapshot,
 	type RepoPrCacheEnvelope,
 } from '../../src/repoPrCache';
-import type { RepoPrStatsResult } from '../../src/githubPrService';
+import type { RepoPrRecord, RepoPrStatsResult } from '../../src/githubPrService';
 
 const NOW = Date.parse('2026-08-29T12:00:00Z');
 const SINCE = new Date('2026-07-30T12:00:00Z');
@@ -152,4 +154,92 @@ test('readRepoPrSnapshot: missing or corrupt files read as undefined, never thro
 	assert.equal(await readRepoPrSnapshot(missing), undefined);
 	assert.equal(await readRepoPrSnapshot(corrupt), undefined);
 	await fs.promises.rm(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// Per-PR cache records (issue #1968)
+// ---------------------------------------------------------------------------
+
+function makePrRecord(overrides: Partial<RepoPrRecord> = {}): RepoPrRecord {
+	return {
+		number: 1,
+		title: 'Add a thing',
+		url: 'https://github.com/rajbos/repo/pull/1',
+		createdAt: '2026-08-01T10:00:00.000Z',
+		updatedAt: '2026-08-02T10:00:00.000Z',
+		state: 'open',
+		merged: false,
+		authorAiType: null,
+		authorLogin: 'octocat',
+		reviewerAiTypes: [],
+		...overrides,
+	};
+}
+
+test('readRepoPrRecords returns the records of the requested repo only', () => {
+	const envelope = makeEnvelope({
+		prs: {
+			'rajbos/repo': [makePrRecord({ number: 1 })],
+			'rajbos/other': [makePrRecord({ number: 2 })],
+		},
+	});
+	assert.deepEqual(readRepoPrRecords(envelope, 'rajbos/repo').map((r) => r.number), [1]);
+	assert.deepEqual(readRepoPrRecords(envelope, 'rajbos/other').map((r) => r.number), [2]);
+	assert.deepEqual(readRepoPrRecords(envelope, 'rajbos/unknown'), []);
+});
+
+test('readRepoPrRecords drops records that could never be matched again', () => {
+	const envelope = makeEnvelope({
+		prs: {
+			'rajbos/repo': [
+				makePrRecord({ number: 1 }),
+				makePrRecord({ number: 2, updatedAt: '' }),
+				makePrRecord({ number: 3, updatedAt: 'not-a-date' }),
+				makePrRecord({ number: -1 }),
+			],
+		},
+	});
+	assert.deepEqual(readRepoPrRecords(envelope, 'rajbos/repo').map((r) => r.number), [1]);
+});
+
+test('readRepoPrRecords tolerates a snapshot written before per-PR records existed', () => {
+	assert.deepEqual(readRepoPrRecords(makeEnvelope(), 'rajbos/repo'), []);
+	assert.deepEqual(readRepoPrRecords(undefined, 'rajbos/repo'), []);
+	assert.deepEqual(readRepoPrRecords(makeEnvelope({ prs: { 'rajbos/repo': 'nope' as any } }), 'rajbos/repo'), []);
+});
+
+test('pruneRepoPrRecords keeps the most recently updated PRs across every repo', () => {
+	const prs = {
+		'rajbos/a': [makePrRecord({ number: 1, updatedAt: '2026-08-01T00:00:00.000Z' })],
+		'rajbos/b': [
+			makePrRecord({ number: 2, updatedAt: '2026-08-03T00:00:00.000Z' }),
+			makePrRecord({ number: 3, updatedAt: '2026-08-02T00:00:00.000Z' }),
+		],
+	};
+	const pruned = pruneRepoPrRecords(prs, { maxRecords: 2, maxBytes: 1_000_000 });
+	assert.equal(pruned.evicted, 1);
+	assert.deepEqual(Object.keys(pruned.prs), ['rajbos/b']);
+	assert.deepEqual(pruned.prs['rajbos/b'].map((r) => r.number), [2, 3]);
+});
+
+test('pruneRepoPrRecords leaves an in-budget record set untouched', () => {
+	const prs = { 'rajbos/a': [makePrRecord({ number: 1 })] };
+	const pruned = pruneRepoPrRecords(prs, { maxRecords: 100, maxBytes: 1_000_000 });
+	assert.equal(pruned.evicted, 0);
+	assert.deepEqual(pruned.prs['rajbos/a'].map((r) => r.number), [1]);
+});
+
+test('a snapshot round-trips its per-PR records through disk', async () => {
+	const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'repopr-records-'));
+	try {
+		const filePath = getRepoPrCachePath(dir, 'prod.github-com.aaaaaaaaaaaaaaaa');
+		const envelope = makeEnvelope({ prs: { 'rajbos/repo': [makePrRecord()] } });
+		await writeRepoPrSnapshot(filePath, envelope);
+		const read = await readRepoPrSnapshot(filePath);
+		assert.deepEqual(readRepoPrRecords(read, 'rajbos/repo'), [makePrRecord()]);
+		// The scope is part of the filename, so another identity's read finds nothing.
+		assert.equal(await readRepoPrSnapshot(getRepoPrCachePath(dir, 'prod.github-com.bbbbbbbbbbbbbbbb')), undefined);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });

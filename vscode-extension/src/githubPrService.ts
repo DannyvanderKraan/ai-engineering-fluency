@@ -2,6 +2,7 @@ import * as https from 'https';
 import * as childProcess from 'child_process';
 import { getGitHubApiEndpoints, GITHUB_API_USER_AGENT, GITHUB_API_ACCEPT_V3, GITHUB_API_VERSION, attachRequestFailureHandling } from './githubApiConfig';
 import { withTimeout } from './utils/promises';
+import { parseEntityTimestamp } from './githubActivityCache';
 
 export type RepoPrDetail = {
 	number: number;
@@ -28,6 +29,12 @@ export type RepoPrInfo = {
 	userAuthoredPrs?: number;
 	/** Subset of `userAuthoredPrs` that has been merged. */
 	userMergedPrs?: number;
+	/**
+	 * True when this repo's PR listing did not complete — an error, a timeout, or the five-page
+	 * cap. The counts are then a **lower bound**, and the cache must not treat a PR's absence from
+	 * this pass as proof it is gone. See `fetchRepoPrs().complete`.
+	 */
+	partial?: boolean;
 	error?: string;
 };
 
@@ -41,6 +48,8 @@ export type RepoPrStatsResult = {
 	fetchedAt?: string;
 	/** How often the snapshot is refreshed, so the UI can say when the next refresh is due. */
 	refreshIntervalMs?: number;
+	/** True when at least one repo's listing was incomplete — the totals shown are lower bounds. */
+	partial?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -575,7 +584,19 @@ async function fetchRepoPrsPageWithinTimeout(
 	}
 }
 
-/** Fetch all PRs from the last 30 days for a repo, paginating as needed. */
+/** Maximum PR listing pages fetched per repo — caps one repo's refresh at 500 PRs. */
+export const MAX_REPO_PR_PAGES = 5;
+
+/**
+ * Fetch all PRs from the last 30 days for a repo, paginating as needed.
+ *
+ * `complete` reports whether the listing actually *enumerated the whole window*: true only when
+ * pagination ran out naturally (a short/empty page, or a page whose oldest PR predates the window)
+ * with no error along the way. It is false on any error and when the {@link MAX_REPO_PR_PAGES} cap
+ * cut the listing short. That distinction is the cache's correctness contract: a PR missing from
+ * an incomplete listing has **not** been shown to be gone, so its cached record must be retained
+ * rather than reconciled away (see `reconcileRepoPrRecords`).
+ */
 export async function fetchRepoPrs(
 	owner: string,
 	repo: string,
@@ -583,22 +604,236 @@ export async function fetchRepoPrs(
 	since: Date,
 	fetchPage: (owner: string, repo: string, token: string, page: number) => Promise<RepoPrPageResult> = fetchRepoPrsPage,
 	pageTimeoutMs = 20_000,
-): Promise<{ prs: any[]; error?: string }> {
+): Promise<{ prs: any[]; error?: string; complete: boolean }> {
 	const allPrs: any[] = [];
-	const MAX_PAGES = 5; // Cap at 500 PRs per repo
-	for (let page = 1; page <= MAX_PAGES; page++) {
+	let complete = false;
+	for (let page = 1; page <= MAX_REPO_PR_PAGES; page++) {
 		const { prs, statusCode, error } = await fetchRepoPrsPageWithinTimeout(
 			fetchPage, owner, repo, token, page, pageTimeoutMs,
 		);
-		if (error) { return { prs: allPrs, error: buildFetchRepoPrsError(statusCode, error) }; }
-		if (prs.length === 0) { break; }
+		if (error) { return { prs: allPrs, error: buildFetchRepoPrsError(statusCode, error), complete: false }; }
+		if (prs.length === 0) { complete = true; break; }
 		for (const pr of prs) {
 			if (new Date(pr.created_at) >= since) { allPrs.push(pr); }
 		}
 		const oldest = prs[prs.length - 1];
-		if (new Date(oldest.created_at) < since || prs.length < 100) { break; }
+		if (new Date(oldest.created_at) < since || prs.length < 100) { complete = true; break; }
 	}
-	return { prs: allPrs };
+	return { prs: allPrs, complete };
+}
+
+// ---------------------------------------------------------------------------
+// Cached per-PR projection
+// ---------------------------------------------------------------------------
+
+/**
+ * The minimum a cached PR has to carry for the Repository PRs tab to be rendered from it without
+ * calling GitHub again: the classification inputs (author/reviewer AI attribution, whether the
+ * signed-in user opened it, whether it merged) plus the two fields the AI-detail list displays
+ * (title and URL). Deliberately **not** stored: bodies, diffs, labels, reviewer lists beyond their
+ * AI attribution, or anything about a PR the current projection does not render.
+ *
+ * `updatedAt` is the correctness contract. It is the canonical form of GitHub's `updated_at`, and a
+ * record is only ever reused when it matches the listing exactly — any edit, comment, review, push
+ * or state change moves `updated_at`, so a reused record cannot be showing a superseded state.
+ */
+export interface RepoPrRecord {
+	/** PR number, unique within its repository — with the repo key, this is the cache key. */
+	number: number;
+	title: string;
+	url: string;
+	/** ISO `created_at`, used to keep the 30-day window honest when serving from cache. */
+	createdAt: string;
+	/** Canonical ISO `updated_at`; the value a revalidating listing must match exactly. */
+	updatedAt: string;
+	/** `open` or `closed` — closed and merged PRs stay represented, matching `state=all`. */
+	state: string;
+	/** True when the PR merged (GitHub reports this as a non-null `merged_at`). */
+	merged: boolean;
+	/** Which AI system authored the PR, or null when a human did. */
+	authorAiType: RepoPrDetail['aiType'] | null;
+	/** Lower-cased author login, needed to attribute the signed-in user's own PRs. */
+	authorLogin: string;
+	/** One entry per requested reviewer that is an AI bot — humans are not recorded. */
+	reviewerAiTypes: RepoPrDetail['aiType'][];
+}
+
+/** Normalized `owner/repo` key. Case-insensitive, matching how GitHub treats repository names. */
+export function normalizeRepoKey(owner: string, repo: string): string {
+	return `${(owner ?? '').toLowerCase()}/${(repo ?? '').toLowerCase()}`;
+}
+
+/** Read a string field off a raw PR payload, falling back to '' for anything else. */
+function prString(value: unknown): string {
+	return typeof value === 'string' ? value : '';
+}
+
+/** The AI attribution of every requested reviewer that is an AI bot; humans are not recorded. */
+function reviewerAiTypesOf(pr: any): RepoPrDetail['aiType'][] {
+	const reviewers = Array.isArray(pr?.requested_reviewers) ? pr.requested_reviewers : [];
+	const aiTypes: RepoPrDetail['aiType'][] = [];
+	for (const reviewer of reviewers) {
+		const reviewerAi = detectAiType(reviewer);
+		if (reviewerAi) { aiTypes.push(reviewerAi); }
+	}
+	return aiTypes;
+}
+
+/**
+ * Project one raw PR from the listing into the record shape.
+ *
+ * `updatedAt` is '' when the payload's `updated_at` is missing or unparseable, which makes the
+ * record **uncacheable**: `reconcileRepoPrRecords` never matches an empty timestamp and
+ * `toCacheableRepoPrRecords` filters it out, so such a PR is recomputed from the listing on every
+ * pass instead of being reused on a timestamp that cannot be verified. Its `number` is -1 when the
+ * payload has none, which is likewise never cacheable.
+ */
+function projectRepoPr(pr: any): RepoPrRecord | undefined {
+	if (!pr || typeof pr !== 'object') { return undefined; }
+	return {
+		number: typeof pr.number === 'number' && Number.isFinite(pr.number) ? pr.number : -1,
+		title: prString(pr.title),
+		url: prString(pr.html_url),
+		createdAt: parseEntityTimestamp(pr.created_at) ?? '',
+		updatedAt: parseEntityTimestamp(pr.updated_at) ?? '',
+		state: pr.state === 'closed' ? 'closed' : 'open',
+		merged: Boolean(pr.merged_at),
+		authorAiType: detectAiType(pr.user),
+		authorLogin: prString(pr.user?.login).toLowerCase(),
+		reviewerAiTypes: reviewerAiTypesOf(pr),
+	};
+}
+
+/**
+ * Project one raw PR into its **cacheable** record, or undefined when it cannot be cached safely:
+ * no usable number, or a missing/unparseable `updated_at`. An uncacheable PR is still counted in
+ * the current pass — it is in the listing — it simply never enters the cache.
+ */
+export function toRepoPrRecord(pr: any): RepoPrRecord | undefined {
+	const record = projectRepoPr(pr);
+	return record && record.number >= 0 && record.updatedAt !== '' ? record : undefined;
+}
+
+/** The counters the Repository PRs table renders for one repo, derived purely from its records. */
+export type RepoPrSummary = Pick<RepoPrInfo, 'totalPrs' | 'aiAuthoredPrs' | 'aiReviewRequestedPrs' | 'aiDetails' | 'userAuthoredPrs' | 'userMergedPrs'>;
+
+/**
+ * Count a repo's cached PR records into the table's projection. Pure, so serving from cache and
+ * serving from a fresh listing go through exactly the same arithmetic — a cached row can never
+ * disagree with a freshly fetched one about what the same PRs mean.
+ *
+ * `userAuthoredPrs`/`userMergedPrs` are omitted entirely when the signed-in login is unknown,
+ * preserving the existing "absent, not zero" contract for that column.
+ */
+export function summarizeRepoPrRecords(records: readonly RepoPrRecord[], userLogin?: string): RepoPrSummary {
+	const login = userLogin?.toLowerCase();
+	const aiDetails: RepoPrDetail[] = [];
+	let aiAuthoredPrs = 0;
+	let aiReviewRequestedPrs = 0;
+	let userAuthoredPrs = 0;
+	let userMergedPrs = 0;
+	for (const record of records) {
+		if (record.authorAiType) {
+			aiAuthoredPrs++;
+			aiDetails.push({ number: record.number, title: record.title, url: record.url, aiType: record.authorAiType, role: 'author' });
+		}
+		for (const aiType of record.reviewerAiTypes) {
+			aiReviewRequestedPrs++;
+			aiDetails.push({ number: record.number, title: record.title, url: record.url, aiType, role: 'reviewer-requested' });
+		}
+		if (login && record.authorLogin === login) {
+			userAuthoredPrs++;
+			if (record.merged) { userMergedPrs++; }
+		}
+	}
+	const base = { totalPrs: records.length, aiAuthoredPrs, aiReviewRequestedPrs, aiDetails };
+	return login ? { ...base, userAuthoredPrs, userMergedPrs } : base;
+}
+
+/** Outcome of revalidating one repo's cached PR records against a fresh listing. */
+export interface RepoPrReconciliation {
+	/** The records to serve and to write back to the cache. */
+	records: RepoPrRecord[];
+	/** How many cached records were reused because their `updated_at` matched exactly. */
+	reused: number;
+	/** How many records were (re)computed: new, changed, or previously uncacheable PRs. */
+	recomputed: number;
+	/** How many cached records were dropped because a complete listing no longer contains them. */
+	removed: number;
+	/** How many cached records were kept only because the listing was incomplete. */
+	retainedUnverified: number;
+}
+
+/**
+ * Revalidate one repo's cached PR records against a fresh `state=all` listing.
+ *
+ * - A cached record whose `updated_at` matches the listing exactly is **reused** as-is.
+ * - A PR that is new, whose timestamp moved, or whose timestamp is missing/invalid on either side
+ *   is **recomputed** from the listing payload.
+ * - A cached record the listing did not mention is removed **only when `listingComplete`**. On an
+ *   error, a timeout or a capped listing, absence proves nothing, so the record is retained and the
+ *   caller marks the repo `partial` — a lower bound, never a silently shortened total.
+ */
+export function reconcileRepoPrRecords(
+	cached: readonly RepoPrRecord[] | undefined,
+	listedPrs: readonly any[],
+	options: { listingComplete: boolean },
+): RepoPrReconciliation {
+	const cachedByNumber = indexCachedPrRecords(cached);
+	const listed = projectListedPrs(listedPrs, cachedByNumber);
+
+	let removed = 0;
+	let retainedUnverified = 0;
+	for (const [number, record] of cachedByNumber) {
+		if (listed.seen.has(number)) { continue; }
+		if (options.listingComplete) { removed++; continue; }
+		listed.records.push(record);
+		retainedUnverified++;
+	}
+
+	return { records: listed.records, reused: listed.reused, recomputed: listed.recomputed, removed, retainedUnverified };
+}
+
+/** Walk the fresh listing, reusing each cached record whose timestamp still matches exactly. */
+function projectListedPrs(
+	listedPrs: readonly any[],
+	cachedByNumber: ReadonlyMap<number, RepoPrRecord>,
+): { records: RepoPrRecord[]; seen: Set<number>; reused: number; recomputed: number } {
+	const records: RepoPrRecord[] = [];
+	const seen = new Set<number>();
+	let reused = 0;
+	let recomputed = 0;
+	for (const pr of listedPrs) {
+		const fresh = toRepoPrRecord(pr);
+		if (!fresh) {
+			// Uncacheable (no number or no valid timestamp): count it this pass without caching it.
+			const uncacheable = projectRepoPr(pr);
+			if (uncacheable) { records.push(uncacheable); recomputed++; }
+			continue;
+		}
+		seen.add(fresh.number);
+		const previous = cachedByNumber.get(fresh.number);
+		const hit = previous?.updatedAt === fresh.updatedAt;
+		records.push(hit ? previous! : fresh);
+		if (hit) { reused++; } else { recomputed++; }
+	}
+	return { records, seen, reused, recomputed };
+}
+
+/** Index the previous pass's records by PR number, dropping anything that could never match. */
+function indexCachedPrRecords(cached: readonly RepoPrRecord[] | undefined): Map<number, RepoPrRecord> {
+	const byNumber = new Map<number, RepoPrRecord>();
+	for (const record of cached ?? []) {
+		if (typeof record?.number === 'number' && parseEntityTimestamp(record.updatedAt)) {
+			byNumber.set(record.number, record);
+		}
+	}
+	return byNumber;
+}
+
+/** Records that may be persisted: the uncacheable ones (empty `updatedAt`) are dropped. */
+export function toCacheableRepoPrRecords(records: readonly RepoPrRecord[]): RepoPrRecord[] {
+	return records.filter((record) => record.number >= 0 && parseEntityTimestamp(record.updatedAt) !== undefined);
 }
 
 /** Maximum number of concurrent `git remote` probes during repo discovery. */

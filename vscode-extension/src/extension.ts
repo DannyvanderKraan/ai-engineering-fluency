@@ -294,16 +294,19 @@ import { scaleModelUsage, reconcileDebugLogModelUsage } from '../../src/statsHel
 
 // --- GitHub & agent sessions ---
 import {
-	detectAiType,
 	discoverGitHubRepos,
 	fetchRepoPrs,
+	normalizeRepoKey,
+	reconcileRepoPrRecords,
+	summarizeRepoPrRecords,
+	toCacheableRepoPrRecords,
 	fetchCopilotPlanInfo,
 	fetchCopilotTokenEndpointInfo,
 	fetchUserEnterprises,
 	fetchEnterprisePremiumBudgets,
 	type CopilotPlanInfo,
-	type RepoPrDetail,
 	type RepoPrInfo,
+	type RepoPrRecord,
 	type RepoPrStatsResult,
 } from './githubPrService';
 import { collectAgentSessions } from './agentSessionsService';
@@ -313,7 +316,9 @@ import {
 	canServeAgentTasksSnapshot,
 	getAgentTasksCachePath,
 	isAgentTasksEnvelopeUsable,
+	readAgentTaskRecords,
 	readAgentTasksSnapshot,
+	reconcileAgentTaskRecords,
 	writeAgentTasksSnapshot,
 } from './agentTasksCache';
 import {
@@ -322,11 +327,19 @@ import {
 	canServeRepoPrSnapshot,
 	getRepoPrCachePath,
 	isRepoPrEnvelopeUsable,
+	pruneRepoPrRecords,
+	readRepoPrRecords,
 	readRepoPrSnapshot,
 	shouldPreserveRepoPrSnapshotForEmptyDiscovery,
 	writeRepoPrSnapshot,
 } from './repoPrCache';
-import { getConfiguredGitHubEnterpriseUri, getConfiguredGitHubWebOrigin, getGitHubAuthProviderId } from './githubApiConfig';
+import {
+	buildGitHubActivityScope,
+	deleteGitHubActivityCacheFiles,
+	evictInactiveGitHubActivityScopes,
+	isManualRefreshAllowed,
+} from './githubActivityCache';
+import { getConfiguredGitHubEnterpriseUri, getConfiguredGitHubWebOrigin, getGitHubApiEndpoints, getGitHubAuthProviderId } from './githubApiConfig';
 
 // --- View regression ---
 import {
@@ -854,6 +867,9 @@ class CopilotTokenTracker implements vscode.Disposable {
 
 	// True while this window is refreshing the shared cloud-agent snapshot from the GitHub API
 	private _agentSessionsRefreshInFlight = false;
+
+	// When the user last asked for a manual GitHub-activity refresh, for the cooldown check
+	private _lastManualGitHubActivityRefreshAt?: number;
 
 	// Tool name mapping - loaded from toolNames.json for friendly display names
 	private toolNameMap: { [key: string]: string } = toolNamesData as { [key: string]: string };
@@ -1483,6 +1499,11 @@ class CopilotTokenTracker implements vscode.Disposable {
 			// Delete the on-disk snapshot so it isn't reloaded after restart.
 			await this.cacheManager.deleteSharedSnapshot();
 
+			// The GitHub-activity caches (Repository PRs, Cloud Agent tasks) are separate files
+			// with their own policy, so deleting the session snapshot does not touch them. Clear
+			// Cache is expected to clear everything — but never to sign the user out.
+			await this.clearGitHubActivityCaches();
+
 			// Reset diagnostics loaded flag so the diagnostics view will reload files
 			this.diagnosticsHasLoadedFiles = false;
 			this.diagnosticsCachedFiles = [];
@@ -1547,6 +1568,11 @@ class CopilotTokenTracker implements vscode.Disposable {
 		// versions (see #2033) or an interrupted merge. Never blocks activation.
 		void sweepStaleWalTempFiles().catch((e) => this.warn(`Stale WAL temp file sweep failed: ${e}`));
 		this._sessionRestorePromise = this.restoreGitHubSession();
+		// Best-effort housekeeping: drop GitHub-activity caches belonging to accounts/hosts this
+		// install no longer uses, so an install that has seen several identities stays bounded.
+		// Runs after the session restore is kicked off — it waits on it, so the active scope it
+		// protects is the account actually signed in, not the "not signed in yet" one.
+		void this._evictInactiveGitHubActivityScopes().catch((e) => this.warn(`GitHub activity scope eviction failed: ${e}`));
 		this.setupGitHubAuthListener(context);
 		this.sessionDiscovery.checkCopilotExtension();
 		this.initializeStatusBar();
@@ -2292,11 +2318,23 @@ class CopilotTokenTracker implements vscode.Disposable {
 	public async signOutFromGitHub(): Promise<void> {
 		try {
 			this.log('Signing out from GitHub...');
+			const signedOutScope = this.githubActivityScope();
 			this.githubSession = undefined;
 			this._githubSignedOutByUser = true;
 			await this.context.globalState.update('github.authenticated', false);
 			await this.context.globalState.update('github.username', undefined);
 			await this.context.globalState.update('github.signedOutByUser', true);
+			// Purge the signed-out identity's cached GitHub activity: it is that account's private
+			// data, and nothing should be able to serve it back after they signed out. The scope is
+			// computed from the session captured above, before it was cleared.
+			try {
+				const removed = await deleteGitHubActivityCacheFiles(this.context.globalStorageUri.fsPath, signedOutScope);
+				this.log(`Removed ${removed} cached GitHub activity file(s) for the signed-out account`);
+			} catch (err) {
+				this.warn(`Failed to remove cached GitHub activity on sign-out: ${err}`);
+			}
+			this._lastRepoPrStats = undefined;
+			this._lastAgentSessionsData = undefined;
 			this.log('✅ Successfully signed out from GitHub');
 			vscode.window.showInformationMessage('Signed out from GitHub successfully.');
 
@@ -2353,9 +2391,28 @@ class CopilotTokenTracker implements vscode.Disposable {
 		return since;
 	}
 
+	/**
+	 * The identity a GitHub-activity cache file is scoped to: VS Code mode, the normalized GitHub
+	 * host currently configured, and a non-reversible hash of the signed-in account.
+	 *
+	 * Every read and write of the PR and cloud-agent snapshots goes through this, so signing out,
+	 * switching accounts, or repointing `github-enterprise.uri` lands on a different file rather
+	 * than re-serving the previous identity's private data. The account label is hashed, never
+	 * written in the clear, and the access token is never part of the scope at all.
+	 */
+	private githubActivityScope(accountIdentity?: string): string {
+		return buildGitHubActivityScope({
+			cacheIdentifier: this.cacheManager.getCacheIdentifier(),
+			hostname: getGitHubApiEndpoints().hostname,
+			accountIdentity: accountIdentity
+				?? this.githubSession?.account.label
+				?? this.context.globalState.get<string>('github.username'),
+		});
+	}
+
 	/** Path of the cross-window Repository PRs snapshot shared by every window of this VS Code edition. */
-	private repoPrCachePath(): string {
-		return getRepoPrCachePath(this.context.globalStorageUri.fsPath, this.cacheManager.getCacheIdentifier());
+	private repoPrCachePath(accountIdentity?: string): string {
+		return getRepoPrCachePath(this.context.globalStorageUri.fsPath, this.githubActivityScope(accountIdentity));
 	}
 
 	/** An empty snapshot — `fetchedAt: ''` marks "never fetched", which the panel renders as pending. */
@@ -2461,14 +2518,18 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 * Runs on extension start and on every cache refresh cycle (both leader-gated), plus whenever
 	 * the Repository PRs tab is opened.
 	 */
-	private async maybeRefreshRepoPrStats(): Promise<void> {
+	private async maybeRefreshRepoPrStats(force = false): Promise<void> {
 		if (this._repoPrRefreshInFlight || this._githubSignedOutByUser) { return; }
 		const since = this.repoPrStatsSince();
-		const cachePath = this.repoPrCachePath();
-		if (canServeRepoPrSnapshot(await readRepoPrSnapshot(cachePath), since, Date.now())) { return; }
-
+		// The cache file is scoped to the signed-in account, so the session has to be resolved
+		// before a path is picked — otherwise the very first pass after startup would read and
+		// write the "not signed in yet" scope instead of this account's.
 		const session = await vscode.authentication.getSession(getGitHubAuthProviderId(), ['read:user'], { silent: true });
 		if (!session) { return; }
+		const cachePath = this.repoPrCachePath(session.account.label);
+		// A forced (user-triggered) refresh skips the TTL check only — it still respects the
+		// cross-window lock below, so two windows can never collect the same data at once.
+		if (!force && canServeRepoPrSnapshot(await readRepoPrSnapshot(cachePath), since, Date.now())) { return; }
 
 		let acquired = false;
 		try { acquired = await this.cacheManager.acquireRepoPrLock(); }
@@ -2494,6 +2555,33 @@ class CopilotTokenTracker implements vscode.Disposable {
 		}
 	}
 
+	/**
+	 * Revalidate one repository against the authoritative `state=all` listing, reusing every cached
+	 * PR whose `updated_at` still matches exactly and recomputing only the rest.
+	 */
+	private async revalidateRepoPrs(
+		owner: string, repo: string, token: string, since: Date, userLogin: string | undefined,
+		cachedRecords: RepoPrRecord[], webOrigin: string,
+	): Promise<{ info: RepoPrInfo; records: RepoPrRecord[] }> {
+		const { prs, error, complete } = await fetchRepoPrs(owner, repo, token, since);
+		// An errored listing tells us nothing about which PRs still exist, so it is not allowed to
+		// reconcile anything away — and the row it produces is explicitly a lower bound.
+		const listingComplete = complete && !error;
+		const reconciled = reconcileRepoPrRecords(cachedRecords, error ? [] : prs, { listingComplete });
+		this.log(
+			`🔎 Fetched ${prs.length} PR(s) for ${owner}/${repo}${error ? ` — ${error}` : ''}`
+			+ ` (cache: ${reconciled.reused} reused, ${reconciled.recomputed} recomputed`
+			+ `, ${reconciled.removed} removed, ${reconciled.retainedUnverified} retained unverified)`,
+		);
+		const info: RepoPrInfo = {
+			owner, repo, repoUrl: `${webOrigin}/${owner}/${repo}`,
+			...summarizeRepoPrRecords(error ? [] : reconciled.records, userLogin),
+			partial: !listingComplete,
+			error,
+		};
+		return { info, records: toCacheableRepoPrRecords(reconciled.records) };
+	}
+
 	/** Collect the snapshot from every discovered workspace repo, write it to disk and publish it. */
 	private async refreshRepoPrStatsSnapshot(token: string, userLogin: string | undefined, since: Date, cachePath: string): Promise<void> {
 		const workspacePaths = this._buildWorkspacePaths();
@@ -2510,81 +2598,41 @@ class CopilotTokenTracker implements vscode.Disposable {
 
 		const webOrigin = getConfiguredGitHubWebOrigin();
 		const results: RepoPrInfo[] = [];
+		const records: Record<string, RepoPrRecord[]> = {};
 		for (let i = 0; i < repos.length; i++) {
 			const { owner, repo } = repos[i];
 			this.log(`🔎 Fetching PRs for ${owner}/${repo} (${i + 1}/${repos.length})…`);
-			const { prs, error } = await fetchRepoPrs(owner, repo, token, since);
-			this.log(`🔎 Fetched ${prs.length} PR(s) for ${owner}/${repo}${error ? ` — ${error}` : ''}`);
-			const stats = this.collectAiPrStats(prs, error, userLogin);
-			results.push({ owner, repo, repoUrl: `${webOrigin}/${owner}/${repo}`, ...stats, error });
+			const repoKey = normalizeRepoKey(owner, repo);
+			const { info, records: repoRecords } = await this.revalidateRepoPrs(
+				owner, repo, token, since, userLogin, readRepoPrRecords(existingSnapshot, repoKey), webOrigin,
+			);
+			results.push(info);
+			if (repoRecords.length > 0) { records[repoKey] = repoRecords; }
 			await this.analysisMessageReplay.publish('repoPrStats', { command: 'repoPrStatsProgress', total: repos.length, done: i + 1 });
 		}
 
 		const fetchedAt = new Date().toISOString();
-		const result: RepoPrStatsResult = { repos: results, authenticated: true, since: since.toISOString(), fetchedAt };
+		const result: RepoPrStatsResult = {
+			repos: results, authenticated: true, since: since.toISOString(), fetchedAt,
+			partial: results.some((repo) => repo.partial),
+		};
 
+		const pruned = pruneRepoPrRecords(records);
+		if (pruned.evicted > 0) { this.log(`🔎 Repository PRs cache evicted ${pruned.evicted} record(s) to stay within its storage budget`); }
 		try {
 			await writeRepoPrSnapshot(cachePath, {
 				schemaVersion: REPO_PRS_CACHE_SCHEMA_VERSION,
 				fetchedAt,
 				since: result.since,
 				data: result,
+				prs: pruned.prs,
 			});
 		} catch (err) {
 			this.warn(`Failed to write repository PRs snapshot: ${err}`);
 		}
 
-		this.log(`🔎 Repository PRs snapshot: ${results.length} repo(s)`);
+		this.log(`🔎 Repository PRs snapshot: ${results.length} repo(s)${result.partial ? ' (partial — some listings were incomplete)' : ''}`);
 		await this.publishRepoPrStats(result);
-	}
-
-	/** Classify one PR, pushing any AI detail rows and returning its contribution to the counters. */
-	private classifyPr(pr: any, login: string | undefined, aiDetails: RepoPrDetail[]): { aiAuthored: number; aiReviewRequested: number; userAuthored: number; userMerged: number } {
-		const author = pr.user?.login ?? '';
-		const authorAi = detectAiType(pr.user);
-		let aiAuthored = 0;
-		if (authorAi) {
-			aiAuthored = 1;
-			aiDetails.push({ number: pr.number, title: pr.title, url: pr.html_url, aiType: authorAi, role: 'author' });
-		}
-		let aiReviewRequested = 0;
-		for (const reviewer of (pr.requested_reviewers ?? [])) {
-			const reviewerAi = detectAiType(reviewer);
-			if (reviewerAi) {
-				aiReviewRequested++;
-				aiDetails.push({ number: pr.number, title: pr.title, url: pr.html_url, aiType: reviewerAi, role: 'reviewer-requested' });
-			}
-		}
-		const isUser = !!login && author.toLowerCase() === login;
-		return {
-			aiAuthored,
-			aiReviewRequested,
-			userAuthored: isUser ? 1 : 0,
-			userMerged: isUser && pr.merged_at ? 1 : 0,
-		};
-	}
-
-	private collectAiPrStats(prs: any[], error: any, userLogin?: string): { totalPrs: number; aiAuthoredPrs: number; aiReviewRequestedPrs: number; aiDetails: RepoPrDetail[]; userAuthoredPrs?: number; userMergedPrs?: number } {
-		let totalPrs = 0;
-		let aiAuthoredPrs = 0;
-		let aiReviewRequestedPrs = 0;
-		let userAuthoredPrs = 0;
-		let userMergedPrs = 0;
-		const aiDetails: RepoPrDetail[] = [];
-		const login = userLogin?.toLowerCase();
-		if (!error) {
-			totalPrs = prs.length;
-			for (const pr of prs) {
-				const c = this.classifyPr(pr, login, aiDetails);
-				aiAuthoredPrs += c.aiAuthored;
-				aiReviewRequestedPrs += c.aiReviewRequested;
-				userAuthoredPrs += c.userAuthored;
-				userMergedPrs += c.userMerged;
-			}
-		}
-		return login
-			? { totalPrs, aiAuthoredPrs, aiReviewRequestedPrs, aiDetails, userAuthoredPrs, userMergedPrs }
-			: { totalPrs, aiAuthoredPrs, aiReviewRequestedPrs, aiDetails };
 	}
 
 	/** Window the cloud-agent snapshot covers: the last 30 days, matching the other GitHub panels. */
@@ -2595,8 +2643,8 @@ class CopilotTokenTracker implements vscode.Disposable {
 	}
 
 	/** Path of the cross-window cloud-agent snapshot shared by every window of this VS Code edition. */
-	private agentTasksCachePath(): string {
-		return getAgentTasksCachePath(this.context.globalStorageUri.fsPath, this.cacheManager.getCacheIdentifier());
+	private agentTasksCachePath(accountIdentity?: string): string {
+		return getAgentTasksCachePath(this.context.globalStorageUri.fsPath, this.githubActivityScope(accountIdentity));
 	}
 
 	/** An empty snapshot — `fetchedAt: ''` marks "never fetched", which the panel renders as pending. */
@@ -2681,14 +2729,16 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 * global storage instead of repeating the calls. Runs on extension start and on every cache
 	 * refresh cycle (both leader-gated), plus whenever the Cloud Agent tab is opened.
 	 */
-	private async maybeRefreshAgentSessions(): Promise<void> {
+	private async maybeRefreshAgentSessions(force = false): Promise<void> {
 		if (this._agentSessionsRefreshInFlight || this._githubSignedOutByUser) { return; }
 		const since = this.agentSessionsSince();
-		const cachePath = this.agentTasksCachePath();
-		if (canServeAgentTasksSnapshot(await readAgentTasksSnapshot(cachePath), since, Date.now())) { return; }
-
+		// Resolve the session before picking a cache path — see maybeRefreshRepoPrStats().
 		const session = await vscode.authentication.getSession(getGitHubAuthProviderId(), ['read:user'], { silent: true });
 		if (!session) { return; }
+		const cachePath = this.agentTasksCachePath(session.account.label);
+		// A forced (user-triggered) refresh skips the TTL check only — the cross-window lock below
+		// still applies, so a manual refresh can never duplicate another window's in-flight pass.
+		if (!force && canServeAgentTasksSnapshot(await readAgentTasksSnapshot(cachePath), since, Date.now())) { return; }
 
 		let acquired = false;
 		try { acquired = await this.cacheManager.acquireAgentTasksLock(); }
@@ -2721,30 +2771,81 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 */
 	private async refreshAgentSessionsSnapshot(token: string, since: Date, cachePath: string): Promise<void> {
 		const workspaceRepos = await discoverGitHubRepos(this._buildWorkspacePaths(), getConfiguredGitHubEnterpriseUri());
-		this.log(`🤖 Refreshing cloud agent snapshot (${workspaceRepos.length} workspace repo(s) + account-wide tasks)`);
+		const existingSnapshot = await readAgentTasksSnapshot(cachePath);
+		const cachedTasks = readAgentTaskRecords(existingSnapshot);
+		this.log(`🤖 Refreshing cloud agent snapshot (${workspaceRepos.length} workspace repo(s) + account-wide tasks, ${cachedTasks.length} cached task record(s))`);
 
-		const result = await collectAgentSessions({
+		// `taskRecords`/`listingComplete` are local cache material and are split off here: only the
+		// rest of the collection — the same aggregate shape as before — is ever published to a webview.
+		const { taskRecords, listingComplete, ...result } = await collectAgentSessions({
 			token,
 			since,
 			workspaceRepos,
+			cachedTasks,
 			onProgress: (done, total) => {
 				void this.analysisMessageReplay.publish('agentSessions', { command: 'agentSessionsProgress', total, done });
 			},
 		});
 
+		const reconciled = reconcileAgentTaskRecords(cachedTasks, taskRecords, { listingComplete });
+		this.log(
+			`🤖 Cloud agent task cache: ${taskRecords.length} in listing, ${reconciled.removed} removed`
+			+ `, ${reconciled.retainedUnverified} retained unverified, ${reconciled.evicted} evicted`,
+		);
 		try {
 			await writeAgentTasksSnapshot(cachePath, {
 				schemaVersion: AGENT_TASKS_CACHE_SCHEMA_VERSION,
 				fetchedAt: result.fetchedAt,
 				since: result.since,
 				data: result,
+				tasks: reconciled.records,
 			});
 		} catch (err) {
 			this.warn(`Failed to write cloud agent snapshot: ${err}`);
 		}
 
-		this.log(`🤖 Cloud agent snapshot: ${result.repos.length} repo(s), ${result.totalTasks} task(s), ${result.totalCredits.toFixed(1)} credits`);
+		this.log(`🤖 Cloud agent snapshot: ${result.repos.length} repo(s), ${result.totalTasks} task(s), ${result.totalCredits.toFixed(1)} credits${result.partial ? ' (partial — lower bound)' : ''}`);
 		await this.publishAgentSessions(result);
+	}
+
+	/**
+	 * Handle the panel's **Refresh GitHub activity** action: revalidate both GitHub-activity caches
+	 * now, bypassing the hourly TTL but not the cross-window lock (so a manual click can still only
+	 * cost one collection pass across all windows) and not the short cooldown that stops a series
+	 * of clicks from spending the whole rate limit.
+	 */
+	private async refreshGitHubActivity(): Promise<void> {
+		const now = Date.now();
+		if (!isManualRefreshAllowed(this._lastManualGitHubActivityRefreshAt, now)) {
+			this.log('⏭️ GitHub activity refresh skipped — still within the manual-refresh cooldown');
+			return;
+		}
+		this._lastManualGitHubActivityRefreshAt = now;
+		this.log('🔄 Manual GitHub activity refresh requested');
+		await Promise.all([
+			this.maybeRefreshRepoPrStats(true).catch((err) => this.warn(`Manual repository PRs refresh failed: ${err}`)),
+			this.maybeRefreshAgentSessions(true).catch((err) => this.warn(`Manual cloud agent refresh failed: ${err}`)),
+		]);
+	}
+
+	/**
+	 * Forget the cached GitHub activity for every identity this install has seen: the shared
+	 * snapshot files, the in-memory copies, and the freshness state derived from them. Never signs
+	 * the user out — these files are caches, so the next refresh simply refetches them.
+	 */
+	private async clearGitHubActivityCaches(): Promise<void> {
+		const removed = await deleteGitHubActivityCacheFiles(this.context.globalStorageUri.fsPath);
+		this._lastRepoPrStats = undefined;
+		this._lastAgentSessionsData = undefined;
+		this._lastManualGitHubActivityRefreshAt = undefined;
+		this.log(`Cleared ${removed} GitHub activity cache file(s)`);
+	}
+
+	/** Drop GitHub-activity caches for identities this install is not currently signed in as. */
+	private async _evictInactiveGitHubActivityScopes(): Promise<void> {
+		await this._sessionRestorePromise;
+		const removed = await evictInactiveGitHubActivityScopes(this.context.globalStorageUri.fsPath, this.githubActivityScope());
+		if (removed > 0) { this.log(`Evicted ${removed} GitHub activity cache file(s) from inactive account/host scopes`); }
 	}
 
 	/** Collect workspace paths from the customization matrix and currently open VS Code workspace folders. */
@@ -8073,6 +8174,7 @@ private computeFallbackDailyRollup(
 			},
 			loadRepoPrStats: () => this.dispatch('loadRepoPrStats', () => this.loadRepoPrStats()),
 			loadAgentSessions: () => this.dispatch('loadAgentSessions', () => this.loadAgentSessions()),
+			refreshGitHubActivity: () => this.dispatch('refreshGitHubActivity', () => this.refreshGitHubActivity()),
 			loadRecentSessions: (message) => this.dispatch(`loadRecentSessions:${message.period}`, () => this.loadRecentSessions(message.period as ChartTimeWindow)),
 			openSessionFile: (message) => this._handleOpenSessionFile(message),
 			usageWebviewReady: async (message) => {

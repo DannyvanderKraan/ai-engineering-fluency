@@ -3,6 +3,7 @@ import * as assert from 'node:assert/strict';
 import type * as http from 'node:http';
 import { EventEmitter } from 'node:events';
 import {
+	agentTaskCacheKey,
 	collectAgentSessions,
 	detectSessionSource,
 	fetchAgentSessionsForRepo,
@@ -12,6 +13,7 @@ import {
 	requestGitHubJsonTransport,
 	resolveTaskRepo,
 	type AgentRepoSummary,
+	type AgentTaskRecord,
 	type FetchAccountTaskPageFn,
 	type FetchRepositoryByIdFn,
 	type FetchTaskPageFn,
@@ -658,4 +660,215 @@ test('collectAgentSessions: reports progress that never exceeds its own total', 
 	assert.ok(progress.every(p => p.done <= p.total), 'progress must never report more done than total');
 	const last = progress[progress.length - 1];
 	assert.equal(last.done, last.total);
+});
+
+// ---------------------------------------------------------------------------
+// collectAgentSessions — per-task cache reuse (issue #1968)
+// ---------------------------------------------------------------------------
+
+/** The cache record a previous pass would have written for `makeAccountTask(id, fullName, at)`. */
+function cachedRecordFor(
+	id: string, repoKey: string, updatedAt: string, overrides: Partial<AgentTaskRecord> = {},
+): AgentTaskRecord {
+	const [owner, repo] = repoKey ? repoKey.split('/') : [undefined, undefined];
+	return {
+		key: agentTaskCacheKey(repoKey, id),
+		id,
+		repoKey,
+		owner,
+		repo,
+		discovery: 'account',
+		updatedAt: new Date(Date.parse(updatedAt)).toISOString(),
+		aggregate: { tasks: 1, sessions: 1, credits: 7, premiumRequests: 0 },
+		detailOk: true,
+		detailAttempts: 0,
+		lastSeenAt: '2026-08-29T12:00:00.000Z',
+		...overrides,
+	};
+}
+
+/** Run one account-only collection over `tasks`, recording which tasks cost a detail call. */
+async function collectWithCache(
+	tasks: any[],
+	cachedTasks: AgentTaskRecord[],
+	options: { sessions?: any[]; detailFails?: boolean; maxTaskDetails?: number } = {},
+): Promise<{ result: Awaited<ReturnType<typeof collectAgentSessions>>; detailed: string[] }> {
+	const detailed: string[] = [];
+	const accountPage = firstPageOnly(tasks);
+	const detail = async (...args: any[]): Promise<any> => {
+		detailed.push(String(args[args.length - 2]));
+		if (options.detailFails) { return { error: 'HTTP 500', statusCode: 500 }; }
+		return { sessions: options.sessions ?? [makeSession('cloud-model', 4)] };
+	};
+	const result = await collectAgentSessions({
+		token: 'token',
+		since: SINCE,
+		workspaceRepos: [],
+		cachedTasks,
+		maxTaskDetails: options.maxTaskDetails,
+		fetchTaskPage: NO_TASKS,
+		fetchAccountTaskPage: async ({ page, archived }) => (archived ? { tasks: [] } : accountPage(page)),
+		fetchTaskDetail: async (owner, repo, taskId) => detail(owner, repo, taskId, 'token'),
+		fetchAccountTaskDetail: async (taskId) => detail(taskId, 'token'),
+	});
+	return { result, detailed };
+}
+
+test('collectAgentSessions: an unchanged task is served from the cache with no detail call', async () => {
+	const task = makeAccountTask('a1', 'octo/remote-repo', '2026-08-01T00:00:00Z');
+	const cached = [cachedRecordFor('a1', 'octo/remote-repo', '2026-08-01T00:00:00Z')];
+	const { result, detailed } = await collectWithCache([task], cached);
+
+	assert.deepEqual(detailed, [], 'an unchanged task must cost no API call');
+	assert.equal(result.totalCredits, 7, 'the cached aggregate is what gets folded in');
+	assert.equal(result.repos[0].tasksScanned, 1, 'a cache hit still counts as scanned');
+	assert.equal(result.repos[0].partial, false);
+	assert.equal(result.taskRecords.length, 1);
+	assert.equal(result.taskRecords[0].detailOk, true);
+});
+
+test('collectAgentSessions: a task whose updated_at moved is refetched', async () => {
+	const task = makeAccountTask('a1', 'octo/remote-repo', '2026-08-02T00:00:00Z');
+	const cached = [cachedRecordFor('a1', 'octo/remote-repo', '2026-08-01T00:00:00Z')];
+	const { result, detailed } = await collectWithCache([task], cached);
+
+	assert.deepEqual(detailed, ['a1'], 'a changed task must be refetched');
+	assert.equal(result.totalCredits, 4, 'the fresh detail wins, not the stale aggregate');
+	assert.equal(result.taskRecords[0].updatedAt, '2026-08-02T00:00:00.000Z');
+});
+
+test('collectAgentSessions: a cached record never satisfies a task in another repository', async () => {
+	const task = makeAccountTask('a1', 'octo/moved-repo', '2026-08-01T00:00:00Z');
+	const cached = [cachedRecordFor('a1', 'octo/remote-repo', '2026-08-01T00:00:00Z')];
+	const { result, detailed } = await collectWithCache([task], cached);
+
+	assert.deepEqual(detailed, ['a1'], 'a moved task must not reuse its old repo-scoped aggregate');
+	assert.equal(result.repos[0].repo, 'moved-repo');
+	assert.equal(result.totalCredits, 4);
+});
+
+test('collectAgentSessions: a task with no usable updated_at is never cached and always refetched', async () => {
+	const task = { id: 'a1', name: 'Task a1', state: 'completed', repository: { full_name: 'octo/remote-repo' } };
+	const first = await collectWithCache([task], []);
+	assert.deepEqual(first.detailed, ['a1']);
+	assert.deepEqual(first.result.taskRecords, [], 'an unstamped task is uncacheable');
+
+	const second = await collectWithCache([task], first.result.taskRecords);
+	assert.deepEqual(second.detailed, ['a1'], 'and so it is refetched on every pass');
+});
+
+test('collectAgentSessions: a previously failed detail is retried and its attempt count grows', async () => {
+	const task = makeAccountTask('a1', 'octo/remote-repo', '2026-08-01T00:00:00Z');
+	const failed = await collectWithCache([task], [], { detailFails: true });
+	assert.deepEqual(failed.detailed, ['a1']);
+	assert.equal(failed.result.taskRecords[0].detailOk, false);
+	assert.equal(failed.result.taskRecords[0].aggregate, undefined, 'a failure must not be remembered as zero usage');
+	assert.equal(failed.result.taskRecords[0].detailAttempts, 1);
+	assert.equal(failed.result.totalCredits, 0);
+
+	const retried = await collectWithCache([task], failed.result.taskRecords, { detailFails: true });
+	assert.deepEqual(retried.detailed, ['a1'], 'a task still owing its detail must be retried');
+	assert.equal(retried.result.taskRecords[0].detailAttempts, 2);
+
+	const recovered = await collectWithCache([task], retried.result.taskRecords);
+	assert.equal(recovered.result.taskRecords[0].detailOk, true);
+	assert.equal(recovered.result.taskRecords[0].detailAttempts, 0);
+	assert.equal(recovered.result.totalCredits, 4);
+});
+
+test('collectAgentSessions: the detail budget is spent on invalidated tasks, newest first', async () => {
+	const tasks = [
+		makeAccountTask('old', 'octo/remote-repo', '2026-08-01T00:00:00Z'),
+		makeAccountTask('new', 'octo/remote-repo', '2026-08-05T00:00:00Z'),
+		makeAccountTask('cached', 'octo/remote-repo', '2026-08-03T00:00:00Z'),
+	];
+	const cached = [cachedRecordFor('cached', 'octo/remote-repo', '2026-08-03T00:00:00Z')];
+	const { result, detailed } = await collectWithCache(tasks, cached, { maxTaskDetails: 1 });
+
+	assert.deepEqual(detailed, ['new'], 'the budget goes to the most recent task that actually changed');
+	assert.equal(result.partial, true, 'one task was left undetailed, so totals are a lower bound');
+	assert.equal(result.repos[0].tasksTotal, 3);
+	assert.equal(result.repos[0].tasksScanned, 2, 'the cache hit plus the one fresh detail');
+	assert.equal(result.totalCredits, 11, 'cached 7 + fresh 4');
+});
+
+test('collectAgentSessions: a complete account listing is reported as such', async () => {
+	const { result } = await collectWithCache([makeAccountTask('a1', 'octo/remote-repo')], []);
+	assert.equal(result.listingComplete, true);
+	assert.equal(result.partial, false);
+});
+
+test('collectAgentSessions: a failed account listing is incomplete and marked partial', async () => {
+	const result = await collectAgentSessions({
+		token: 'token',
+		since: SINCE,
+		workspaceRepos: [],
+		fetchTaskPage: NO_TASKS,
+		fetchAccountTaskPage: async () => ({ tasks: [], statusCode: 500, error: 'boom' }),
+		fetchTaskDetail: async () => ({ sessions: [] }),
+		fetchAccountTaskDetail: async () => ({ sessions: [] }),
+	});
+	assert.equal(result.accountTasksAvailable, false);
+	assert.equal(result.listingComplete, false);
+	assert.equal(result.partial, true, 'an incomplete listing must show as a lower bound');
+});
+
+test('collectAgentSessions: a capped task listing is reported as incomplete', async () => {
+	// Five full pages of 100 tasks each means the page cap was hit — absence proves nothing.
+	const fullPage = (page: number) => ({
+		tasks: Array.from({ length: 100 }, (_, i) => makeAccountTask(`p${page}-${i}`, 'octo/remote-repo')),
+	});
+	const result = await collectAgentSessions({
+		token: 'token',
+		since: SINCE,
+		workspaceRepos: [],
+		maxTaskDetails: 0,
+		fetchTaskPage: NO_TASKS,
+		fetchAccountTaskPage: async ({ page, archived }) => (archived ? { tasks: [] } : fullPage(page)),
+		fetchTaskDetail: async () => ({ sessions: [] }),
+		fetchAccountTaskDetail: async () => ({ sessions: [] }),
+	});
+	assert.equal(result.listingComplete, false);
+	assert.equal(result.partial, true);
+});
+
+test('collectAgentSessions: a failed workspace listing makes the pass incomplete', async () => {
+	const result = await collectAgentSessions({
+		token: 'token',
+		since: SINCE,
+		workspaceRepos: [{ owner: 'octo', repo: 'local-repo' }],
+		fetchTaskPage: async () => ({ tasks: [], statusCode: 403, error: 'denied' }),
+		fetchAccountTaskPage: NO_ACCOUNT_TASKS,
+		fetchTaskDetail: async () => ({ sessions: [] }),
+		fetchAccountTaskDetail: async () => ({ sessions: [] }),
+	});
+	assert.equal(result.listingComplete, false);
+	assert.equal(result.partial, true);
+	assert.ok(result.repos[0].error);
+});
+
+test('collectAgentSessions: task records never carry prompts, titles or transcripts', async () => {
+	const task = {
+		...makeAccountTask('a1', 'octo/remote-repo'),
+		name: 'Fix the secret login bug',
+		problem_statement: 'the prompt text that must not be cached',
+	};
+	const { result } = await collectWithCache([task], []);
+	const serialized = JSON.stringify(result.taskRecords);
+	assert.ok(!serialized.includes('prompt text'), serialized);
+	assert.ok(!serialized.includes('Fix the secret login bug'), serialized);
+});
+
+test('collectAgentSessions: a task the budget never reached keeps its retry history', async () => {
+	const task = makeAccountTask('a1', 'octo/remote-repo', '2026-08-01T00:00:00Z');
+	const failed = await collectWithCache([task], [], { detailFails: true });
+	assert.equal(failed.result.taskRecords[0].detailAttempts, 1);
+
+	// Budget of zero: the task is listed but never attempted this pass. Its previous failure must
+	// still be on the record, or a permanently broken task would look brand new forever.
+	const capped = await collectWithCache([task], failed.result.taskRecords, { maxTaskDetails: 0 });
+	assert.deepEqual(capped.detailed, []);
+	assert.equal(capped.result.taskRecords[0].detailAttempts, 1);
+	assert.equal(capped.result.taskRecords[0].detailOk, false);
+	assert.equal(capped.result.partial, true);
 });

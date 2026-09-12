@@ -3,6 +3,13 @@ import { el, setHtml } from '../shared/domUtils';
 import { createPeriodSelector, PERIOD_LABELS, type Period } from '../shared/periodSelector';
 import { navButtonsHtml } from '../shared/buttonConfig';
 import { ContextReferenceUsage, getTotalContextRefs } from '../shared/contextRefUtils';
+import {
+	AGENT_SESSIONS_PARTIAL_NOTE,
+	REFRESH_GITHUB_ACTIVITY_ACTION,
+	REFRESH_GITHUB_ACTIVITY_COMMAND,
+	REPO_PR_PARTIAL_NOTE,
+	snapshotFreshnessHtml,
+} from './snapshotFreshness';
 import { escapeHtml, formatCompact, formatCost, formatDurationShort, formatFileSize, formatFixed, formatNumber, formatPercent, getTimeSince, safeSectionHtml, setFormatLocale } from '../shared/formatUtils';
 import { wireExtensionPointButtons } from '../shared/extensionPoints';
 import { initializeWebviewLocalization, localize, localizeFormat, setCurrentLanguage } from '../shared/localization';
@@ -742,6 +749,8 @@ type RepoPrInfo = {
   aiDetails: RepoPrDetail[];
   userAuthoredPrs?: number;
   userMergedPrs?: number;
+  /** True when this repo's PR listing was incomplete — its counts are a lower bound. */
+  partial?: boolean;
   error?: string;
 };
 
@@ -754,6 +763,8 @@ type RepoPrStatsResult = {
   fetchedAt?: string;
   /** How often the snapshot is refreshed, so the UI can say when the next refresh is due. */
   refreshIntervalMs?: number;
+  /** True when at least one repo's listing was incomplete — the totals are lower bounds. */
+  partial?: boolean;
 };
 
 const EFFORT_DISPLAY_NAMES: Record<string, string> = {
@@ -2409,6 +2420,20 @@ function reportTabOpened(tab: string): void {
 	vscode.postMessage({ command: 'viewTabOpened', view: 'usage', tab });
 }
 
+/**
+ * Wire the freshness banners' **Refresh now** button. Delegated from `document` because both
+ * banners are re-rendered from scratch on every snapshot update, which would drop a listener bound
+ * to the button itself. The host applies its own cooldown and cross-window lock, so a click is a
+ * request to revalidate, not a guarantee of an immediate API call.
+ */
+function wireGitHubActivityRefresh(): void {
+	document.addEventListener('click', (event) => {
+		const target = event.target as HTMLElement | null;
+		if (!target?.closest(`[data-action="${REFRESH_GITHUB_ACTIVITY_ACTION}"]`)) { return; }
+		vscode.postMessage({ command: REFRESH_GITHUB_ACTIVITY_COMMAND });
+	});
+}
+
 function setupTabs(): void {
 	const tabButtons = document.querySelectorAll<HTMLElement>('.tab-button');
 	// The tab that is already on screen counts as opened — the user is reading it
@@ -2455,6 +2480,7 @@ function sanitizeRepoPrStatsData(input: unknown): RepoPrStatsResult {
 		error: typeof src.error === 'string' ? escapeHtml(src.error) : undefined,
 		fetchedAt: typeof src.fetchedAt === 'string' ? src.fetchedAt : '',
 		refreshIntervalMs: toSafeNumber(src.refreshIntervalMs),
+		partial: Boolean(src.partial),
 		repos: repos.map((repo) => {
 			const r = (repo && typeof repo === 'object') ? (repo as Record<string, unknown>) : {};
 			const aiDetails = Array.isArray(r.aiDetails) ? r.aiDetails : [];
@@ -2468,6 +2494,7 @@ function sanitizeRepoPrStatsData(input: unknown): RepoPrStatsResult {
 				aiReviewRequestedPrs: toSafeNumber(r.aiReviewRequestedPrs),
 				userAuthoredPrs: toSafeNumber(r.userAuthoredPrs),
 				userMergedPrs: toSafeNumber(r.userMergedPrs),
+				partial: Boolean(r.partial),
 				aiDetails: aiDetails.map((d) => {
 					const detail = (d && typeof d === 'object') ? (d as Record<string, unknown>) : {};
 					const validAiTypes = ['copilot', 'claude', 'openai', 'other-ai'] as const;
@@ -2532,23 +2559,9 @@ function renderRepoPrRow(r: RepoPrInfo, cell: string, cellCenter: string): strin
 	</tr>`;
 }
 
-/**
- * Freshness line for the snapshot. The data is fetched at most once an hour, by whichever VS Code
- * window holds the repo-PRs lock, so the panel always says how old what it shows is.
- */
+/** Freshness line for the Repository PRs snapshot. */
 function repoPrSnapshotFreshnessHtml(data: RepoPrStatsResult): string {
-  const box = 'margin-bottom:12px; padding:8px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; font-size:11px; color:var(--text-secondary);';
-  if (!data.fetchedAt) {
-    return `<div style="${box}">🕒 <strong>Not fetched yet.</strong> The snapshot is refreshed hourly by the main VS Code window — it will appear here once that first refresh completes.</div>`;
-  }
-  const fetchedMs = Date.parse(data.fetchedAt);
-  const nextRefresh = Number.isFinite(fetchedMs) && data.refreshIntervalMs
-    ? new Date(fetchedMs + data.refreshIntervalMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : 'unknown';
-  return `<div style="${box}">
-    🕒 Updated <strong>${escapeHtml(getTimeSince(data.fetchedAt))}</strong> · next refresh after ${escapeHtml(nextRefresh)}.
-    Cached and refreshed at most once an hour, by a single VS Code window, to keep GitHub API usage low.
-  </div>`;
+  return snapshotFreshnessHtml(data, { partialNote: REPO_PR_PARTIAL_NOTE });
 }
 
 function renderReposPrContent(data: RepoPrStatsResult): string {
@@ -2667,23 +2680,9 @@ function buildAgentSessionRows(data: AgentSessionsResult, cell: string, cellCent
   }).join('');
 }
 
-/**
- * Freshness line for the snapshot. The data is fetched at most once an hour, by whichever VS Code
- * window holds the agent-tasks lock, so the panel always says how old what it shows is.
- */
+/** Freshness line for the Cloud Agent snapshot. */
 function agentSnapshotFreshnessHtml(data: AgentSessionsResult): string {
-  const box = 'margin-bottom:12px; padding:8px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; font-size:11px; color:var(--text-secondary);';
-  if (!data.fetchedAt) {
-    return `<div style="${box}">🕒 <strong>Not fetched yet.</strong> The snapshot is refreshed hourly by the main VS Code window — it will appear here once that first refresh completes.</div>`;
-  }
-  const fetchedMs = Date.parse(data.fetchedAt);
-  const nextRefresh = Number.isFinite(fetchedMs)
-    ? new Date(fetchedMs + data.refreshIntervalMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : 'unknown';
-  return `<div style="${box}">
-    🕒 Updated <strong>${escapeHtml(getTimeSince(data.fetchedAt))}</strong> · next refresh after ${escapeHtml(nextRefresh)}.
-    Cached and refreshed at most once an hour, by a single VS Code window, to keep GitHub API usage low.
-  </div>`;
+  return snapshotFreshnessHtml(data, { partialNote: AGENT_SESSIONS_PARTIAL_NOTE });
 }
 
 function renderAgentSessionsContent(data: AgentSessionsResult): string {
@@ -5587,6 +5586,7 @@ function renderLayout(stats: UsageAnalysisStats): void {
 	wireCurationButtons();
 	renderRepositoryHygienePanels();
 	setupTabs();
+	wireGitHubActivityRefresh();
 	setupModelEfficiencySection();
 	renderModelEfficiencyPeriodSelector();
 	renderSessionsLookbackSelector();

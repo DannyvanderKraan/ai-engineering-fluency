@@ -11,10 +11,13 @@ import {
 	isAgentTasksEnvelopeUsable,
 	isAgentTasksSnapshotFresh,
 	nextAgentTasksRefreshAt,
+	readAgentTaskRecords,
 	readAgentTasksSnapshot,
+	reconcileAgentTaskRecords,
 	writeAgentTasksSnapshot,
 	type AgentTasksCacheEnvelope,
 } from '../../src/agentTasksCache';
+import { agentTaskCacheKey, type AgentTaskRecord } from '../../src/agentSessionsService';
 import type { AgentSessionsResult } from '../../../src/types';
 
 const NOW = Date.parse('2026-08-29T12:00:00Z');
@@ -146,4 +149,94 @@ test('readAgentTasksSnapshot: missing or corrupt files read as undefined, never 
 	assert.equal(await readAgentTasksSnapshot(missing), undefined);
 	assert.equal(await readAgentTasksSnapshot(corrupt), undefined);
 	await fs.promises.rm(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// Per-task cache records (issue #1968)
+// ---------------------------------------------------------------------------
+
+function makeTaskRecord(overrides: Partial<AgentTaskRecord> = {}): AgentTaskRecord {
+	return {
+		key: agentTaskCacheKey('rajbos/repo', 'task-1'),
+		id: 'task-1',
+		repoKey: 'rajbos/repo',
+		owner: 'rajbos',
+		repo: 'repo',
+		discovery: 'workspace',
+		updatedAt: '2026-08-28T12:00:00.000Z',
+		aggregate: { tasks: 1, sessions: 2, credits: 3, premiumRequests: 0 },
+		detailOk: true,
+		detailAttempts: 0,
+		lastSeenAt: '2026-08-29T12:00:00.000Z',
+		...overrides,
+	};
+}
+
+test('the cloud-agent cache schema is v3 — a v2 aggregate-only snapshot is not migrated', () => {
+	assert.equal(AGENT_TASKS_CACHE_SCHEMA_VERSION, 3);
+	const v2 = makeEnvelope({ schemaVersion: 2 });
+	// Per-task records cannot be invented from a v2 aggregate, so the whole snapshot is ignored
+	// and rebuilt in the background rather than half-migrated.
+	assert.equal(isAgentTasksEnvelopeUsable(v2, SINCE), false);
+	assert.deepEqual(readAgentTaskRecords(v2), []);
+});
+
+test('readAgentTaskRecords drops records that could never be matched again', () => {
+	const envelope = makeEnvelope({
+		tasks: [
+			makeTaskRecord(),
+			makeTaskRecord({ key: '', id: 'no-key' }),
+			makeTaskRecord({ key: 'k2', id: 'bad-stamp', updatedAt: 'not-a-date' }),
+			makeTaskRecord({ key: 'k3', id: 'missing-stamp', updatedAt: undefined as any }),
+		],
+	});
+	assert.deepEqual(readAgentTaskRecords(envelope).map((r) => r.id), ['task-1']);
+});
+
+test('readAgentTaskRecords tolerates an envelope written before task records existed', () => {
+	assert.deepEqual(readAgentTaskRecords(makeEnvelope()), []);
+	assert.deepEqual(readAgentTaskRecords(undefined), []);
+	assert.deepEqual(readAgentTaskRecords(makeEnvelope({ tasks: 'nonsense' as any })), []);
+});
+
+test('agentTaskCacheKey scopes a task to its repository', () => {
+	// A task that moved repositories lands on a new key, so its old aggregate can never be folded
+	// into the wrong repository's row.
+	assert.notEqual(agentTaskCacheKey('rajbos/repo', 't1'), agentTaskCacheKey('rajbos/other', 't1'));
+	assert.notEqual(agentTaskCacheKey('', 't1'), agentTaskCacheKey('rajbos/repo', 't1'));
+});
+
+test('reconcileAgentTaskRecords drops tasks missing from a complete listing', () => {
+	const cached = [makeTaskRecord(), makeTaskRecord({ key: 'k2', id: 'task-2' })];
+	const current = [makeTaskRecord()];
+	const result = reconcileAgentTaskRecords(cached, current, { listingComplete: true });
+	assert.equal(result.removed, 1);
+	assert.equal(result.retainedUnverified, 0);
+	assert.deepEqual(result.records.map((r) => r.id), ['task-1']);
+});
+
+test('reconcileAgentTaskRecords retains tasks missing from an incomplete listing', () => {
+	const cached = [makeTaskRecord(), makeTaskRecord({ key: 'k2', id: 'task-2' })];
+	const result = reconcileAgentTaskRecords(cached, [makeTaskRecord()], { listingComplete: false });
+	assert.equal(result.removed, 0);
+	assert.equal(result.retainedUnverified, 1);
+	assert.deepEqual(result.records.map((r) => r.id).sort(), ['task-1', 'task-2']);
+});
+
+test('reconcileAgentTaskRecords prefers the current pass over the cached copy of the same task', () => {
+	const cached = makeTaskRecord({ aggregate: { tasks: 1, sessions: 1, credits: 1, premiumRequests: 0 } });
+	const current = makeTaskRecord({ updatedAt: '2026-08-29T09:00:00.000Z', aggregate: { tasks: 1, sessions: 9, credits: 9, premiumRequests: 0 } });
+	const result = reconcileAgentTaskRecords([cached], [current], { listingComplete: true });
+	assert.equal(result.records.length, 1);
+	assert.equal(result.records[0].aggregate?.sessions, 9);
+});
+
+test('reconcileAgentTaskRecords evicts the least recently seen records past the budget', () => {
+	const cached = Array.from({ length: 5 }, (_, i) => makeTaskRecord({
+		key: `k${i}`, id: `task-${i}`,
+		lastSeenAt: new Date(Date.parse('2026-08-29T12:00:00Z') + i * 60_000).toISOString(),
+	}));
+	const result = reconcileAgentTaskRecords(cached, [], { listingComplete: false }, { maxRecords: 2, maxBytes: 1_000_000 });
+	assert.equal(result.evicted, 3);
+	assert.deepEqual(result.records.map((r) => r.id), ['task-4', 'task-3']);
 });
