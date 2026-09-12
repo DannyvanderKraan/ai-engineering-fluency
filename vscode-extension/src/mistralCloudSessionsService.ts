@@ -379,5 +379,12 @@ export async function collectMistralCloudSessions(
     };
   } finally {
     clearTimeout(abortTimer);
+    // Guarantee the transport is torn down on every exit path, not only when abortTimer itself
+    // fires: if withTimeout's own rejection settles first (registration order between two
+    // same-delay timers isn't guaranteed), clearing this timer here would otherwise skip the
+    // abort() call entirely, leaving a slow response free to keep buffering data and issuing
+    // further page requests after the caller has already moved on. Aborting an already-settled
+    // or already-aborted controller is a no-op, so this is safe to call unconditionally.
+    abortController.abort();
   }
 }

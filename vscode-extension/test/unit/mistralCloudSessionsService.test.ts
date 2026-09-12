@@ -237,6 +237,35 @@ test('collectMistralCloudSessions: does not duplicate the status code already em
 	assert.equal(result.error, 'HTTP 401');
 });
 
+test('collectMistralCloudSessions: an external signal tears down the socket, not just its own timeout', async () => {
+	// The caller (extension.ts) aborts this signal when the API key is cleared/changed mid-fetch;
+	// this proves that abort reaches the underlying transport instead of only rejecting the
+	// caller's own promise while the request keeps running in the background.
+	let capturedReq: FakeClientRequest | undefined;
+	const requestFn = ((() => {
+		const req = new FakeClientRequest();
+		capturedReq = req;
+		return req as unknown as http.ClientRequest;
+	}) as unknown) as MistralRequestFn;
+	let destroyed = false;
+	const originalDestroy = FakeClientRequest.prototype.destroy;
+	FakeClientRequest.prototype.destroy = function (err?: Error) {
+		destroyed = true;
+		return originalDestroy.call(this, err);
+	};
+	try {
+		const controller = new AbortController();
+		const resultPromise = collectMistralCloudSessions('key', { requestFn, signal: controller.signal });
+		controller.abort();
+		const result = await resultPromise;
+		assert.equal(destroyed, true, 'expected the socket to be destroyed when the external signal aborts');
+		assert.equal(result.authenticated, false);
+		assert.ok(capturedReq, 'expected a request to have been created');
+	} finally {
+		FakeClientRequest.prototype.destroy = originalDestroy;
+	}
+});
+
 /** A conversation entry with a distinguishing id, minimal otherwise-required fields blank. */
 function conv(id: string): Record<string, unknown> {
 	return { id, created_at: '', updated_at: '', agent_id: 'a', name: null, description: null };

@@ -3463,7 +3463,13 @@ function renderMistralCloudTab(
 ): string {
   const betaLabel = localize("mistral.betaBadge");
   const betaBadge = `<span class="beta-badge" title="${escapeHtml(betaLabel)}">${escapeHtml(betaLabel)}</span>`;
-  const statusKnown = apiKeyConfigured !== undefined || result !== undefined;
+  // Deliberately not `|| result !== undefined`: an ambiguous result (an error with no clear
+  // authenticated/no-key signal, e.g. a transient key-check failure) leaves `apiKeyConfigured`
+  // untouched in handleMistralCloudSessionsResult below, and every *unambiguous* result already
+  // sets `apiKeyConfigured` there before this re-renders — so deriving "known" from `result` too
+  // would let that one ambiguous case flip statusKnown to true while still not actually knowing
+  // whether a key is configured, rendering Connect over a key that may still be there.
+  const statusKnown = apiKeyConfigured !== undefined;
   const configured = !!apiKeyConfigured || !!result?.authenticated;
   const errorBox = result?.error
     ? `<div class="info-box" style="border-left:4px solid #d9534f;"><div><b>${localize("mistral.error.label")}</b> ${escapeHtml(result.error)}</div></div>`

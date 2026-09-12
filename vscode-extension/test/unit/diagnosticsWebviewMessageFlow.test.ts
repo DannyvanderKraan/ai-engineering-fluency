@@ -370,6 +370,25 @@ test('Mistral Cloud tab: neither Connect nor Refresh render before the Mistral s
 	assert.ok(harness.window.document.getElementById('btn-mistral-refresh'), 'expected Refresh once status arrives and reports a configured key');
 });
 
+test('Mistral Cloud tab: an ambiguous error result arriving before any status message does not render Connect', async () => {
+	// A key-check-failure result (authenticated: false, a non-empty error) leaves
+	// currentMistralApiKeyConfigured untouched in handleMistralCloudSessionsResult — it must not
+	// also be treated as "status known" purely because *a* result arrived, or a transient failure
+	// would render Connect over a key that may still be configured.
+	await preloadBundle();
+	const harness = bootWebviewUnsettled(buildInitialData());
+	await harness.settle();
+
+	harness.post({
+		command: 'mistralCloudSessionsResult',
+		result: { conversations: [], totalCount: 0, authenticated: false, fetchedAt: '', error: "Couldn't verify the Mistral API key is still current; try Refresh again." },
+	});
+	await harness.settle();
+
+	assert.equal(harness.window.document.getElementById('btn-mistral-connect'), null, 'Connect must not render from an ambiguous error result alone');
+	assert.equal(harness.window.document.getElementById('btn-mistral-refresh'), null, 'Refresh must not render from an ambiguous error result alone');
+});
+
 test('Mistral Cloud tab: Connect posts promptMistralApiKey when no key is configured', async () => {
 	await preloadBundle();
 	const harness = bootWebviewUnsettled(buildInitialData({ mistralCloudSessionsStatus: { apiKeyConfigured: false } }));

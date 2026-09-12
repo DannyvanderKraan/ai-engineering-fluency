@@ -10870,14 +10870,18 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     return crypto.createHash('sha256').update(key).digest('hex');
   }
 
-  /** BETA: fingerprint of the currently stored Mistral API key, or undefined if none is configured
-   * or the read failed. */
-  private async getCurrentMistralApiKeyFingerprint(): Promise<string | undefined> {
+  /**
+   * BETA: fingerprint of the currently stored Mistral API key. `readFailed: true` (fingerprint
+   * always undefined in that case) is distinct from a genuinely absent key — a transient
+   * SecretStorage read failure must not be treated as "the key changed", which would otherwise
+   * make a caller clear a still-valid cached listing and expose an unwarranted overwrite path.
+   */
+  private async getCurrentMistralApiKeyFingerprint(): Promise<{ fingerprint?: string; readFailed: boolean }> {
     try {
       const key = await this.context.secrets.get(MISTRAL_API_KEY_SECRET);
-      return key ? CopilotTokenTracker.fingerprintMistralApiKey(key) : undefined;
+      return { fingerprint: key ? CopilotTokenTracker.fingerprintMistralApiKey(key) : undefined, readFailed: false };
     } catch {
-      return undefined;
+      return { readFailed: true };
     }
   }
 
@@ -10917,10 +10921,17 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
    * BETA: the `diagnosticDataLoaded` message's optional Mistral status field — an empty object
    * (which spreads into nothing) when the read failed, rather than synthesizing a false
    * "not configured" value that would flip the webview to Connect over a key that may still be
-   * there.
+   * there. Also reconciles the cached listing against the current key: the diagnostics pipeline
+   * this gates can take a while, during which the key can change in another VS Code window
+   * without this window's own generation counter ever seeing it, and `apiKeyConfigured: true`
+   * alone can't tell "still the same key" from "a different key that also happens to be
+   * configured".
    */
-  private async getMistralCloudSessionsStatusMessageField(): Promise<{ mistralCloudSessionsStatus?: { apiKeyConfigured: boolean } }> {
+  private async getMistralCloudSessionsStatusMessageField(panel: vscode.WebviewPanel): Promise<{ mistralCloudSessionsStatus?: { apiKeyConfigured: boolean } }> {
     const status = await this.getFreshMistralCloudSessionsStatus();
+    if (status?.apiKeyConfigured) {
+      await this.rehydrateOrInvalidateMistralCloudSessionsCache(panel);
+    }
     return status ? { mistralCloudSessionsStatus: status } : {};
   }
 
@@ -12182,34 +12193,51 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     // and rendering Connect over a key that may still be there.
     if (!mistralCloudSessionsStatus) { return; }
     panel.webview.postMessage({ command: "mistralCloudSessionsStatus", mistralCloudSessionsStatus });
-    // BETA: rehydrate a previously fetched conversation listing (kept in memory across panel
-    // close/reopen within the same extension host session) so it doesn't disappear until the
-    // user clicks Refresh again. `apiKeyConfigured` alone can't tell "still the same key" from
-    // "a different key that also happens to be configured" (e.g. changed in another VS Code
-    // window, whose own generation counter this window never sees), so also verify the cached
-    // listing's key fingerprint still matches the currently configured key before rehydrating —
-    // otherwise drop it rather than show one account's conversations under another's key.
-    if (this._lastMistralCloudSessions && mistralCloudSessionsStatus.apiKeyConfigured) {
-      const generationBeforeFingerprintCheck = this._mistralCloudRefreshGeneration;
-      const currentKeyFingerprint = await this.getCurrentMistralApiKeyFingerprint();
-      if (this._mistralCloudRefreshGeneration !== generationBeforeFingerprintCheck) {
-        // Superseded by a concurrent set/clear while this read was in flight — that handler
-        // already posted its own authoritative message; don't risk resurrecting stale data
-        // on top of it.
-      } else if (!this.isPanelOpen(panel)) {
-        // closed while awaiting the fingerprint
-      } else if (currentKeyFingerprint && currentKeyFingerprint === this._lastMistralCloudSessionsKeyFingerprint) {
-        panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this._lastMistralCloudSessions });
-      } else {
-        this._lastMistralCloudSessions = undefined;
-        this._lastMistralCloudSessionsKeyFingerprint = undefined;
-        // The webview may already be showing this stale listing from an earlier message (e.g. a
-        // previous panel-open rehydration) — the status message above still reports a key
-        // configured (just a different one), so the webview's own "clear on unconfigured" path
-        // never fires; explicitly clear the display instead of leaving it until manual Refresh.
-        panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this.buildEmptyMistralCloudSessionsResult() });
-      }
+    if (mistralCloudSessionsStatus.apiKeyConfigured) {
+      await this.rehydrateOrInvalidateMistralCloudSessionsCache(panel);
     }
+  }
+
+  /**
+   * BETA: rehydrates a previously fetched conversation listing (kept in memory across panel
+   * close/reopen within the same extension host session) so it doesn't disappear until the user
+   * clicks Refresh again — or invalidates it if it no longer belongs to the currently configured
+   * key. `apiKeyConfigured` alone can't tell "still the same key" from "a different key that also
+   * happens to be configured" (e.g. changed in another VS Code window, whose own generation
+   * counter this window never sees), so this also verifies the cached listing's key fingerprint
+   * before rehydrating. Called both right after an early/status read reports a key configured, and
+   * again at the tail of the full diagnostics pipeline (see loadDiagnosticDataInBackground) —
+   * that pipeline can take a while, during which the key can change in another window without
+   * this window's own generation counter ever seeing it.
+   */
+  private async rehydrateOrInvalidateMistralCloudSessionsCache(panel: vscode.WebviewPanel): Promise<void> {
+    if (!this._lastMistralCloudSessions) { return; }
+    const generationBeforeFingerprintCheck = this._mistralCloudRefreshGeneration;
+    const currentKeyFingerprint = await this.getCurrentMistralApiKeyFingerprint();
+    if (this._mistralCloudRefreshGeneration !== generationBeforeFingerprintCheck) {
+      // Superseded by a concurrent set/clear while this read was in flight — that handler
+      // already posted its own authoritative message; don't risk resurrecting stale data
+      // on top of it.
+      return;
+    }
+    if (!this.isPanelOpen(panel)) { return; }
+    if (currentKeyFingerprint.readFailed) {
+      // A transient SecretStorage read failure is not evidence the key changed — clearing the
+      // cache here would expose an unwarranted "no key configured" / Connect state over a key
+      // that may still be there. Leave the cached listing and its display alone.
+      return;
+    }
+    if (currentKeyFingerprint.fingerprint && currentKeyFingerprint.fingerprint === this._lastMistralCloudSessionsKeyFingerprint) {
+      panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this._lastMistralCloudSessions });
+      return;
+    }
+    this._lastMistralCloudSessions = undefined;
+    this._lastMistralCloudSessionsKeyFingerprint = undefined;
+    // The webview may already be showing this stale listing from an earlier message (e.g. a
+    // previous panel-open rehydration) — the status message alongside this still reports a key
+    // configured (just a different one), so the webview's own "clear on unconfigured" path never
+    // fires; explicitly clear the display instead of leaving it until manual Refresh.
+    panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this.buildEmptyMistralCloudSessionsResult() });
   }
 
   /**
@@ -12264,7 +12292,7 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       // value captured at the top of this method: the pipeline above can take a while, during
       // which the key may have been connected or removed, and a stale snapshot here would
       // overwrite that already-live state with an outdated one.
-      const mistralStatusField = await this.getMistralCloudSessionsStatusMessageField();
+      const mistralStatusField = await this.getMistralCloudSessionsStatusMessageField(panel);
       panel.webview.postMessage({
         command: "diagnosticDataLoaded",
         report,
