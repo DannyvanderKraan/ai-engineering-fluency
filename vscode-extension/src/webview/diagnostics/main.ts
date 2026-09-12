@@ -13,6 +13,7 @@ import { registerMessageHandler } from "../shared/messageHandler";
 import { getModelColor } from "../../../../src/chartDataBuilder";
 import { getModelDisplayName } from "../../../../src/webview/shared/modelUtils";
 import { initializeWebviewLocalization, setCurrentLanguage, localize, localizeFormat } from "../shared/localization";
+import type { MistralCloudConversation, MistralCloudSessionsResult } from "../../../../src/types";
 
 // Constants
 const LOADING_PLACEHOLDER = "Loading...";
@@ -197,25 +198,6 @@ type ToolFamilyConfig = {
   builtIn: string[];
   alternatives: string[];
   description?: string;
-};
-
-type MistralCloudConversation = {
-  id: string;
-  createdAt: string;
-  updatedAt: string;
-  agentId: string;
-  name: string | null;
-  description: string | null;
-  agentVersion: string | null;
-  metadata: Record<string, unknown> | null;
-};
-
-type MistralCloudSessionsResult = {
-  conversations: MistralCloudConversation[];
-  totalCount: number;
-  authenticated: boolean;
-  fetchedAt: string;
-  error: string;
 };
 
 type OtelDeltaPeriod = "all" | "today" | "yesterday" | "week" | "month";
@@ -2634,38 +2616,32 @@ function handleFolderAnalysisResult(message: DiagMessage): void {
   }
 }
 
+const DIAG_MESSAGE_HANDLERS: Record<string, (message: DiagMessage) => void> = {
+  diagnosticDataLoaded: handleDiagnosticDataLoaded,
+  backendStorageInfoLoaded: handleBackendStorageSection,
+  mistralCloudSessionsStatus: handleMistralCloudSessionsStatus,
+  githubAuthUpdated: handleGithubAuthUpdated,
+  diagnosticDataError: handleDiagnosticDataError,
+  sessionFilesLoadProgress: handleSessionFilesLoadProgress,
+  cacheCleared: handleCacheCleared,
+  cacheRefreshed: handleCacheRefreshed,
+  folderPicked: handleFolderPicked,
+  folderAnalysisResult: handleFolderAnalysisResult,
+  modelUsageResult: handleModelUsageResult,
+  ttftResult: handleTtftResult,
+  mistralCloudSessionsResult: handleMistralCloudSessionsResult,
+  mistralCloudPromptCancelled: handleMistralCloudPromptCancelled,
+};
+
 function setupMessageHandlers(): void {
   registerMessageHandler((message: DiagMessage) => {
-    if (message.command === "diagnosticDataLoaded") {
-      handleDiagnosticDataLoaded(message);
-    } else if (message.command === "backendStorageInfoLoaded") {
-      handleBackendStorageSection(message);
-      handleMistralCloudSessionsStatus(message);
-    } else if (message.command === "githubAuthUpdated") {
-      handleGithubAuthUpdated(message);
-    } else if (message.command === "diagnosticDataError") {
-      handleDiagnosticDataError(message);
-    } else if (message.command === "sessionFilesLoaded" && message.detailedSessionFiles) {
-      handleSessionFilesLoaded(message);
-    } else if (message.command === "sessionFilesLoadProgress") {
-      handleSessionFilesLoadProgress(message);
-    } else if (message.command === "cacheCleared") {
-      handleCacheCleared();
-    } else if (message.command === "cacheRefreshed") {
-      handleCacheRefreshed(message);
-    } else if (message.command === "folderPicked") {
-      handleFolderPicked(message);
-    } else if (message.command === "folderAnalysisResult") {
-      handleFolderAnalysisResult(message);
-    } else if (message.command === "modelUsageResult") {
-      handleModelUsageResult(message);
-    } else if (message.command === "ttftResult") {
-      handleTtftResult(message);
-    } else if (message.command === "mistralCloudSessionsResult") {
-      handleMistralCloudSessionsResult(message);
-    } else if (message.command === "mistralCloudPromptCancelled") {
-      handleMistralCloudPromptCancelled();
+    // Only one command carries a payload-shaped guard beyond its name, so it stays a special case
+    // rather than forcing every entry in the table above to encode its own dispatch condition.
+    if (message.command === "sessionFilesLoaded") {
+      if (message.detailedSessionFiles) { handleSessionFilesLoaded(message); }
+      return;
     }
+    DIAG_MESSAGE_HANDLERS[message.command]?.(message);
   });
 }
 
@@ -3441,10 +3417,12 @@ function renderMistralConversationTable(conversations: MistralCloudConversation[
   return `<table class="session-table"><thead><tr><th>${localize("mistral.table.id")}</th><th>${localize("mistral.table.name")}</th><th>${localize("mistral.table.agentId")}</th><th>${localize("mistral.table.version")}</th><th>${localize("mistral.table.created")}</th><th>${localize("mistral.table.updated")}</th><th>${localize("mistral.table.description")}</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
-function renderMistralCloudSummaryCards(result: MistralCloudSessionsResult | undefined, configured: boolean): string {
-  const statusText = configured ? localize("mistral.status.configured") : localize("mistral.status.notConfigured");
-  const statusColor = configured ? "#2d6a4f" : "#666";
-  const statusIcon = configured ? "✅" : "⚪";
+function renderMistralCloudSummaryCards(result: MistralCloudSessionsResult | undefined, configured: boolean, statusKnown: boolean): string {
+  const statusText = !statusKnown
+    ? localize("mistral.status.checking")
+    : configured ? localize("mistral.status.configured") : localize("mistral.status.notConfigured");
+  const statusColor = !statusKnown ? "var(--text-secondary)" : configured ? "var(--success-fg)" : "var(--text-secondary)";
+  const statusIcon = !statusKnown ? "⏳" : configured ? "✅" : "⚪";
   const count = result?.conversations?.length ?? 0;
   const countDisplay = result && result.totalCount > count
     ? localizeFormat("mistral.summary.ofCount", count.toLocaleString(), result.totalCount.toLocaleString())
@@ -3500,7 +3478,7 @@ function renderMistralCloudTab(
 ${introText} ${scopeText} ${keyStorageText}
 </div>
 </div>
-${renderMistralCloudSummaryCards(result, configured)}
+${renderMistralCloudSummaryCards(result, configured, statusKnown)}
 ${errorBox}
 <div class="button-group" id="mistral-cloud-buttons">
 ${renderMistralCloudButtons(configured, requestInFlight, statusKnown)}

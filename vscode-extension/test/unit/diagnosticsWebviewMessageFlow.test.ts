@@ -345,8 +345,10 @@ test('restoring the Mistral Cloud tab reveals the Research leaf bar and marks it
 
 test('Mistral Cloud tab: neither Connect nor Refresh render before the Mistral status is known', async () => {
 	// A real diagnostics load has no mistralCloudSessionsStatus in its initial payload — it arrives
-	// later via backendStorageInfoLoaded. Defaulting to "not configured" in the meantime would let a
-	// user with an existing key click Connect and overwrite it before the real status shows up.
+	// later via its own dedicated message (posted independently of backendStorageInfoLoaded, so the
+	// key status doesn't wait on backend storage's session discovery). Defaulting to "not
+	// configured" in the meantime would let a user with an existing key click Connect and overwrite
+	// it before the real status shows up.
 	await preloadBundle();
 	const harness = bootWebviewUnsettled(buildInitialData());
 	await harness.settle();
@@ -358,8 +360,11 @@ test('Mistral Cloud tab: neither Connect nor Refresh render before the Mistral s
 		command: 'backendStorageInfoLoaded',
 		backendStorageInfo: configuredBackendStorageInfo(),
 		githubAuth: { authenticated: false },
-		mistralCloudSessionsStatus: { apiKeyConfigured: true },
 	});
+	await harness.settle();
+	assert.equal(harness.window.document.getElementById('btn-mistral-refresh'), null, 'Refresh must still not render — backendStorageInfoLoaded no longer carries the Mistral status');
+
+	harness.post({ command: 'mistralCloudSessionsStatus', mistralCloudSessionsStatus: { apiKeyConfigured: true } });
 	await harness.settle();
 
 	assert.ok(harness.window.document.getElementById('btn-mistral-refresh'), 'expected Refresh once status arrives and reports a configured key');
@@ -447,15 +452,11 @@ test('Mistral Cloud tab: a status update reporting the key removed clears a prev
 	await harness.settle();
 	assert.ok(harness.text('#tab-mistral-cloud')?.includes('Old account conversation'));
 
-	// A later status refresh (e.g. from backendStorageInfoLoaded, sent on every diagnostics load)
-	// reports the key was removed, possibly from another window. The stale cached result must not
-	// linger and keep showing the old account's conversations with the Refresh/Remove buttons.
-	harness.post({
-		command: 'backendStorageInfoLoaded',
-		backendStorageInfo: configuredBackendStorageInfo(),
-		githubAuth: { authenticated: false },
-		mistralCloudSessionsStatus: { apiKeyConfigured: false },
-	});
+	// A later status refresh (its own dedicated message, posted on every diagnostics load
+	// independently of backendStorageInfoLoaded) reports the key was removed, possibly from another
+	// window. The stale cached result must not linger and keep showing the old account's
+	// conversations with the Refresh/Remove buttons.
+	harness.post({ command: 'mistralCloudSessionsStatus', mistralCloudSessionsStatus: { apiKeyConfigured: false } });
 	await harness.settle();
 
 	const rendered = harness.text('#tab-mistral-cloud');

@@ -590,6 +590,16 @@ class CopilotTokenTracker implements vscode.Disposable {
 	// BETA: bumped on every refresh/clear so a slow in-flight refresh can detect it was superseded
 	// (e.g. by "Remove API key") and discard its result instead of repopulating stale data.
 	private _mistralCloudRefreshGeneration = 0;
+	// BETA: aborts the in-flight collectMistralCloudSessions() call (if any) so clearing/replacing
+	// the key doesn't leave the old key's listing making up to MAX_PAGES sequential requests in the
+	// background after this window has stopped caring about the result.
+	private _mistralCloudAbortController?: AbortController;
+
+	/** BETA: aborts any in-flight Mistral cloud sessions fetch — called whenever the configured key
+	 * changes or clears, and internally before a new refresh starts one of its own. */
+	private abortInFlightMistralCloudSessionsFetch(): void {
+		this._mistralCloudAbortController?.abort();
+	}
 	// Per scan-range TTFT result cache. Granularity changes reuse the cached sample set instantly.
 	private readonly diagnosticsTtftCache = new TtftScanResultCache();
 	// Cache of the last diagnostic report text for copy/issue operations
@@ -4207,6 +4217,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'mistral.status.label': l10n.t('mistral.status.label'),
 			'mistral.status.configured': l10n.t('mistral.status.configured'),
 			'mistral.status.notConfigured': l10n.t('mistral.status.notConfigured'),
+			'mistral.status.checking': l10n.t('mistral.status.checking'),
 			'mistral.summary.conversations': l10n.t('mistral.summary.conversations'),
 			'mistral.summary.ofCount': l10n.t('mistral.summary.ofCount'),
 			'mistral.summary.lastFetched': l10n.t('mistral.summary.lastFetched'),
@@ -10800,6 +10811,10 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     try {
       await this.context.secrets.store(MISTRAL_API_KEY_SECRET, key);
       this.log('Mistral API key stored.');
+      // Stop any in-flight listing under the previous key immediately — otherwise it keeps making
+      // page requests against a key that's no longer configured, in the background, even though
+      // the refresh below will discard its result anyway once it resolves.
+      this.abortInFlightMistralCloudSessionsFetch();
       // Drop the previous key's cached listing now, synchronously with the store: otherwise it
       // stays around until the refresh below resolves, and closing/reopening the panel during
       // that window would have let sendBackendStorageInfoEarly rehydrate the old account's
@@ -10822,6 +10837,10 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
   private async diagHandleClearMistralApiKey(): Promise<void> {
     try {
       await this.context.secrets.delete(MISTRAL_API_KEY_SECRET);
+      // Stop any in-flight listing under the key just removed — otherwise it keeps making page
+      // requests against the deleted key in the background even though its result will be
+      // discarded (via the generation bump below) once it eventually resolves.
+      this.abortInFlightMistralCloudSessionsFetch();
       this._mistralCloudRefreshGeneration++;
       this._lastMistralCloudSessions = undefined;
       this._lastMistralCloudSessionsKeyFingerprint = undefined;
@@ -10941,7 +10960,13 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       return;
     }
     this.diagnosticsPanel.webview.postMessage({ command: 'mistralCloudSessionsResult', result: { ...this.buildEmptyMistralCloudSessionsResult(), authenticated: true } });
-    const result = await collectMistralCloudSessions(apiKey);
+    // Any previous listing (under a now-superseded key/generation) should stop making requests
+    // rather than keep running in the background — see diagHandleClearMistralApiKey/
+    // diagHandleSetMistralApiKey, which also abort this on a key change.
+    this.abortInFlightMistralCloudSessionsFetch();
+    const abortController = new AbortController();
+    this._mistralCloudAbortController = abortController;
+    const result = await collectMistralCloudSessions(apiKey, { signal: abortController.signal });
     // The key may have been removed or changed while this fetch was in flight (e.g. "Remove API
     // key" clicked mid-refresh) — discard a now-stale result instead of repopulating the UI with
     // data fetched under a key that is no longer the configured one.
@@ -12119,16 +12144,14 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     backendStorageInfo: any;
     githubAuthStatus: { authenticated: boolean; username?: string };
   }> {
-    // BETA: run alongside getBackendStorageInfo() (which performs session discovery and can take a
-    // while) rather than after it — otherwise a user with an existing key would see "No API key
-    // configured" and a clickable Connect button for however long that scan takes, long enough to
-    // click through and overwrite the real key before its status arrives. Generation-guarded (see
-    // getFreshMistralCloudSessionsStatus) so a set/clear landing while this read is in flight can't
-    // win a race against that handler's own, more current, status message.
-    const [backendStorageInfo, mistralCloudSessionsStatus] = await Promise.all([
-      this.getBackendStorageInfo(),
-      this.getFreshMistralCloudSessionsStatus(),
-    ]);
+    // BETA: kick off independently of getBackendStorageInfo() below (which performs session
+    // discovery and can take a while) and post its own message as soon as it resolves, rather than
+    // gating it behind Promise.all with backendStorageInfo — otherwise a user with an existing key
+    // would see "No API key configured" and a clickable Connect button for however long that scan
+    // takes, long enough to click through and overwrite the real key before its status arrives.
+    const mistralStatusDone = this.postMistralCloudSessionsStatusEarly(panel);
+
+    const backendStorageInfo = await this.getBackendStorageInfo();
     this.log(
       `Backend storage info retrieved: azure.enabled=${backendStorageInfo.azure?.enabled}, azure.configured=${backendStorageInfo.azure?.isConfigured}, teamServer.enabled=${backendStorageInfo.teamServer?.enabled}, teamServer.configured=${backendStorageInfo.teamServer?.isConfigured}`,
     );
@@ -12138,39 +12161,55 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
         command: "backendStorageInfoLoaded",
         backendStorageInfo,
         githubAuth: githubAuthStatus,
-        // Omitted (rather than a synthesized `apiKeyConfigured: false`) when the read failed, so
-        // the webview leaves its last-known/"not yet known" state alone instead of downgrading it
-        // and rendering Connect over a key that may still be there.
-        ...(mistralCloudSessionsStatus ? { mistralCloudSessionsStatus } : {}),
       });
-      // BETA: rehydrate a previously fetched conversation listing (kept in memory across panel
-      // close/reopen within the same extension host session) so it doesn't disappear until the
-      // user clicks Refresh again. `apiKeyConfigured` alone can't tell "still the same key" from
-      // "a different key that also happens to be configured" (e.g. changed in another VS Code
-      // window, whose own generation counter this window never sees), so also verify the cached
-      // listing's key fingerprint still matches the currently configured key before rehydrating —
-      // otherwise drop it rather than show one account's conversations under another's key.
-      if (this._lastMistralCloudSessions && mistralCloudSessionsStatus?.apiKeyConfigured) {
-        const generationBeforeFingerprintCheck = this._mistralCloudRefreshGeneration;
-        const currentKeyFingerprint = await this.getCurrentMistralApiKeyFingerprint();
-        if (this._mistralCloudRefreshGeneration !== generationBeforeFingerprintCheck) {
-          // Superseded by a concurrent set/clear while this read was in flight — that handler
-          // already posted its own authoritative message; don't risk resurrecting stale data
-          // on top of it.
-        } else if (currentKeyFingerprint && currentKeyFingerprint === this._lastMistralCloudSessionsKeyFingerprint) {
-          panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this._lastMistralCloudSessions });
-        } else {
-          this._lastMistralCloudSessions = undefined;
-          this._lastMistralCloudSessionsKeyFingerprint = undefined;
-          // The webview may already be showing this stale listing from an earlier message (e.g. a
-          // previous panel-open rehydration) — the status message above still reports a key
-          // configured (just a different one), so the webview's own "clear on unconfigured" path
-          // never fires; explicitly clear the display instead of leaving it until manual Refresh.
-          panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this.buildEmptyMistralCloudSessionsResult() });
-        }
+    }
+    await mistralStatusDone;
+    return { backendStorageInfo, githubAuthStatus };
+  }
+
+  /**
+   * BETA: reads the Mistral SecretStorage status and posts it (plus any cached-listing
+   * rehydration) as soon as it resolves — decoupled from getBackendStorageInfo()'s session
+   * discovery so it isn't held back by an unrelated, potentially slow scan. Generation-guarded
+   * (see getFreshMistralCloudSessionsStatus) so a set/clear landing while this read is in flight
+   * can't win a race against that handler's own, more current, status message.
+   */
+  private async postMistralCloudSessionsStatusEarly(panel: vscode.WebviewPanel): Promise<void> {
+    const mistralCloudSessionsStatus = await this.getFreshMistralCloudSessionsStatus();
+    if (!this.isPanelOpen(panel)) { return; }
+    // Omitted (rather than a synthesized `apiKeyConfigured: false`) when the read failed, so
+    // the webview leaves its last-known/"not yet known" state alone instead of downgrading it
+    // and rendering Connect over a key that may still be there.
+    if (!mistralCloudSessionsStatus) { return; }
+    panel.webview.postMessage({ command: "mistralCloudSessionsStatus", mistralCloudSessionsStatus });
+    // BETA: rehydrate a previously fetched conversation listing (kept in memory across panel
+    // close/reopen within the same extension host session) so it doesn't disappear until the
+    // user clicks Refresh again. `apiKeyConfigured` alone can't tell "still the same key" from
+    // "a different key that also happens to be configured" (e.g. changed in another VS Code
+    // window, whose own generation counter this window never sees), so also verify the cached
+    // listing's key fingerprint still matches the currently configured key before rehydrating —
+    // otherwise drop it rather than show one account's conversations under another's key.
+    if (this._lastMistralCloudSessions && mistralCloudSessionsStatus.apiKeyConfigured) {
+      const generationBeforeFingerprintCheck = this._mistralCloudRefreshGeneration;
+      const currentKeyFingerprint = await this.getCurrentMistralApiKeyFingerprint();
+      if (this._mistralCloudRefreshGeneration !== generationBeforeFingerprintCheck) {
+        // Superseded by a concurrent set/clear while this read was in flight — that handler
+        // already posted its own authoritative message; don't risk resurrecting stale data
+        // on top of it.
+      } else if (!this.isPanelOpen(panel)) {
+        // closed while awaiting the fingerprint
+      } else if (currentKeyFingerprint && currentKeyFingerprint === this._lastMistralCloudSessionsKeyFingerprint) {
+        panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this._lastMistralCloudSessions });
+      } else {
+        this._lastMistralCloudSessions = undefined;
+        this._lastMistralCloudSessionsKeyFingerprint = undefined;
+        // The webview may already be showing this stale listing from an earlier message (e.g. a
+        // previous panel-open rehydration) — the status message above still reports a key
+        // configured (just a different one), so the webview's own "clear on unconfigured" path
+        // never fires; explicitly clear the display instead of leaving it until manual Refresh.
+        panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this.buildEmptyMistralCloudSessionsResult() });
       }
     }
-    return { backendStorageInfo, githubAuthStatus };
   }
 
   /**

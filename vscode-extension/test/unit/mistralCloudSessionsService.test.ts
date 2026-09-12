@@ -78,6 +78,12 @@ test('listMistralConversations: tolerates an object envelope with data[]', async
 	assert.equal(result.totalCount, 42);
 });
 
+test('listMistralConversations: an unsupported top-level shape is a parse error, not an empty listing', async () => {
+	const result = await listMistralConversations('key', { requestFn: makeRequestFn(makeResponse({})) });
+	assert.ok(result.error, 'expected an error for a body that is neither an array, {conversations}, nor {data}');
+	assert.equal(result.conversations, undefined);
+});
+
 test('listMistralConversations: skips entries without a string id', async () => {
 	const body = [
 		{ id: 'good', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', agent_id: 'a', name: 'n', description: null, object: 'conversation' },
@@ -211,6 +217,16 @@ test('collectMistralCloudSessions: a 401 sets authenticated=false and surfaces t
 	const result = await collectMistralCloudSessions('key', { requestFn: makeRequestFn(makeResponse({}, 401)) });
 	assert.equal(result.authenticated, false);
 	assert.match(result.error, /HTTP 401/);
+	assert.equal(result.conversations.length, 0);
+});
+
+test('collectMistralCloudSessions: a malformed 2xx body surfaces as an error instead of an empty authenticated listing', async () => {
+	// An API error envelope like `{}` on a 2xx response must not be silently reported as
+	// "authenticated: true, conversations: []" — that would erase a previous result and hide the
+	// schema drift from the caller.
+	const result = await collectMistralCloudSessions('key', { requestFn: makeRequestFn(makeResponse({})) });
+	assert.equal(result.authenticated, false);
+	assert.ok(result.error, 'expected an error for an unrecognized 2xx body shape');
 	assert.equal(result.conversations.length, 0);
 });
 

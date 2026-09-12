@@ -249,6 +249,7 @@
   "mistral.status.label": "状态",
   "mistral.status.configured": "已配置 API 密钥",
   "mistral.status.notConfigured": "未配置 API 密钥",
+  "mistral.status.checking": "检查中…",
   "mistral.summary.conversations": "对话数",
   "mistral.summary.ofCount": "{1} 个中的 {0} 个",
   "mistral.summary.lastFetched": "最后获取时间",

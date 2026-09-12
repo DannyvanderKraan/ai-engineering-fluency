@@ -198,6 +198,20 @@ export interface MistralListResult {
 }
 
 /**
+ * Extracts the raw conversation list from a `/v1/conversations` response body. The API may return
+ * a bare array, or an object envelope keyed `conversations` (the documented shape) or `data`;
+ * tolerate all three. Any other top-level shape (a malformed body, an API error envelope such as
+ * `{}`) is a parse error, not an empty listing — collapsing it to `[]` would silently erase a
+ * previous result and hide schema drift from the caller.
+ */
+function extractRawConversationList(body: any): unknown[] | undefined {
+  if (Array.isArray(body)) { return body; }
+  if (Array.isArray(body?.conversations)) { return body.conversations; }
+  if (Array.isArray(body?.data)) { return body.data; }
+  return undefined;
+}
+
+/**
  * List one page of conversations from `GET /v1/conversations`. Exported so tests can inject a
  * fake transport and assert the request construction without a live network call.
  */
@@ -211,14 +225,12 @@ export async function listMistralConversations(
   const result = await requestMistralJson(path, apiKey, options.requestFn, options.signal);
   if (result.error) { return { error: result.error, statusCode: result.statusCode }; }
   const body = result.body;
-  // The API may return a bare array, or an object envelope keyed `conversations` (the documented
-  // shape) or `data`; tolerate all three. Entries are `unknown` (not assumed to be objects) since
-  // a beta endpoint may include a malformed entry.
-  const rawList: unknown[] = Array.isArray(body)
-    ? body
-    : Array.isArray(body?.conversations)
-      ? body.conversations
-      : Array.isArray(body?.data) ? body.data : [];
+  // Entries are `unknown` (not assumed to be objects) since a beta endpoint may include a
+  // malformed entry.
+  const rawList = extractRawConversationList(body);
+  if (rawList === undefined) {
+    return { error: 'Unexpected Mistral conversations response shape', statusCode: result.statusCode };
+  }
   const conversations: MistralCloudConversation[] = [];
   for (const raw of rawList) {
     const conv = normalizeConversation(raw);
@@ -309,7 +321,7 @@ async function listAllMistralConversations(
  */
 export async function collectMistralCloudSessions(
   apiKey: string,
-  options: { pageSize?: number; requestFn?: MistralRequestFn } = {},
+  options: { pageSize?: number; requestFn?: MistralRequestFn; signal?: AbortSignal } = {},
 ): Promise<MistralCloudSessionsResult> {
   const fetchedAt = new Date().toISOString();
   // withTimeout below only rejects this function's own promise when the deadline fires — on its
@@ -319,6 +331,14 @@ export async function collectMistralCloudSessions(
   // the timeout. Abort it on the same deadline so the transport actually gets torn down.
   const abortController = new AbortController();
   const abortTimer = setTimeout(() => abortController.abort(), FETCH_TIMEOUT_MS);
+  // The caller's own signal (e.g. the extension host cancelling a stale fetch after the API key
+  // was cleared/changed mid-listing) also tears down the transport, not just this function's
+  // timeout — otherwise a removed/replaced key could keep making up to MAX_PAGES sequential
+  // requests in the background after the caller has stopped caring about the result.
+  if (options.signal) {
+    if (options.signal.aborted) { abortController.abort(); }
+    else { options.signal.addEventListener('abort', () => abortController.abort(), { once: true }); }
+  }
   try {
     const list = await withTimeout(
       listAllMistralConversations(apiKey, { ...options, signal: abortController.signal }),

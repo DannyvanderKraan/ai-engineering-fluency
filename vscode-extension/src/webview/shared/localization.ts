@@ -68,6 +68,7 @@ export interface WebviewLocalization {
 	'mistral.status.label': string;
 	'mistral.status.configured': string;
 	'mistral.status.notConfigured': string;
+	'mistral.status.checking': string;
 	'mistral.summary.conversations': string;
 	'mistral.summary.ofCount': string;
 	'mistral.summary.lastFetched': string;
@@ -143,6 +144,7 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'mistral.status.label': 'Status',
 	'mistral.status.configured': 'API key configured',
 	'mistral.status.notConfigured': 'No API key configured',
+	'mistral.status.checking': 'Checking…',
 	'mistral.summary.conversations': 'Conversations',
 	'mistral.summary.ofCount': '{0} of {1}',
 	'mistral.summary.lastFetched': 'Last fetched',

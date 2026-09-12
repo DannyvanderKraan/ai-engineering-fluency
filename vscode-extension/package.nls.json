@@ -247,6 +247,7 @@
   "mistral.status.label": "Status",
   "mistral.status.configured": "API key configured",
   "mistral.status.notConfigured": "No API key configured",
+  "mistral.status.checking": "Checking…",
   "mistral.summary.conversations": "Conversations",
   "mistral.summary.ofCount": "{0} of {1}",
   "mistral.summary.lastFetched": "Last fetched",
