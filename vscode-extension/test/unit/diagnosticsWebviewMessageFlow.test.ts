@@ -418,3 +418,75 @@ test('Mistral Cloud tab: an error result rerenders the tab with the error box, n
 	const rendered = harness.text('#tab-mistral-cloud');
 	assert.ok(rendered?.includes('HTTP 401'), `expected the error text to render, got: ${rendered}`);
 });
+
+test('Mistral Cloud tab: Refresh disables itself while the request is in flight and a second click does not post twice', async () => {
+	await preloadBundle();
+	const harness = bootWebviewUnsettled(buildInitialData({ mistralCloudSessionsStatus: { apiKeyConfigured: true } }));
+	await harness.settle();
+	const refreshButton = () => harness.window.document.getElementById('btn-mistral-refresh') as HTMLButtonElement | null;
+
+	refreshButton()!.click();
+	assert.equal(
+		harness.posted.filter((m) => m.command === 'refreshMistralCloudSessions').length, 1,
+		'the first click should post exactly one refresh request',
+	);
+	assert.ok(refreshButton()?.disabled, 'Refresh must be disabled while its request is in flight');
+
+	// A rapid second click while disabled must not fire a second request against the rate-limited
+	// beta API — clicking a disabled native button wouldn't dispatch anyway, but the handler itself
+	// also guards on the in-flight flag so this holds regardless of DOM disabled-click semantics.
+	refreshButton()!.click();
+	assert.equal(
+		harness.posted.filter((m) => m.command === 'refreshMistralCloudSessions').length, 1,
+		'a click while a request is already in flight must not post a second one',
+	);
+
+	// The interim "authenticated, still empty" marker the host posts right as the fetch starts
+	// must not re-enable the button — only a final result (with fetchedAt set) should.
+	harness.post({
+		command: 'mistralCloudSessionsResult',
+		result: { conversations: [], totalCount: 0, authenticated: true, fetchedAt: '', error: '' },
+	});
+	await harness.settle();
+	assert.ok(refreshButton()?.disabled, 'the interim loading marker must not re-enable Refresh');
+
+	harness.post({
+		command: 'mistralCloudSessionsResult',
+		result: { conversations: [], totalCount: 0, authenticated: true, fetchedAt: '2026-01-02T00:00:00Z', error: '' },
+	});
+	await harness.settle();
+	assert.equal(refreshButton()?.disabled, false, 'a final result must re-enable Refresh');
+
+	refreshButton()!.click();
+	assert.equal(
+		harness.posted.filter((m) => m.command === 'refreshMistralCloudSessions').length, 2,
+		'once re-enabled, Refresh must be clickable again',
+	);
+});
+
+test('Mistral Cloud tab: Connect disables itself while the prompt is in flight and re-enables on cancellation', async () => {
+	await preloadBundle();
+	const harness = bootWebviewUnsettled(buildInitialData());
+	await harness.settle();
+	const connectButton = () => harness.window.document.getElementById('btn-mistral-connect') as HTMLButtonElement | null;
+
+	connectButton()!.click();
+	assert.equal(harness.posted.filter((m) => m.command === 'promptMistralApiKey').length, 1);
+	assert.ok(connectButton()?.disabled, 'Connect must be disabled while the prompt is in flight');
+
+	connectButton()!.click();
+	assert.equal(
+		harness.posted.filter((m) => m.command === 'promptMistralApiKey').length, 1,
+		'a click while the prompt is already in flight must not open a second one',
+	);
+
+	// The user cancelled the native input box (e.g. pressed Escape) — no key was entered, so no
+	// mistralCloudSessionsResult message ever follows; mistralCloudPromptCancelled is the only
+	// signal that re-enables the button in that case.
+	harness.post({ command: 'mistralCloudPromptCancelled' });
+	await harness.settle();
+	assert.equal(connectButton()?.disabled, false, 'a cancelled prompt must re-enable Connect');
+
+	connectButton()!.click();
+	assert.equal(harness.posted.filter((m) => m.command === 'promptMistralApiKey').length, 2);
+});

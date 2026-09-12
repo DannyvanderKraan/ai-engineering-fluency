@@ -302,6 +302,10 @@ let currentBackendInfo: BackendStorageInfo | undefined;
 let currentGithubAuth: GitHubAuthStatus | undefined;
 let currentMistralCloudSessions: MistralCloudSessionsResult | undefined;
 let currentMistralApiKeyConfigured = false;
+// True from the moment Connect/Refresh is clicked until a result (success or error) — or, for a
+// cancelled Connect prompt, mistralCloudPromptCancelled — comes back. Guards against rapid clicks
+// firing concurrent requests against the beta API's rate limits.
+let mistralCloudRequestInFlight = false;
 let currentModelUsageTimeRange = "all";
 
 function removeSessionFilesSection(reportText: string): string {
@@ -2656,6 +2660,8 @@ function setupMessageHandlers(): void {
       handleTtftResult(message);
     } else if (message.command === "mistralCloudSessionsResult") {
       handleMistralCloudSessionsResult(message);
+    } else if (message.command === "mistralCloudPromptCancelled") {
+      handleMistralCloudPromptCancelled();
     }
   });
 }
@@ -3457,16 +3463,18 @@ function renderMistralCloudSummaryCards(result: MistralCloudSessionsResult | und
 </div>`;
 }
 
-function renderMistralCloudButtons(configured: boolean): string {
+function renderMistralCloudButtons(configured: boolean, requestInFlight: boolean): string {
+  const disabledAttr = requestInFlight ? " disabled" : "";
   return configured
-    ? `<button class="button" id="btn-mistral-refresh"><span>🔄</span><span>${localize("mistral.button.refresh")}</span></button>
+    ? `<button class="button" id="btn-mistral-refresh"${disabledAttr}><span>🔄</span><span>${localize("mistral.button.refresh")}</span></button>
      <button class="button secondary" id="btn-mistral-disconnect"><span>🔌</span><span>${localize("mistral.button.removeApiKey")}</span></button>`
-    : `<button class="button" id="btn-mistral-connect"><span>🔑</span><span>${localize("mistral.button.connectApiKey")}</span></button>`;
+    : `<button class="button" id="btn-mistral-connect"${disabledAttr}><span>🔑</span><span>${localize("mistral.button.connectApiKey")}</span></button>`;
 }
 
 function renderMistralCloudTab(
   result: MistralCloudSessionsResult | undefined,
   apiKeyConfigured: boolean,
+  requestInFlight: boolean,
 ): string {
   const betaLabel = localize("mistral.betaBadge");
   const betaBadge = `<span class="beta-badge" title="${escapeHtml(betaLabel)}">${escapeHtml(betaLabel)}</span>`;
@@ -3487,7 +3495,7 @@ ${introText} ${scopeText} ${keyStorageText}
 ${renderMistralCloudSummaryCards(result, configured)}
 ${errorBox}
 <div class="button-group" id="mistral-cloud-buttons">
-${renderMistralCloudButtons(configured)}
+${renderMistralCloudButtons(configured, requestInFlight)}
 </div>
 ${renderMistralConversationTable(result?.conversations ?? [])}
 </div>`;
@@ -3501,23 +3509,36 @@ function setupMistralCloudHandlers(): void {
   // host via vscode.window.showInputBox({ password: true }) — never via a
   // clear-text window.prompt() inside the webview.
   connect?.addEventListener("click", () => {
+    if (mistralCloudRequestInFlight) { return; }
+    mistralCloudRequestInFlight = true;
+    rerenderMistralCloudTab();
     vscode.postMessage({ command: "promptMistralApiKey" });
   });
   disconnect?.addEventListener("click", () => {
     vscode.postMessage({ command: "clearMistralApiKey" });
   });
   refresh?.addEventListener("click", () => {
+    if (mistralCloudRequestInFlight) { return; }
+    mistralCloudRequestInFlight = true;
+    rerenderMistralCloudTab();
     vscode.postMessage({ command: "refreshMistralCloudSessions" });
   });
 }
 
 function rerenderMistralCloudTab(): void {
-  replaceTabContent("mistral-cloud", renderMistralCloudTab(currentMistralCloudSessions, currentMistralApiKeyConfigured), setupMistralCloudHandlers);
+  replaceTabContent("mistral-cloud", renderMistralCloudTab(currentMistralCloudSessions, currentMistralApiKeyConfigured, mistralCloudRequestInFlight), setupMistralCloudHandlers);
 }
 
 function handleMistralCloudSessionsResult(message: DiagMessage): void {
   if (message.result === undefined) { return; }
-  currentMistralCloudSessions = message.result as MistralCloudSessionsResult;
+  const result = message.result as MistralCloudSessionsResult;
+  // The extension host posts an interim "authenticated, still empty" marker right when a refresh
+  // starts (before the actual fetch resolves), distinguishable from every final result — success,
+  // error, or "no key configured" — by having `authenticated: true` with no `fetchedAt` yet. Don't
+  // let that interim marker re-enable the buttons; only a final result should.
+  const isInterimLoadingMarker = !!result?.authenticated && !result?.fetchedAt;
+  if (!isInterimLoadingMarker) { mistralCloudRequestInFlight = false; }
+  currentMistralCloudSessions = result;
   if (currentMistralCloudSessions?.authenticated) { currentMistralApiKeyConfigured = true; }
   else if (!currentMistralCloudSessions?.error) { currentMistralApiKeyConfigured = false; }
   rerenderMistralCloudTab();
@@ -3530,6 +3551,13 @@ function handleMistralCloudSessionsStatus(message: DiagMessage): void {
   if (!currentMistralApiKeyConfigured && !currentMistralCloudSessions) {
     currentMistralCloudSessions = { conversations: [], totalCount: 0, authenticated: false, fetchedAt: "", error: "" };
   }
+  rerenderMistralCloudTab();
+}
+
+/** The Connect prompt was cancelled (no key entered), so no mistralCloudSessionsResult message
+ * will ever arrive for this click — re-enable the button directly. */
+function handleMistralCloudPromptCancelled(): void {
+  mistralCloudRequestInFlight = false;
   rerenderMistralCloudTab();
 }
 
@@ -3692,7 +3720,7 @@ ${renderModelUsageTab(detailedFiles, isLoading)}
 ${renderToolAnalysisTab(data.toolCallStats, data.toolFamilies)}
 ${renderSkillUsageTab(data.skillCallStats, data.skillCallsByEditor, data.skillDescriptions, skillUsageEditorFilter)}
 ${renderOtelDeltaTab(data.otelComparison)}
-${renderMistralCloudTab(currentMistralCloudSessions, currentMistralApiKeyConfigured)}
+${renderMistralCloudTab(currentMistralCloudSessions, currentMistralApiKeyConfigured, mistralCloudRequestInFlight)}
 ${renderTtftTab()}
 </div>
 `;

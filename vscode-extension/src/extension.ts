@@ -10775,7 +10775,15 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       ignoreFocusOut: true,
       validateInput: (v) => (v && v.trim() ? undefined : l10n.t('mistral.prompt.required')),
     });
-    if (key) { await this.diagHandleSetMistralApiKey(key); }
+    if (key) {
+      await this.diagHandleSetMistralApiKey(key);
+    } else if (this.diagnosticsPanel && this.isPanelOpen(this.diagnosticsPanel)) {
+      // The webview disables the Connect button while this prompt is in flight (to stop rapid
+      // clicks from stacking multiple input boxes); the key/set path re-enables it via the
+      // eventual mistralCloudSessionsResult message, but a cancelled prompt never produces one, so
+      // tell the webview explicitly to re-enable it here.
+      this.diagnosticsPanel.webview.postMessage({ command: 'mistralCloudPromptCancelled' });
+    }
   }
 
   /** BETA: store the Mistral API key in SecretStorage, then refresh. */
@@ -10820,6 +10828,21 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     } catch {
       return { apiKeyConfigured: false };
     }
+  }
+
+  /**
+   * BETA: `getMistralCloudSessionsStatus()`, but re-read once if the key was set/cleared while
+   * that read was itself in flight (mirrors the generation check the refresh path uses). Without
+   * this, a status snapshot read moments before a concurrent set/clear could still win a race
+   * against the clear/set handler's own, more current, status message.
+   */
+  private async getFreshMistralCloudSessionsStatus(): Promise<{ apiKeyConfigured: boolean }> {
+    const generationBefore = this._mistralCloudRefreshGeneration;
+    let status = await this.getMistralCloudSessionsStatus();
+    if (this._mistralCloudRefreshGeneration !== generationBefore) {
+      status = await this.getMistralCloudSessionsStatus();
+    }
+    return status;
   }
 
   /** BETA: fetch Mistral cloud conversations and post the result to the diagnostics webview. */
@@ -12015,8 +12038,11 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       });
       // BETA: rehydrate a previously fetched conversation listing (kept in memory across panel
       // close/reopen within the same extension host session) so it doesn't disappear until the
-      // user clicks Refresh again.
-      if (this._lastMistralCloudSessions) {
+      // user clicks Refresh again. Only when the just-read status still says a key is configured —
+      // otherwise the key was cleared outside diagHandleClearMistralApiKey (which already resets
+      // _lastMistralCloudSessions itself), and resending the stale authenticated result here would
+      // flip the webview back to "configured" with conversations that no longer belong to any key.
+      if (this._lastMistralCloudSessions && mistralCloudSessionsStatus.apiKeyConfigured) {
         panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this._lastMistralCloudSessions });
       }
     }
@@ -12071,11 +12097,11 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       this.log(
         `Sending backend info to webview: ${backendStorageInfo ? "present" : "missing"}`,
       );
-      // Re-read rather than reuse the value captured at the top of this method: the report/stats
-      // pipeline above can take a while, during which the user may have connected or removed the
-      // key (already reflected live via the early message and the connect/remove handlers), and
-      // reusing the stale snapshot here would overwrite that live state with an outdated one.
-      const currentMistralCloudSessionsStatus = await this.getMistralCloudSessionsStatus();
+      // Re-read (generation-guarded, see getFreshMistralCloudSessionsStatus) rather than reuse the
+      // value captured at the top of this method: the pipeline above can take a while, during
+      // which the key may have been connected or removed, and a stale snapshot here would
+      // overwrite that already-live state with an outdated one.
+      const currentMistralCloudSessionsStatus = await this.getFreshMistralCloudSessionsStatus();
       panel.webview.postMessage({
         command: "diagnosticDataLoaded",
         report,

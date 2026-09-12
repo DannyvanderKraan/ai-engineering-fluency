@@ -25,6 +25,14 @@ const MISTRAL_API_BASE = 'https://api.mistral.ai';
 /** Maximum conversations to request per listing call. The API caps `page_size` at 100. */
 const DEFAULT_PAGE_SIZE = 100;
 
+/**
+ * Hard cap on the number of pages fetched for a single listing. Real pagination has to stay
+ * bounded: an account with an unusually large number of conversations, or a beta endpoint that
+ * never signals a final short page, must not turn one refresh into an unbounded number of
+ * requests. At the max page size this still covers 2000 conversations before truncating.
+ */
+const MAX_PAGES = 20;
+
 /** Overall fetch timeout so a hung connection never blocks the webview indefinitely. */
 const FETCH_TIMEOUT_MS = 20_000;
 
@@ -66,6 +74,14 @@ export function requestMistralJson(
   requestFn: MistralRequestFn = https.request,
 ): Promise<MistralJsonResult> {
   return new Promise((resolve) => {
+    // Both the request and its response can fail independently (e.g. the response socket resets
+    // after the response callback already fired), so guard against settling this promise twice.
+    let settled = false;
+    const settle = (result: MistralJsonResult) => {
+      if (settled) { return; }
+      settled = true;
+      resolve(result);
+    };
     const url = new URL(path, MISTRAL_API_BASE);
     const req = requestFn(
       {
@@ -79,23 +95,32 @@ export function requestMistralJson(
         },
       },
       (res) => {
+        // Without this, Node delivers 'data' chunks as Buffers, and a multibyte UTF-8 character
+        // split across chunk boundaries would get corrupted by naive string concatenation.
+        res.setEncoding('utf8');
         let data = '';
         res.on('data', (chunk: string) => (data += chunk));
         res.on('end', () => {
           const statusCode = res.statusCode ?? 0;
           if (statusCode < 200 || statusCode >= 300) {
-            resolve({ statusCode, error: `HTTP ${statusCode}` });
+            settle({ statusCode, error: `HTTP ${statusCode}` });
             return;
           }
           try {
-            resolve({ body: JSON.parse(data), statusCode });
+            settle({ body: JSON.parse(data), statusCode });
           } catch (e) {
-            resolve({ statusCode, error: String(e) });
+            settle({ statusCode, error: String(e) });
           }
+        });
+        // The response stream can itself emit 'error' (e.g. a mid-body socket reset) after the
+        // response callback has already started; without this handler that would surface as an
+        // unhandled 'error' event instead of rejecting/settling this listing call.
+        res.on('error', (e: Error) => {
+          settle({ error: `Response stream error: ${e.message}` });
         });
       },
     );
-    attachRequestFailureHandling(req, FETCH_TIMEOUT_MS, (message) => resolve({ error: message }));
+    attachRequestFailureHandling(req, FETCH_TIMEOUT_MS, (message) => settle({ error: message }));
     req.end();
   });
 }
@@ -138,15 +163,16 @@ export interface MistralListResult {
 }
 
 /**
- * List conversations from `GET /v1/conversations`. Exported so tests can inject a fake transport
- * and assert the request construction without a live network call.
+ * List one page of conversations from `GET /v1/conversations`. Exported so tests can inject a
+ * fake transport and assert the request construction without a live network call.
  */
 export async function listMistralConversations(
   apiKey: string,
-  options: { pageSize?: number; requestFn?: MistralRequestFn } = {},
+  options: { pageSize?: number; page?: number; requestFn?: MistralRequestFn } = {},
 ): Promise<MistralListResult> {
   const pageSize = Math.min(Math.max(options.pageSize ?? DEFAULT_PAGE_SIZE, 1), 100);
-  const path = `/v1/conversations?page_size=${pageSize}`;
+  const page = Math.max(options.page ?? 0, 0);
+  const path = `/v1/conversations?page_size=${pageSize}${page > 0 ? `&page=${page}` : ''}`;
   const result = await requestMistralJson(path, apiKey, options.requestFn);
   if (result.error) { return { error: result.error, statusCode: result.statusCode }; }
   const body = result.body;
@@ -168,6 +194,49 @@ export async function listMistralConversations(
 }
 
 /**
+ * The total to report to the caller: the API's own total when it's larger than what we actually
+ * fetched, otherwise a synthetic "more than shown" total when the page cap cut the listing short
+ * while the last fetched page was still full. That keeps the existing "N of Total" UI honest about
+ * truncation even when the API never reports a `total` at all.
+ */
+function computeEffectiveTotal(fetchedCount: number, apiTotal: number | undefined, hitPageCap: boolean): number {
+  if (apiTotal !== undefined && apiTotal > fetchedCount) { return apiTotal; }
+  return hitPageCap ? fetchedCount + 1 : fetchedCount;
+}
+
+/**
+ * Fetch every page of conversations, up to `MAX_PAGES`, aggregating them into one listing. Stops
+ * as soon as a page comes back shorter than the requested page size (the API's usual signal that
+ * it was the last page). A page-level error after at least one successful page keeps the pages
+ * already gathered instead of discarding them; an error on the very first page still propagates,
+ * matching the previous single-page behavior.
+ */
+async function listAllMistralConversations(
+  apiKey: string,
+  options: { pageSize?: number; requestFn?: MistralRequestFn } = {},
+): Promise<MistralListResult> {
+  const pageSize = Math.min(Math.max(options.pageSize ?? DEFAULT_PAGE_SIZE, 1), 100);
+  const conversations: MistralCloudConversation[] = [];
+  let totalCount: number | undefined;
+  let statusCode: number | undefined;
+  let hitPageCap = false;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const pageResult = await listMistralConversations(apiKey, { pageSize, page, requestFn: options.requestFn });
+    if (pageResult.error) {
+      if (page === 0) { return { error: pageResult.error, statusCode: pageResult.statusCode }; }
+      break;
+    }
+    statusCode = pageResult.statusCode;
+    const pageConversations = pageResult.conversations ?? [];
+    conversations.push(...pageConversations);
+    if (typeof pageResult.totalCount === 'number') { totalCount = pageResult.totalCount; }
+    if (pageConversations.length < pageSize) { break; }
+    if (page === MAX_PAGES - 1) { hitPageCap = true; }
+  }
+  return { conversations, totalCount: computeEffectiveTotal(conversations.length, totalCount, hitPageCap), statusCode };
+}
+
+/**
  * Collect Mistral cloud conversations for the authenticated API key. This is the entry point the
  * extension calls; it owns the timeout envelope and the `MistralCloudSessionsResult` shape that
  * flows to the webview.
@@ -179,7 +248,7 @@ export async function collectMistralCloudSessions(
   const fetchedAt = new Date().toISOString();
   try {
     const list = await withTimeout(
-      listMistralConversations(apiKey, options),
+      listAllMistralConversations(apiKey, options),
       FETCH_TIMEOUT_MS,
       'Mistral cloud sessions fetch',
     );
