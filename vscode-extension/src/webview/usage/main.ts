@@ -5779,6 +5779,10 @@ function renderLayout(stats: UsageAnalysisStats): void {
 	wireRepositoryButtons();
 	wireCurationButtons();
 	renderRepositoryHygienePanels();
+	// Before setupTabs(): its first-visit replay marks new insights as seen when the render opens
+	// on the Insights tab (a deep link can), and that reads currentInsights. Assigned after, the
+	// replay would iterate an empty array and silently mark nothing.
+	currentInsights = stats.insights ?? [];
 	setupTabs();
 	setupModelEfficiencySection();
 	setupContextRefSection();
@@ -5787,8 +5791,7 @@ function renderLayout(stats: UsageAnalysisStats): void {
 	setupWorktreesHandlers();
 	wireCopyButtons();
 	wireCorrectionInteractions();
-	// Initialize currentInsights from the stats and wire card buttons
-	currentInsights = stats.insights ?? [];
+	// currentInsights is assigned above, before setupTabs(); this only wires the card buttons.
 	wireInsightCardButtons();
 	scrollToPendingTabAnchor();
 	// The GitHub activity containers only exist now. Re-announce readiness so the extension

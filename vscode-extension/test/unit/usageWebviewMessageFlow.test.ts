@@ -732,6 +732,27 @@ test('a deep link to a lazy-loaded tab still requests its data', async () => {
 	);
 });
 
+test('a deep link to Insights marks its new insights as seen', async () => {
+	// Regression: setupTabs() replays the opening tab's first-visit effects, but renderLayout
+	// assigned currentInsights *after* that call, so the replay iterated an empty array and the
+	// deep-linked Insights tab never posted `seen` until the user switched tabs by hand.
+	const stats = buildStats() as any;
+	stats.insights = [
+		{ id: 'insight-a', status: 'new', title: 'A', body: 'a', severity: 'tip' },
+		{ id: 'insight-b', status: 'seen', title: 'B', body: 'b', severity: 'tip' },
+	];
+	const harness = await bootWebview(null);
+	harness.post({ command: 'switchTab', tab: 'insights' });
+	harness.post({ command: 'updateStats', data: stats });
+	await harness.settle();
+
+	assert.equal(activeTabState(harness).button, 'insights', 'the deep link decides the opening tab');
+	const seen = harness.posted
+		.filter((m: any) => m.command === 'insightAction' && m.action === 'seen')
+		.map((m: any) => m.id);
+	assert.deepEqual(seen, ['insight-a'], 'only the new insight is marked seen, and it is marked');
+});
+
 test('group tabs expose which one is selected to assistive technology', async () => {
 	const harness = await bootWebview(buildStats());
 	const pressed = (): string[] => [...harness.window.document.querySelectorAll('.group-tab')]

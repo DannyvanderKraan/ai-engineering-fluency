@@ -244,6 +244,14 @@ test('l10n: usage tab-group, band and context-reference keys resolve in zh-cn', 
 		// translation pass doesn't quietly localize a product name.
 		assert.equal(t('usage.group.github'), 'GitHub');
 		assert.equal(t('usage.contextRefs.otherSummary', '4'), '其他引用（4 个，今天和最近 30 天均未使用）');
+		// The band subtitles and the two context-reference strings are the longest prose in this
+		// set, so they are the likeliest to be dropped or half-translated in a bulk edit.
+		assert.equal(t('usage.band.overview.subtitle'), "你使用 AI 助手的总量，以及使用了哪些交互模式。", 'zh-cn value for usage.band.overview.subtitle');
+		assert.equal(t('usage.band.spend.subtitle'), "这些使用产生的成本、运行在哪些模型上，以及它们被要求思考的深度。", 'zh-cn value for usage.band.spend.subtitle');
+		assert.equal(t('usage.band.context.subtitle'), "你提供给模型的内容：附加的引用、请求与窗口上限的接近程度，以及被压缩掉的部分。", 'zh-cn value for usage.band.context.subtitle');
+		assert.equal(t('usage.contextRefs.noneRecent'), "今天和最近 30 天均未记录到上下文引用。", 'zh-cn value for usage.contextRefs.noneRecent');
+		assert.equal(t('usage.contextRefs.totalTooltip'), "各引用类型的合计（#file、#selection、@workspace、说明文件等）。图片、提示文件、自定义提示和代码行数这几行属于独立指标，不计入此合计。", 'zh-cn value for usage.contextRefs.totalTooltip');
+
 	} finally {
 		mock.setLanguage('en');
 	}
