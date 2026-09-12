@@ -39,6 +39,7 @@ import { billingExtGroupCostsHtml } from './billingCoverage';
 import { partitionContextRefRows, type ContextRefRow } from './contextRefRows';
 import { sanitizeAgentSessionsData, toSafeNumber, toSafeHttpUrl, type AgentRepoSummary, type AgentSessionsResult } from './agentSessionsSanitizer';
 import { isSwitchableTab } from './switchableTabs';
+import { USAGE_TAB_GROUPS, groupOfUsageTab } from './tabGroups';
 import { placeBubbleLabels, scaleBubbleRadius, type BubbleLabelPlacement } from './modelLeaderboard';
 import { createUsageWebviewReadyNotifier, restoreGitHubActivityPanels } from './readiness';
 
@@ -2410,39 +2411,99 @@ function reportTabOpened(tab: string): void {
 	vscode.postMessage({ command: 'viewTabOpened', view: 'usage', tab });
 }
 
+/** Work a tab's first visit does once: fetching data it needs, or clearing its badge. */
+function runTabFirstVisitEffects(tab: string): void {
+	// Lazy-load repo PR stats on first visit to the tab
+	if (tab === 'repos' && !repoPrStatsLoaded) {
+		repoPrStatsLoaded = true;
+		vscode.postMessage({ command: 'loadRepoPrStats' });
+	}
+	// Lazy-load cloud agent sessions on first visit to the tab
+	if (tab === 'agent' && !agentSessionsLoaded) {
+		agentSessionsLoaded = true;
+		vscode.postMessage({ command: 'loadAgentSessions' });
+	}
+	// Mark new insights as seen when visiting the Insights tab
+	if (tab === 'insights') {
+		currentInsights
+			.filter(i => i.status === 'new')
+			.forEach(i => vscode.postMessage({ command: 'insightAction', id: i.id, action: 'seen' }));
+	}
+}
+
+/**
+ * The leaf tab each group was last left on, so re-opening a group returns the user to where they
+ * were instead of resetting them to its first tab. Not persisted: it describes this render's
+ * navigation history, and a reload legitimately starts over from the restored `activeTab`.
+ */
+const lastTabPerGroup: Record<string, string> = {};
+
+/** Shows one group's leaf tab bar and marks its group button active. Does not change which leaf is active. */
+function activateUsageGroup(groupId: string): void {
+	document.querySelectorAll<HTMLElement>('.group-tab').forEach(btn => {
+		btn.classList.toggle('active', btn.getAttribute('data-group') === groupId);
+	});
+	document.querySelectorAll<HTMLElement>('.leaf-tabs').forEach(bar => {
+		bar.style.display = bar.getAttribute('data-group') === groupId ? 'flex' : 'none';
+	});
+}
+
+/**
+ * The single path that switches tabs, whether the user clicked a tab, the host sent a
+ * `switchTab` message, or an unknown-tool banner jumped here. Everything a tab switch has to
+ * get right — revealing the owning group, the active markers, the panel, telemetry, first-visit
+ * loads — lives here once, so a new entry point cannot forget half of it.
+ *
+ * Returns false when the tab has no rendered panel (e.g. the webview is still in its loading
+ * state), leaving `activeTab` set so the eventual render lands on it.
+ */
+function activateUsageTab(tab: string): boolean {
+	activeTab = tab;
+	const panel = document.getElementById(`tab-panel-${tab}`);
+	if (!panel) { return false; }
+	const group = groupOfUsageTab(tab);
+	lastTabPerGroup[group] = tab;
+	activateUsageGroup(group);
+	document.querySelectorAll<HTMLElement>('.tab-button').forEach(btn => {
+		btn.classList.toggle('active', btn.getAttribute('data-tab') === tab);
+	});
+	document.querySelectorAll<HTMLElement>('.tab-panel').forEach(p => { p.style.display = 'none'; });
+	panel.style.display = 'block';
+	reportTabOpened(tab);
+	runTabFirstVisitEffects(tab);
+	return true;
+}
+
 function setupTabs(): void {
-	const tabButtons = document.querySelectorAll<HTMLElement>('.tab-button');
 	// The tab that is already on screen counts as opened — the user is reading it
 	// right now, whether or not they clicked anything to get here.
 	reportTabOpened(activeTab);
-	tabButtons.forEach(button => {
+	document.querySelectorAll<HTMLElement>('.tab-button').forEach(button => {
 		button.addEventListener('click', () => {
 			const tab = button.getAttribute('data-tab');
-			if (!tab) { return; }
-			activeTab = tab;
-			reportTabOpened(tab);
-			tabButtons.forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-tab') === tab));
-			document.querySelectorAll<HTMLElement>('.tab-panel').forEach(panel => {
-				panel.style.display = 'none';
-			});
-			const activePanel = document.getElementById(`tab-panel-${tab}`);
-			if (activePanel) { activePanel.style.display = 'block'; }
-			// Lazy-load repo PR stats on first visit to the tab
-			if (tab === 'repos' && !repoPrStatsLoaded) {
-				repoPrStatsLoaded = true;
-				vscode.postMessage({ command: 'loadRepoPrStats' });
-			}
-			// Lazy-load cloud agent sessions on first visit to the tab
-			if (tab === 'agent' && !agentSessionsLoaded) {
-				agentSessionsLoaded = true;
-				vscode.postMessage({ command: 'loadAgentSessions' });
-			}
-			// Mark new insights as seen when visiting the Insights tab
-			if (tab === 'insights') {
-				currentInsights
-					.filter(i => i.status === 'new')
-					.forEach(i => vscode.postMessage({ command: 'insightAction', id: i.id, action: 'seen' }));
-			}
+			if (tab) { activateUsageTab(tab); }
+		});
+	});
+	setupGroupTabs();
+}
+
+/**
+ * Clicking a group tab reveals its leaf bar. It only moves the user to a different tab when the
+ * group they opened does not already contain the active one — so returning to the group you came
+ * from puts you back where you were, rather than resetting you to its first tab.
+ */
+function setupGroupTabs(): void {
+	document.querySelectorAll<HTMLElement>('.group-tab').forEach(button => {
+		button.addEventListener('click', () => {
+			const groupId = button.getAttribute('data-group');
+			const group = USAGE_TAB_GROUPS.find(g => g.id === groupId);
+			if (!group) { return; }
+			activateUsageGroup(group.id);
+			if (group.tabs.includes(activeTab)) { return; }
+			const remembered = lastTabPerGroup[group.id];
+			const candidates = remembered ? [remembered, ...group.tabs] : group.tabs;
+			const nextTab = candidates.find(tab => document.getElementById(`tab-panel-${tab}`));
+			if (nextTab) { activateUsageTab(nextTab); }
 		});
 	});
 }
@@ -3565,6 +3626,51 @@ function correctionsTabButtonHtml(report: CorrectionReport | null | undefined): 
 	return `<button class="tab-button ${activeTab === 'corrections' ? 'active' : ''}" data-tab="corrections"><span class="codicon codicon-debug-restart"></span> Corrections${correctionsCountBadgeHtml(report)}</button>`;
 }
 
+/** The leaf tab buttons, keyed by tab id, so the strip builder can lay them out by group. */
+function usageLeafTabButtons(stats: UsageAnalysisStats): Record<string, string> {
+	const newInsightCount = (stats.insights ?? []).filter(i => i.status === 'new').length;
+	const insightBadge = newInsightCount > 0
+		? ` <span style="background:rgba(96,165,250,0.4);border-radius:10px;padding:1px 6px;font-size:11px;">${newInsightCount}</span>`
+		: '';
+	const btn = (tab: string, icon: string, label: string, extra = ''): string =>
+		`<button class="tab-button ${activeTab === tab ? 'active' : ''}" data-tab="${tab}"><span class="codicon codicon-${icon}"></span> ${label}${extra}</button>`;
+	return {
+		activity: btn('activity', 'pulse', 'My Activity'),
+		sessions: btn('sessions', 'history', 'Recent Sessions'),
+		tools: btn('tools', 'tools', 'Tools &amp; Integrations'),
+		health: btn('health', 'server-environment', 'Workspace Health'),
+		repos: btn('repos', 'git-pull-request', 'Repository PRs'),
+		agent: btn('agent', 'cloud', 'Cloud Agent'),
+		worktrees: btn('worktrees', 'git-branch', 'Worktrees'),
+		insights: btn('insights', 'lightbulb', 'Insights', insightBadge),
+		corrections: correctionsTabButtonHtml(stats.correctionReport),
+	};
+}
+
+/**
+ * Two-level tab strip: a row of group tabs above the leaf tabs of whichever group is showing.
+ *
+ * Only the leaf bar for the active tab's group is rendered visible; the others are laid out but
+ * hidden, so `activateUsageTab` can reveal one without a re-render. Leaf tab ids are untouched —
+ * see the note in tabGroups.ts for why that matters.
+ */
+function buildTabStripHtml(stats: UsageAnalysisStats): string {
+	const buttons = usageLeafTabButtons(stats);
+	const activeGroup = groupOfUsageTab(activeTab);
+	const groupBar = USAGE_TAB_GROUPS.map(group =>
+		`<button class="group-tab ${group.id === activeGroup ? 'active' : ''}" data-group="${group.id}"><span class="codicon codicon-${group.icon}"></span> ${group.label}</button>`
+	).join('\n\t\t\t\t');
+	const leafBars = USAGE_TAB_GROUPS.map(group =>
+		`<div class="tab-bar leaf-tabs" data-group="${group.id}"${group.id === activeGroup ? '' : ' style="display:none"'}>
+				${group.tabs.map(tab => buttons[tab]).join('\n\t\t\t\t')}
+			</div>`
+	).join('\n\t\t\t');
+	return `<div class="tab-bar group-tabs">
+				${groupBar}
+			</div>
+			${leafBars}`;
+}
+
 // ── Skill suggestions (repeated tasks) ──────────────────────────────────────
 
 function buildRepeatedTaskSessionLinkHtml(session: RepeatedTaskSessionRef): string {
@@ -4032,17 +4138,7 @@ function buildUsageRootHtml(
 				</div>
 			</div>
 
-			<div class="tab-bar">
-				<button class="tab-button ${activeTab === 'activity' ? 'active' : ''}" data-tab="activity"><span class="codicon codicon-pulse"></span> My Activity</button>
-				<button class="tab-button ${activeTab === 'sessions' ? 'active' : ''}" data-tab="sessions"><span class="codicon codicon-history"></span> Recent Sessions</button>
-				<button class="tab-button ${activeTab === 'tools' ? 'active' : ''}" data-tab="tools"><span class="codicon codicon-tools"></span> Tools &amp; Integrations</button>
-				<button class="tab-button ${activeTab === 'health' ? 'active' : ''}" data-tab="health"><span class="codicon codicon-server-environment"></span> Workspace Health</button>
-				<button class="tab-button ${activeTab === 'repos' ? 'active' : ''}" data-tab="repos"><span class="codicon codicon-git-pull-request"></span> Repository PRs</button>
-				<button class="tab-button ${activeTab === 'agent' ? 'active' : ''}" data-tab="agent"><span class="codicon codicon-cloud"></span> Cloud Agent</button>
-				<button class="tab-button ${activeTab === 'worktrees' ? 'active' : ''}" data-tab="worktrees"><span class="codicon codicon-git-branch"></span> Worktrees</button>
-				<button class="tab-button ${activeTab === 'insights' ? 'active' : ''}" data-tab="insights"><span class="codicon codicon-lightbulb"></span> Insights${(stats.insights ?? []).filter(i => i.status === 'new').length > 0 ? ` <span style="background:rgba(96,165,250,0.4);border-radius:10px;padding:1px 6px;font-size:11px;">${(stats.insights ?? []).filter(i => i.status === 'new').length}</span>` : ''}</button>
-				${correctionsTabButtonHtml(stats.correctionReport)}
-			</div>
+			${buildTabStripHtml(stats)}
 
 			${safeSectionHtml('Recent Sessions', () => buildSessionsTabPanelHtml(stats))}
 			${safeSectionHtml('My Activity', () => buildActivityTabPanelHtml(stats, multiModelHtml, thinkingEffortHtml, sessionsSummaryHtml, todayTotalRefs, last30DaysTotalRefs))}
@@ -5856,15 +5952,7 @@ function handleToolSuppressed(toolName: string): void {
 }
 
 function handleHighlightUnknownTools(): void {
-	activeTab = 'tools';
-	document.querySelectorAll<HTMLElement>('.tab-button').forEach(btn => {
-		btn.classList.toggle('active', btn.getAttribute('data-tab') === 'tools');
-	});
-	document.querySelectorAll<HTMLElement>('.tab-panel').forEach(panel => {
-		panel.style.display = 'none';
-	});
-	const toolsPanel = document.getElementById('tab-panel-tools');
-	if (toolsPanel) { toolsPanel.style.display = 'block'; }
+	activateUsageTab('tools');
 	const el = document.getElementById('unknown-mcp-tools-section');
 	if (el) {
 		el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -5980,10 +6068,10 @@ function handleSwitchTab(message: any): void {
 	// its loading state the tab bar doesn't exist, so btn.click() below silently no-ops and
 	// the later renderLayout would land on the default tab — swallowing e.g. the worktree
 	// notification's "Show Me" action. With activeTab set, the eventual render honors it.
-	activeTab = tab;
 	pendingTabAnchor = typeof message.anchor === 'string' && message.anchor ? message.anchor : null;
-	const btn = document.querySelector<HTMLButtonElement>(`.tab-button[data-tab="${tab}"]`);
-	btn?.click();
+	// activateUsageTab sets activeTab even when it finds no panel, so a switch that arrives
+	// during the loading state is still honored by the render that follows.
+	activateUsageTab(tab);
 	scrollToPendingTabAnchor();
 }
 

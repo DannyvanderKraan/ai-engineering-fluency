@@ -27,7 +27,7 @@ The shared nav row (`src/webview/shared/buttonConfig.ts`, `NAV_ORDER`) is the ca
 |---|---|---|---|
 | Details | `details` | — | What are my raw token/cost numbers right now? |
 | Token Usage Over Time | `chart` | — | How has that moved over time? |
-| **Usage Analysis** | `usage` | **9 tabs** | How do I actually work with AI, and what does it cost? |
+| **Usage Analysis** | `usage` | 4 groups → 9 tabs | How do I actually work with AI, and what does it cost? |
 | Fluency Score | `maturity` | — | How mature is my AI engineering practice? |
 | Efficiency | `efficiency` | 8 tabs | Am I getting more output per dollar over time? |
 | Environmental Impact | `environmental` | — | What is the energy/water/carbon footprint? |
@@ -42,30 +42,45 @@ opened from the Fluency Score view), and **What's New** (`whatsnew`, opened on u
 
 ### Usage Analysis (`usage`) — the big one
 
-Nine tabs. Tab strip built in `buildUsageRootHtml`; each tab panel gets its own
-`build*TabPanelHtml` function.
+Nine tabs under four group tabs. The group strip and leaf strips are built by
+`buildTabStripHtml`; `USAGE_TAB_GROUPS` in `usage/tabGroups.ts` owns the mapping, and each tab
+panel gets its own `build*TabPanelHtml` function.
 
-| Tab | Content blocks | Band |
+Leaf tab ids are deliberately unchanged from the flat nine-tab strip: they are the
+`viewTabOpened` telemetry key, the persisted `activeTab`, the `switchTab` message payload, and
+the target of the What's New view's "Take me there" deep links. Grouping them is chrome;
+renaming them would be a migration.
+
+| Group | Tab | Content blocks |
 |---|---|---|
-| **My Activity** | Sessions Summary · Interaction Modes | 📊 Overview |
-| | AI Billing Coverage · Model Cost Usage · Multi-Model Usage · Local Model Leaderboard · Thinking Effort (Reasoning) | 💵 Spend & models |
-| | Context References · Context Window & Long-Context Pricing (incl. context compaction) | 🧠 Context |
-| **Recent Sessions** | Lookback selector · filter pills · sessions table (sortable, configurable columns) |
-| **Tools & Integrations** | Tool Usage (3 periods) · Multi-Model Usage · MCP Tools · Tool Curation · unknown-tool banner |
-| **Workspace Health** | Copilot Customization Files matrix |
-| **Repository PRs** | AI Activity in Repository PRs |
-| **Cloud Agent** | Copilot Cloud Agent Sessions |
-| **Worktrees** | scan controls · roots list · progress · results table |
-| **Insights** | Insight cards (new/acted/dismissed) |
-| **Corrections** | Corrections report · Skill Suggestions (repeated-task clusters) |
+| 📊 **Usage** | **My Activity** | *(three bands — see below)* |
+| | **Recent Sessions** | Lookback selector · filter pills · sessions table (sortable, configurable columns) |
+| 📁 **Workspace** | **Tools & Integrations** | Tool Usage (3 periods) · Multi-Model Usage · MCP Tools · Tool Curation · unknown-tool banner |
+| | **Workspace Health** | Copilot Customization Files matrix |
+| | **Worktrees** | scan controls · roots list · progress · results table |
+| 🐙 **GitHub** | **Repository PRs** | AI Activity in Repository PRs |
+| | **Cloud Agent** | Copilot Cloud Agent Sessions |
+| 🎓 **Coaching** | **Insights** | Insight cards (new/acted/dismissed) |
+| | **Corrections** | Corrections report · Skill Suggestions (repeated-task clusters) |
 
-The **bands** in the My Activity column are section-group headings
-(`sectionGroupHeadingHtml`), not tabs — see [Grouping rules](#grouping-rules) below.
+The **My Activity** tab is itself banded, via section-group headings
+(`sectionGroupHeadingHtml`) rather than further tabs:
+
+| Band | Sections |
+|---|---|
+| 📊 Overview | Sessions Summary · Interaction Modes |
+| 💵 Spend & models | AI Billing Coverage · Model Cost Usage · Multi-Model Usage · Local Model Leaderboard · Thinking Effort (Reasoning) |
+| 🧠 Context | Context References · Context Window & Long-Context Pricing (incl. context compaction) |
+
+All tab switching goes through one `activateUsageTab()`, whether the user clicked a tab, the
+host sent a `switchTab` message, or the unknown-tool banner jumped here. Revealing the owning
+group, the active markers, the panel, the telemetry ping and the first-visit lazy loads all live
+there once, so a new entry point cannot implement half of it.
 
 ### Diagnostics (`diagnostics`)
 
-The only view that already models the hierarchy explicitly, with a **group tab → leaf tab**
-strip. This is the pattern to copy when a view outgrows one row of tabs.
+The view this pattern came from: a **group tab → leaf tab** strip, now shared with Usage
+Analysis. Copy it when a view outgrows one row of tabs.
 
 | Group | Leaf tabs |
 |---|---|
@@ -108,8 +123,13 @@ no tab id. That is the point: it is the one regrouping that costs nothing to try
 ### 2. Leaf tabs under a group tab — the Diagnostics pattern
 
 Use it when a view's tab strip **wraps or exceeds ~8 tabs** and the tabs fall into groups a
-reader picks between before picking a tab. Costs a tab-state migration and new
-`reportTabOpened` ids, so it is not free — but it is what keeps Diagnostics' 14 tabs legible.
+reader picks between before picking a tab. It is what keeps Diagnostics' 14 tabs and Usage
+Analysis' 9 legible.
+
+Keep the leaf tab ids exactly as they were and this costs no migration at all: the persisted
+`activeTab`, the `viewTabOpened` telemetry and any deep links keep working, and the owning group
+is derived from the tab rather than stored alongside it. Renaming leaf ids is what would be
+expensive — so don't, unless the rename is the point.
 
 ### 3. A new view
 
