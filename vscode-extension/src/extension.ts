@@ -4209,6 +4209,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 				'efficiency.horizon.range26w': l10n.t('efficiency.horizon.range26w'),
 				'efficiency.horizon.range52w': l10n.t('efficiency.horizon.range52w'),
 				'efficiency.week.editTurns': l10n.t('efficiency.week.editTurns'),
+			'efficiency.week.sessionEquivalents': l10n.t('efficiency.week.sessionEquivalents'),
 		};
 	}
 

@@ -344,6 +344,7 @@ test('l10n: Efficiency horizon and week drill-down labels resolve in English', (
 		'efficiency.horizon.range26w': '26 weeks',
 		'efficiency.horizon.range52w': '52 weeks',
 		'efficiency.week.editTurns': 'Edit turns',
+		'efficiency.week.sessionEquivalents': 'Session equivalents',
 	};
 	for (const [key, english] of Object.entries(expected)) {
 		assert.equal(t(key), english, `English value for ${key}`);
@@ -395,6 +396,7 @@ test('l10n: Efficiency horizon and week drill-down labels resolve in zh-cn', () 
 			'efficiency.horizon.range26w': '26 周',
 			'efficiency.horizon.range52w': '52 周',
 			'efficiency.week.editTurns': '编辑轮次',
+			'efficiency.week.sessionEquivalents': '等效会话数',
 		};
 		for (const [key, chinese] of Object.entries(expected)) {
 			assert.equal(t(key), chinese, `zh-cn value for ${key}`);

@@ -106,6 +106,7 @@ export interface WebviewLocalization {
 	'efficiency.horizon.range26w': string;
 	'efficiency.horizon.range52w': string;
 	'efficiency.week.editTurns': string;
+	'efficiency.week.sessionEquivalents': string;
 	// HydraFusion Routing section (log viewer) and its Session Steps Overview integration
 	'hydrafusion.table.cost': string;
 	'hydrafusion.turn.costTooltip': string;
@@ -213,6 +214,7 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'efficiency.horizon.range26w': '26 weeks',
 	'efficiency.horizon.range52w': '52 weeks',
 	'efficiency.week.editTurns': 'Edit turns',
+	'efficiency.week.sessionEquivalents': 'Session equivalents',
 	'hydrafusion.table.cost': 'Cost',
 	'hydrafusion.turn.costTooltip': 'Cost for this turn',
 	'hydrafusion.turn.jumpToStepTooltip': 'Jump to step #{0} in the Session Steps Overview below',

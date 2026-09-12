@@ -1164,6 +1164,8 @@ export interface ModelPeriodMetrics {
 	sessions: number;
 	/** Token-weighted session equivalents — the denominator for per-session ratios. */
 	sessionShare: number;
+	/** Session equivalents that carried net active-duration data — the denominator of `activeMinutesPerSession`. */
+	durationSessionShare: number;
 	calls: number;
 	editTurns: number;
 	tokens: number;
@@ -1270,6 +1272,7 @@ export function computeModelPeriodMetrics(days: ModelDailyInput[], model: string
 		periodLabel,
 		sessions: totals.sessions,
 		sessionShare: totals.sessionShare,
+		durationSessionShare: totals.durationSessionShare,
 		calls: totals.calls,
 		editTurns: totals.editTurns,
 		tokens,
@@ -1692,6 +1695,9 @@ function modelWeekCaveats(
 	// The week's own disclosure applies whether or not the model was used in it.
 	if (!metrics) { return partialNote; }
 	const caveats = [...modelSampleCaveats(metrics)];
+	// Without this the reader cannot tell whether a missing active-minutes figure
+	// means "no duration data" or "the ratio was suppressed".
+	caveats.push(`${metrics.durationSessionShare.toFixed(1)} of ${metrics.sessionShare.toFixed(1)} session equivalents carried net active-duration data.`);
 	if (isMixedModelHeavy(metrics)) { caveats.push(MIXED_MODEL_CAVEAT); }
 	if (prior) {
 		const divergence = taskMixDivergence(metrics.taskMix, prior.taskMix);

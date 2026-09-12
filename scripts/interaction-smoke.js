@@ -411,7 +411,12 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
 
   for (let cursor = 0; cursor < queue.length; cursor++) {
     const { control, run } = queue[cursor];
-    if (isolate && results.length > 0) {
+    // `--isolate` reloads between *clicks* to stop one click polluting the next.
+    // A queued dropdown is different: it was only reachable because an earlier
+    // click navigated there, so reloading first would drop it back to the
+    // fixture's default tab and record it as skipped — silently un-testing the
+    // controls this mode is meant to exercise most thoroughly.
+    if (isolate && results.length > 0 && control.tag !== 'select') {
       await page.close();
       page = await openPage(browser, pageFile, view, defaults);
       await page.evaluate(TAG_CONTROLS, INTERACTIVE_SELECTOR);

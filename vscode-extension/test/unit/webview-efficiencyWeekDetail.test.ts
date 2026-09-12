@@ -267,8 +267,26 @@ test('renderModelWeekDetail: describes every compared model, so a click on eithe
 	// One live region, one block per model.
 	assert.equal(html.match(/id="eff-week-detail"/g)?.length, 1);
 	assert.equal(html.match(/class="week-model-block"/g)?.length, 2);
-	// Raw volume includes the edit turns backing the turn-based ratios.
+	// Raw volume distinguishes the model's user-request turns from its edit turns,
+	// and reports session *equivalents* — `sessions` over-counts multi-model
+	// sessions, so it would contradict the ratios that divide by sessionShare.
+	assert.ok(html.includes('Turns'));
 	assert.ok(html.includes('Edit turns'));
+	assert.ok(html.includes('Session equivalents'));
+	assert.ok(!html.includes('>Sessions<'), 'raw model sessions must not be shown as a plain session count');
+});
+
+test('renderModelWeekDetail: discloses how much of the sample carried duration data', () => {
+	const days = [modelDay('2026-07-14', {
+		kimi: { sessions: 6, sessionShare: 6, calls: 40, editTurns: 20, durationSessionShare: 2,
+			inputTokens: 90_000, outputTokens: 10_000, cost: 4 },
+	})];
+	const html = renderModelWeekDetail([
+		buildModelWeekDetail(buildModelWeeklySeries(days, 'kimi', NOW, 12), 'kimi', '2026-07-13', NOW),
+	]);
+	// Otherwise a missing active-minutes value is indistinguishable from a
+	// suppressed one.
+	assert.ok(html.includes('2.0 of 6.0 session equivalents carried net active-duration data.'), html);
 });
 
 test('renderModelWeekDetail: no models selected falls back to the empty region', () => {

@@ -287,9 +287,15 @@ function modelWeekBody(detail: ModelWeekDetail): string {
 	const unused = detail.metrics === null
 		? `<p class="eff-section-note">${escapeHtml(localizeFormat('efficiency.week.modelUnused', detail.displayName))}</p>`
 		: '';
+	// `sessions` deliberately over-counts a session that used several models (it
+	// adds 1 to each), so showing it as a session count would contradict the
+	// ratios below, which all divide by `sessionShare`. `calls` is the model's
+	// user-request turn count — the same quantity the other tabs label "Turns" —
+	// and `editTurns` is kept beside it as the volume behind the edit-based rates.
 	const volume = detail.metrics === null ? '' : rawVolumeBlock([
-		{ label: localize('efficiency.week.sessions'), value: formatCompact(detail.metrics.sessions) },
+		{ label: localize('efficiency.week.sessionEquivalents'), value: detail.metrics.sessionShare.toFixed(1) },
 		{ label: localize('efficiency.week.tokens'), value: formatCompact(detail.metrics.tokens) },
+		{ label: localize('efficiency.week.turns'), value: formatCompact(detail.metrics.calls) },
 		{ label: localize('efficiency.week.editTurns'), value: formatCompact(detail.metrics.editTurns) },
 		{ label: localize('efficiency.week.loc'), value: formatCompact(detail.metrics.loc) },
 		{ label: localize('efficiency.week.cost'), value: `$${detail.metrics.cost.toFixed(2)}` },
