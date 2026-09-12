@@ -17,9 +17,18 @@ import {
 	resolveModelCompareWindow,
 	selectDaysInWindow,
 	windowHasModelData,
+	aggregateCombinedWeekly,
+	buildCombinedDaily,
+	listCombinedFacets,
+	reconcileCombinedFilter,
+	summarizeCombinedSelection,
+	COMBINED_FILTER_ALL,
+	UNFILTERED_COMBINED,
+	type CombinedFilter,
 	type EfficiencyDeps,
 	type EfficiencySessionInput,
 } from '../../../src/efficiencyAnalysis';
+import { getCanonicalModelId, UNCLASSIFIED_VENDOR, UNKNOWN_MODEL_ID } from '../../../src/webview/shared/modelUtils';
 import { createEmptyDailyModelEfficiencyEntry } from '../../../src/modelEfficiency';
 import type { DailyModelEfficiency, DailyModelEfficiencyEntry, DailyTokenStats, ModelUsage, UsageAnalysisPeriod } from '../../../src/types';
 
@@ -778,4 +787,282 @@ test('windowHasModelData: true when at least one day in the window has per-model
 test('windowHasModelData: ignores data outside the window bounds', () => {
 	const days = [modelDay('2026-06-01', { 'gpt-4o': {} })];
 	assert.equal(windowHasModelData(days, resolveModelCompareWindow('thisMonth', NOW)), false);
+});
+
+// ── Combined-chart filters (vendor × model × editor) ─────────────────────────
+
+/** Prices Opus at 4× the flat rate, so cost attribution can be told apart from token share. */
+const combinedDeps: EfficiencyDeps = {
+	calculateEstimatedCost: (mu: ModelUsage) => {
+		let cost = 0;
+		for (const [model, u] of Object.entries(mu)) {
+			const rate = model.includes('opus') ? 40 : 10;
+			cost += ((u.inputTokens + u.outputTokens) / 1_000_000) * rate;
+		}
+		return cost;
+	},
+	now: NOW,
+};
+
+function modelUsageOf(entries: [string, number, number][]): ModelUsage {
+	const usage: ModelUsage = {};
+	for (const [model, inputTokens, outputTokens] of entries) {
+		usage[model] = { inputTokens, outputTokens, sessions: 1 };
+	}
+	return usage;
+}
+
+/**
+ * Two weeks of activity across three editors and five models, including one
+ * mixed-model session (gpt-5 + claude-sonnet-4.5), one session on an
+ * unclassifiable model, and one session that names no model at all.
+ */
+function combinedFixture(): { days: DailyTokenStats[]; sessions: EfficiencySessionInput[] } {
+	const days: DailyTokenStats[] = [
+		day('2026-07-06', {
+			tokens: 100_000, sessions: 3, interactions: 30, linesAdded: 160, linesRemoved: 40,
+			modelUsage: modelUsageOf([['gpt-5', 30_000, 6_000], ['claude-sonnet-4.5', 20_000, 4_000], ['claude-opus-4.8', 33_000, 7_000]]),
+			editorUsage: {
+				'VS Code': { tokens: 60_000, sessions: 2, linesAdded: 100, linesRemoved: 20 },
+				'Claude Code': { tokens: 40_000, sessions: 1, linesAdded: 60, linesRemoved: 20 },
+			},
+			editorModelUsage: {
+				'VS Code': modelUsageOf([['gpt-5', 30_000, 6_000], ['claude-sonnet-4.5', 20_000, 4_000]]),
+				'Claude Code': modelUsageOf([['claude-opus-4.8', 33_000, 7_000]]),
+			},
+		}),
+		day('2026-07-08', {
+			tokens: 50_000, sessions: 1, interactions: 12, linesAdded: 40, linesRemoved: 10,
+			modelUsage: modelUsageOf([['copilot/claude-opus-4-8', 40_000, 8_000]]),
+			editorUsage: { 'Claude Code': { tokens: 50_000, sessions: 1, linesAdded: 40, linesRemoved: 10 } },
+			editorModelUsage: { 'Claude Code': modelUsageOf([['copilot/claude-opus-4-8', 40_000, 8_000]]) },
+		}),
+		day('2026-07-13', {
+			tokens: 20_000, sessions: 1, interactions: 6, linesAdded: 25, linesRemoved: 5,
+			modelUsage: modelUsageOf([['acme-internal-v2', 15_000, 3_000]]),
+			editorUsage: { 'Copilot CLI': { tokens: 20_000, sessions: 1, linesAdded: 25, linesRemoved: 5 } },
+			editorModelUsage: { 'Copilot CLI': modelUsageOf([['acme-internal-v2', 15_000, 3_000]]) },
+		}),
+		day('2026-07-14', {
+			tokens: 8_000, sessions: 1, interactions: 4,
+			modelUsage: {},
+			editorUsage: { 'VS Code': { tokens: 8_000, sessions: 1 } },
+			editorModelUsage: { 'VS Code': {} },
+		}),
+	];
+	const sessions: EfficiencySessionInput[] = [
+		{
+			dayKey: '2026-07-06', editor: 'VS Code',
+			modelShares: { 'gpt-5': 36_000, 'claude-sonnet-4.5': 24_000 },
+			modelEditTurns: { 'gpt-5': 7, 'claude-sonnet-4.5': 3 },
+			modelRetries: { 'gpt-5': 2, 'claude-sonnet-4.5': 1 },
+			activeDurationMs: 600_000, editTurns: 10, retries: 3, applies: 4, codeBlocks: 8, interactions: 18,
+		},
+		{
+			dayKey: '2026-07-06', editor: 'Claude Code',
+			modelShares: { 'claude-opus-4.8': 40_000 },
+			modelEditTurns: { 'claude-opus-4.8': 6 }, modelRetries: { 'claude-opus-4.8': 1 },
+			activeDurationMs: 300_000, editTurns: 6, retries: 1, applies: 2, codeBlocks: 5, interactions: 12,
+		},
+		{
+			dayKey: '2026-07-08', editor: 'Claude Code',
+			modelShares: { 'copilot/claude-opus-4-8': 48_000 },
+			modelEditTurns: { 'copilot/claude-opus-4-8': 5 }, modelRetries: { 'copilot/claude-opus-4-8': 2 },
+			activeDurationMs: 420_000, editTurns: 5, retries: 2, applies: 3, codeBlocks: 6, interactions: 12,
+		},
+		{
+			dayKey: '2026-07-13', editor: 'Copilot CLI',
+			modelShares: { 'acme-internal-v2': 18_000 },
+			modelEditTurns: { 'acme-internal-v2': 4 }, modelRetries: { 'acme-internal-v2': 1 },
+			activeDurationMs: 240_000, editTurns: 4, retries: 1, applies: 1, codeBlocks: 4, interactions: 6,
+		},
+		// Names no model at all: it must still be visible, under the unknown bucket.
+		{ dayKey: '2026-07-14', editor: 'VS Code', activeDurationMs: 120_000, editTurns: 2, retries: 0, applies: 1, codeBlocks: 2, interactions: 4 },
+	];
+	return { days, sessions };
+}
+
+/** Equality that tolerates the last bits of floating-point noise from share maths. */
+function assertClose(actual: number | null, expected: number | null, what: string): void {
+	if (actual === null || expected === null) {
+		assert.equal(actual, expected, what);
+		return;
+	}
+	assert.ok(Math.abs(actual - expected) <= Math.max(1e-9, Math.abs(expected) * 1e-9), `${what}: ${actual} vs ${expected}`);
+}
+
+const WEEK_NUMERIC_FIELDS = [
+	'sessions', 'tokens', 'cost', 'loc', 'interactions', 'tokensPerSession', 'turnsPerSession',
+	'costPerKloc', 'locPerDollar', 'activeMinutesPerSession', 'retryRate', 'applyRate',
+	'durationSessions', 'editTurns',
+] as const;
+
+test('buildCombinedDaily: All/All/All reproduces the unfiltered weekly series exactly', () => {
+	const { days, sessions } = combinedFixture();
+	const expected = buildEfficiencyTrends(days, sessions, combinedDeps);
+	const actual = aggregateCombinedWeekly(buildCombinedDaily(days, sessions, combinedDeps), UNFILTERED_COMBINED, NOW);
+
+	assert.equal(actual.length, expected.length);
+	for (let i = 0; i < expected.length; i++) {
+		assert.equal(actual[i].weekKey, expected[i].weekKey);
+		assert.equal(actual[i].label, expected[i].label);
+		for (const field of WEEK_NUMERIC_FIELDS) {
+			assertClose(actual[i][field], expected[i][field], `${expected[i].weekKey}.${field}`);
+		}
+	}
+});
+
+test('buildCombinedDaily: mutually exclusive model slices sum back to the all-model totals', () => {
+	const { days, sessions } = combinedFixture();
+	const points = buildCombinedDaily(days, sessions, combinedDeps);
+	const models = listCombinedFacets(points, UNFILTERED_COMBINED).models.map(m => m.value);
+	// The fixture's mixed-model session is the whole point: naive per-model
+	// re-aggregation would count it once per model and inflate every total.
+	assert.ok(models.length >= 4, `expected several models, got ${models.join(', ')}`);
+
+	const all = aggregateCombinedWeekly(points, UNFILTERED_COMBINED, NOW);
+	const slices = models.map(model => aggregateCombinedWeekly(points, { ...UNFILTERED_COMBINED, model }, NOW));
+
+	for (let i = 0; i < all.length; i++) {
+		for (const field of ['sessions', 'tokens', 'cost', 'loc', 'interactions', 'editTurns', 'durationSessions'] as const) {
+			const summed = slices.reduce((sum, slice) => sum + slice[i][field], 0);
+			assertClose(summed, all[i][field], `${all[i].weekKey}.${field}`);
+		}
+	}
+});
+
+test('buildCombinedDaily: editor slices also sum back to the all-editor totals', () => {
+	const { days, sessions } = combinedFixture();
+	const points = buildCombinedDaily(days, sessions, combinedDeps);
+	const editors = listCombinedFacets(points, UNFILTERED_COMBINED).editors.map(e => e.value);
+	const all = aggregateCombinedWeekly(points, UNFILTERED_COMBINED, NOW);
+	const slices = editors.map(editor => aggregateCombinedWeekly(points, { ...UNFILTERED_COMBINED, editor }, NOW));
+	for (let i = 0; i < all.length; i++) {
+		for (const field of ['sessions', 'tokens', 'cost', 'loc', 'editTurns'] as const) {
+			assertClose(slices.reduce((sum, s) => sum + s[i][field], 0), all[i][field], `${all[i].weekKey}.${field}`);
+		}
+	}
+});
+
+test('buildCombinedDaily: cost follows each model’s price, not just its token share', () => {
+	const { days, sessions } = combinedFixture();
+	const points = buildCombinedDaily(days, sessions, combinedDeps);
+	const week = (filter: Partial<CombinedFilter>) =>
+		aggregateCombinedWeekly(points, { ...UNFILTERED_COMBINED, ...filter }, NOW).find(w => w.weekKey === '2026-07-06')!;
+	const opus = week({ model: 'claude-opus-4.8' });
+	const sonnet = week({ model: 'claude-sonnet-4.5' });
+	// Opus is priced 4× higher than Sonnet, so its cost per token has to come out
+	// that much higher — a purely token-proportional split would flatten them.
+	const opusRate = opus.cost / opus.tokens;
+	const sonnetRate = sonnet.cost / sonnet.tokens;
+	assert.ok(opusRate / sonnetRate > 3, `expected the price gap to show: ${opusRate} vs ${sonnetRate}`);
+});
+
+test('buildCombinedDaily: aliases and wrapper ids land in one model slice', () => {
+	const { days, sessions } = combinedFixture();
+	const points = buildCombinedDaily(days, sessions, combinedDeps);
+	const models = listCombinedFacets(points, UNFILTERED_COMBINED).models.map(m => m.value);
+	// `claude-opus-4.8` and `copilot/claude-opus-4-8` are the same model.
+	assert.equal(models.filter(m => m.includes('opus')).length, 1, models.join(', '));
+	const opus = aggregateCombinedWeekly(points, { ...UNFILTERED_COMBINED, model: getCanonicalModelId('copilot/claude-opus-4-8') }, NOW);
+	assert.ok(opus.some(w => w.weekKey === '2026-07-06' && w.tokens > 0), 'first week of opus usage');
+	assert.ok(opus.some(w => w.weekKey === '2026-07-06' && w.editTurns > 0), 'opus edit turns');
+});
+
+test('buildCombinedDaily: unclassifiable models and model-less sessions stay visible', () => {
+	const { days, sessions } = combinedFixture();
+	const points = buildCombinedDaily(days, sessions, combinedDeps);
+	const vendors = listCombinedFacets(points, UNFILTERED_COMBINED).vendors.map(v => v.value);
+	assert.ok(vendors.includes(UNCLASSIFIED_VENDOR), vendors.join(', '));
+
+	const unclassified = aggregateCombinedWeekly(points, { ...UNFILTERED_COMBINED, vendor: UNCLASSIFIED_VENDOR }, NOW);
+	const total = unclassified.reduce((sum, w) => sum + w.tokens, 0);
+	// The acme model (20k) plus the session that named no model (8k).
+	assertClose(total, 28_000, 'unclassified tokens');
+	const models = listCombinedFacets(points, { ...UNFILTERED_COMBINED, vendor: UNCLASSIFIED_VENDOR }).models.map(m => m.value);
+	assert.deepEqual(models.sort(), ['acme-internal-v2', UNKNOWN_MODEL_ID].sort());
+});
+
+test('listCombinedFacets: each control is faceted by the other two selections', () => {
+	const { days, sessions } = combinedFixture();
+	const points = buildCombinedDaily(days, sessions, combinedDeps);
+
+	const forAnthropic = listCombinedFacets(points, { ...UNFILTERED_COMBINED, vendor: 'Anthropic' });
+	assert.deepEqual(forAnthropic.editors.map(e => e.value).sort(), ['Claude Code', 'VS Code']);
+	assert.ok(forAnthropic.models.every(m => m.value.includes('claude')), forAnthropic.models.map(m => m.value).join(', '));
+	// A dimension never facets itself away, or picking a vendor would hide the rest.
+	assert.ok(forAnthropic.vendors.length > 1, 'vendor options stay complete');
+
+	const forClaudeCode = listCombinedFacets(points, { ...UNFILTERED_COMBINED, editor: 'Claude Code' });
+	assert.deepEqual(forClaudeCode.models.map(m => m.value), ['claude-opus-4.8']);
+	assert.deepEqual(forClaudeCode.vendors.map(v => v.value), ['Anthropic']);
+});
+
+test('reconcileCombinedFilter: drops only the selections the facets no longer offer', () => {
+	const { days, sessions } = combinedFixture();
+	const points = buildCombinedDaily(days, sessions, combinedDeps);
+	// The user just picked the editor; the model no longer exists there, but the
+	// vendor still does and must survive.
+	const reconciled = reconcileCombinedFilter(points, { vendor: 'Anthropic', model: 'gpt-5', editor: 'Claude Code' }, 'editor');
+	assert.deepEqual(reconciled, { vendor: 'Anthropic', model: COMBINED_FILTER_ALL, editor: 'Claude Code' });
+
+	const valid = { vendor: 'Anthropic', model: 'claude-opus-4.8', editor: 'Claude Code' };
+	assert.deepEqual(reconcileCombinedFilter(points, valid, 'editor'), valid);
+
+	// Picking a vendor that exists nowhere near the other two selections keeps
+	// only what the user actually chose, instead of showing an empty chart.
+	assert.deepEqual(
+		reconcileCombinedFilter(points, { vendor: UNCLASSIFIED_VENDOR, model: 'claude-opus-4.8', editor: 'Claude Code' }, 'vendor'),
+		{ vendor: UNCLASSIFIED_VENDOR, model: COMBINED_FILTER_ALL, editor: COMBINED_FILTER_ALL },
+	);
+});
+
+test('summarizeCombinedSelection: empty and low-sample selections are called out, not drawn as zero', () => {
+	const { days, sessions } = combinedFixture();
+	const points = buildCombinedDaily(days, sessions, combinedDeps);
+
+	const impossible = summarizeCombinedSelection(points, { vendor: 'Anthropic', model: COMBINED_FILTER_ALL, editor: 'Copilot CLI' }, NOW);
+	assert.equal(impossible.empty, true);
+	assert.equal(impossible.activeWeeks, 0);
+
+	const thin = summarizeCombinedSelection(points, { ...UNFILTERED_COMBINED, vendor: UNCLASSIFIED_VENDOR }, NOW);
+	assert.equal(thin.empty, false);
+	assert.equal(thin.lowSample, true, `sessions=${thin.sessions} editTurns=${thin.editTurns}`);
+
+	const everything = summarizeCombinedSelection(points, UNFILTERED_COMBINED, NOW);
+	assert.equal(everything.empty, false);
+	assert.ok(everything.activeWeeks >= 2, `active weeks: ${everything.activeWeeks}`);
+});
+
+test('aggregateCombinedWeekly: the retry-rate sample gate survives filtering', () => {
+	const { days, sessions } = combinedFixture();
+	const points = buildCombinedDaily(days, sessions, combinedDeps);
+	const sonnet = aggregateCombinedWeekly(points, { ...UNFILTERED_COMBINED, model: 'claude-sonnet-4.5' }, NOW)
+		.find(w => w.weekKey === '2026-07-06')!;
+	// 3 edit turns is below the weekly floor, so the ratio is withheld rather than
+	// reported from a sample that cannot support it.
+	assertClose(sonnet.editTurns, 3, 'sonnet edit turns');
+	assert.equal(sonnet.retryRate, null);
+
+	const opus = aggregateCombinedWeekly(points, { ...UNFILTERED_COMBINED, model: 'claude-opus-4.8' }, NOW)
+		.find(w => w.weekKey === '2026-07-06')!;
+	// Both Opus sessions of that week (6 + 5 edit turns) clear the floor.
+	assertClose(opus.editTurns, 11, 'opus edit turns');
+	assert.ok(opus.retryRate !== null && opus.retryRate > 0, 'opus retry rate is reported');
+});
+
+test('buildCombinedDaily: keeps only the trailing window and no per-session detail', () => {
+	const { days, sessions } = combinedFixture();
+	const stale = day('2026-01-05', {
+		tokens: 999, sessions: 1, interactions: 1,
+		modelUsage: modelUsageOf([['gpt-5', 900, 99]]),
+		editorUsage: { 'VS Code': { tokens: 999, sessions: 1 } },
+		editorModelUsage: { 'VS Code': modelUsageOf([['gpt-5', 900, 99]]) },
+	});
+	const points = buildCombinedDaily([stale, ...days], sessions, combinedDeps);
+	assert.ok(points.every(p => p.date >= '2026-04-27'), points.map(p => p.date).join(', '));
+	// The payload is cells, not sessions: nothing identifying a session survives.
+	const keys = new Set(points.flatMap(p => p.cells.flatMap(c => Object.keys(c))));
+	assert.equal(keys.has('sessionId'), false);
+	assert.equal(keys.has('path'), false);
 });

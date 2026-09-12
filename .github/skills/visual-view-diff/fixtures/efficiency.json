@@ -99,17 +99,29 @@
     "modelShifts": [
       {
         "model": "claude-sonnet-4.5",
-        "deltaShare": 0.18
+        "deltaShare": 0.18,
+        "displayName": "Claude Sonnet 4.5",
+        "prevShare": 0.24,
+        "curShare": 0.42,
+        "prevTokens": 936000,
+        "curTokens": 1869000
       },
       {
         "model": "gpt-4o",
-        "deltaShare": -0.11
+        "deltaShare": -0.11,
+        "displayName": "GPT-4o",
+        "prevShare": 0.37,
+        "curShare": 0.26,
+        "prevTokens": 1443000,
+        "curTokens": 1157000
       }
     ]
   },
   "attributionWindows": {
     "prev": "Jan 12 – Feb 8",
-    "cur": "Feb 9 – Mar 8"
+    "cur": "Feb 9 – Mar 8",
+    "prevRange": "Jan 12, 2026–Feb 8, 2026",
+    "curRange": "Feb 9, 2026–Mar 8, 2026"
   },
   "deltas": [
     {
@@ -257,5 +269,141 @@
     "tokensWritten": 15892222,
     "peakContextTokens": 9264875,
     "worstRewriteFactor": 6.26
-  }
+  },
+  "modelDaily": [],
+  "hasModelComparison": false,
+  "combinedDaily": [
+    {
+      "date": "2025-12-24",
+      "cells": [
+        { "editor": "VS Code", "model": "gpt-5", "vendor": "OpenAI", "tokens": 175500, "sessions": 4.5, "cost": 1.404, "loc": 270.0, "interactions": 32.0, "activeDurationMs": 5460000, "durationSessions": 4.5, "editTurns": 26.0, "retries": 5.72, "applies": 14.0, "codeBlocks": 20.0 },
+        { "editor": "VS Code", "model": "claude-sonnet-4.5", "vendor": "Anthropic", "tokens": 122850, "sessions": 3.15, "cost": 0.983, "loc": 189.0, "interactions": 22.4, "activeDurationMs": 3822000, "durationSessions": 3.15, "editTurns": 18.2, "retries": 4.0, "applies": 9.8, "codeBlocks": 14.0 },
+        { "editor": "VS Code", "model": "gemini-2.5-pro", "vendor": "Google", "tokens": 61425, "sessions": 1.57, "cost": 0.491, "loc": 94.5, "interactions": 11.2, "activeDurationMs": 1911000, "durationSessions": 1.57, "editTurns": 9.1, "retries": 2.0, "applies": 4.9, "codeBlocks": 7.0 },
+        { "editor": "Claude Code", "model": "claude-opus-4.8", "vendor": "Anthropic", "tokens": 140400, "sessions": 3.6, "cost": 1.966, "loc": 216.0, "interactions": 25.6, "activeDurationMs": 4368000, "durationSessions": 3.6, "editTurns": 20.8, "retries": 4.58, "applies": 11.2, "codeBlocks": 16.0 },
+        { "editor": "Copilot CLI", "model": "gpt-5", "vendor": "OpenAI", "tokens": 52650, "sessions": 1.35, "cost": 0.421, "loc": 81.0, "interactions": 9.6, "activeDurationMs": 1638000, "durationSessions": 1.35, "editTurns": 7.8, "retries": 1.72, "applies": 4.2, "codeBlocks": 6.0 },
+        { "editor": "Copilot CLI", "model": "acme-internal-v2", "vendor": "Unclassified", "tokens": 21060, "sessions": 0.54, "cost": 0.168, "loc": 32.4, "interactions": 3.8, "activeDurationMs": 655200, "durationSessions": 0.54, "editTurns": 3.1, "retries": 0.69, "applies": 1.7, "codeBlocks": 2.4 }
+      ]
+    },
+    {
+      "date": "2025-12-31",
+      "cells": [
+        { "editor": "VS Code", "model": "gpt-5", "vendor": "OpenAI", "tokens": 170775, "sessions": 4.5, "cost": 1.366, "loc": 288.0, "interactions": 32.0, "activeDurationMs": 5313000, "durationSessions": 4.5, "editTurns": 26.0, "retries": 5.51, "applies": 14.0, "codeBlocks": 20.0 },
+        { "editor": "VS Code", "model": "claude-sonnet-4.5", "vendor": "Anthropic", "tokens": 119543, "sessions": 3.15, "cost": 0.956, "loc": 201.6, "interactions": 22.4, "activeDurationMs": 3719100, "durationSessions": 3.15, "editTurns": 18.2, "retries": 3.86, "applies": 9.8, "codeBlocks": 14.0 },
+        { "editor": "VS Code", "model": "gemini-2.5-pro", "vendor": "Google", "tokens": 59771, "sessions": 1.57, "cost": 0.478, "loc": 100.8, "interactions": 11.2, "activeDurationMs": 1859550, "durationSessions": 1.57, "editTurns": 9.1, "retries": 1.93, "applies": 4.9, "codeBlocks": 7.0 },
+        { "editor": "Claude Code", "model": "claude-opus-4.8", "vendor": "Anthropic", "tokens": 136620, "sessions": 3.6, "cost": 1.913, "loc": 230.4, "interactions": 25.6, "activeDurationMs": 4250400, "durationSessions": 3.6, "editTurns": 20.8, "retries": 4.41, "applies": 11.2, "codeBlocks": 16.0 },
+        { "editor": "Copilot CLI", "model": "gpt-5", "vendor": "OpenAI", "tokens": 51233, "sessions": 1.35, "cost": 0.41, "loc": 86.4, "interactions": 9.6, "activeDurationMs": 1593900, "durationSessions": 1.35, "editTurns": 7.8, "retries": 1.65, "applies": 4.2, "codeBlocks": 6.0 },
+        { "editor": "Copilot CLI", "model": "acme-internal-v2", "vendor": "Unclassified", "tokens": 20493, "sessions": 0.54, "cost": 0.164, "loc": 34.6, "interactions": 3.8, "activeDurationMs": 637560, "durationSessions": 0.54, "editTurns": 3.1, "retries": 0.66, "applies": 1.7, "codeBlocks": 2.4 }
+      ]
+    },
+    {
+      "date": "2026-01-07",
+      "cells": [
+        { "editor": "VS Code", "model": "gpt-5", "vendor": "OpenAI", "tokens": 166050, "sessions": 4.5, "cost": 1.328, "loc": 306.0, "interactions": 32.0, "activeDurationMs": 5166000, "durationSessions": 4.5, "editTurns": 26.0, "retries": 5.3, "applies": 14.0, "codeBlocks": 20.0 },
+        { "editor": "VS Code", "model": "claude-sonnet-4.5", "vendor": "Anthropic", "tokens": 116235, "sessions": 3.15, "cost": 0.93, "loc": 214.2, "interactions": 22.4, "activeDurationMs": 3616200, "durationSessions": 3.15, "editTurns": 18.2, "retries": 3.71, "applies": 9.8, "codeBlocks": 14.0 },
+        { "editor": "VS Code", "model": "gemini-2.5-pro", "vendor": "Google", "tokens": 58118, "sessions": 1.57, "cost": 0.465, "loc": 107.1, "interactions": 11.2, "activeDurationMs": 1808100, "durationSessions": 1.57, "editTurns": 9.1, "retries": 1.86, "applies": 4.9, "codeBlocks": 7.0 },
+        { "editor": "Claude Code", "model": "claude-opus-4.8", "vendor": "Anthropic", "tokens": 132840, "sessions": 3.6, "cost": 1.86, "loc": 244.8, "interactions": 25.6, "activeDurationMs": 4132800, "durationSessions": 3.6, "editTurns": 20.8, "retries": 4.24, "applies": 11.2, "codeBlocks": 16.0 },
+        { "editor": "Copilot CLI", "model": "gpt-5", "vendor": "OpenAI", "tokens": 49815, "sessions": 1.35, "cost": 0.399, "loc": 91.8, "interactions": 9.6, "activeDurationMs": 1549800, "durationSessions": 1.35, "editTurns": 7.8, "retries": 1.59, "applies": 4.2, "codeBlocks": 6.0 },
+        { "editor": "Copilot CLI", "model": "acme-internal-v2", "vendor": "Unclassified", "tokens": 19926, "sessions": 0.54, "cost": 0.159, "loc": 36.7, "interactions": 3.8, "activeDurationMs": 619920, "durationSessions": 0.54, "editTurns": 3.1, "retries": 0.64, "applies": 1.7, "codeBlocks": 2.4 }
+      ]
+    },
+    {
+      "date": "2026-01-14",
+      "cells": [
+        { "editor": "VS Code", "model": "gpt-5", "vendor": "OpenAI", "tokens": 161325, "sessions": 4.5, "cost": 1.291, "loc": 324.0, "interactions": 32.0, "activeDurationMs": 5019000, "durationSessions": 4.5, "editTurns": 26.0, "retries": 5.1, "applies": 14.0, "codeBlocks": 20.0 },
+        { "editor": "VS Code", "model": "claude-sonnet-4.5", "vendor": "Anthropic", "tokens": 112928, "sessions": 3.15, "cost": 0.903, "loc": 226.8, "interactions": 22.4, "activeDurationMs": 3513300, "durationSessions": 3.15, "editTurns": 18.2, "retries": 3.57, "applies": 9.8, "codeBlocks": 14.0 },
+        { "editor": "VS Code", "model": "gemini-2.5-pro", "vendor": "Google", "tokens": 56464, "sessions": 1.57, "cost": 0.452, "loc": 113.4, "interactions": 11.2, "activeDurationMs": 1756650, "durationSessions": 1.57, "editTurns": 9.1, "retries": 1.78, "applies": 4.9, "codeBlocks": 7.0 },
+        { "editor": "Claude Code", "model": "claude-opus-4.8", "vendor": "Anthropic", "tokens": 129060, "sessions": 3.6, "cost": 1.807, "loc": 259.2, "interactions": 25.6, "activeDurationMs": 4015200, "durationSessions": 3.6, "editTurns": 20.8, "retries": 4.08, "applies": 11.2, "codeBlocks": 16.0 },
+        { "editor": "Copilot CLI", "model": "gpt-5", "vendor": "OpenAI", "tokens": 48398, "sessions": 1.35, "cost": 0.387, "loc": 97.2, "interactions": 9.6, "activeDurationMs": 1505700, "durationSessions": 1.35, "editTurns": 7.8, "retries": 1.53, "applies": 4.2, "codeBlocks": 6.0 },
+        { "editor": "Copilot CLI", "model": "acme-internal-v2", "vendor": "Unclassified", "tokens": 19359, "sessions": 0.54, "cost": 0.155, "loc": 38.9, "interactions": 3.8, "activeDurationMs": 602280, "durationSessions": 0.54, "editTurns": 3.1, "retries": 0.61, "applies": 1.7, "codeBlocks": 2.4 }
+      ]
+    },
+    {
+      "date": "2026-01-21",
+      "cells": [
+        { "editor": "VS Code", "model": "gpt-5", "vendor": "OpenAI", "tokens": 156600, "sessions": 4.5, "cost": 1.253, "loc": 342.0, "interactions": 32.0, "activeDurationMs": 4872000, "durationSessions": 4.5, "editTurns": 26.0, "retries": 4.89, "applies": 14.0, "codeBlocks": 20.0 },
+        { "editor": "VS Code", "model": "claude-sonnet-4.5", "vendor": "Anthropic", "tokens": 109620, "sessions": 3.15, "cost": 0.877, "loc": 239.4, "interactions": 22.4, "activeDurationMs": 3410400, "durationSessions": 3.15, "editTurns": 18.2, "retries": 3.42, "applies": 9.8, "codeBlocks": 14.0 },
+        { "editor": "VS Code", "model": "gemini-2.5-pro", "vendor": "Google", "tokens": 54810, "sessions": 1.57, "cost": 0.438, "loc": 119.7, "interactions": 11.2, "activeDurationMs": 1705200, "durationSessions": 1.57, "editTurns": 9.1, "retries": 1.71, "applies": 4.9, "codeBlocks": 7.0 },
+        { "editor": "Claude Code", "model": "claude-opus-4.8", "vendor": "Anthropic", "tokens": 125280, "sessions": 3.6, "cost": 1.754, "loc": 273.6, "interactions": 25.6, "activeDurationMs": 3897600, "durationSessions": 3.6, "editTurns": 20.8, "retries": 3.91, "applies": 11.2, "codeBlocks": 16.0 },
+        { "editor": "Copilot CLI", "model": "gpt-5", "vendor": "OpenAI", "tokens": 46980, "sessions": 1.35, "cost": 0.376, "loc": 102.6, "interactions": 9.6, "activeDurationMs": 1461600, "durationSessions": 1.35, "editTurns": 7.8, "retries": 1.47, "applies": 4.2, "codeBlocks": 6.0 },
+        { "editor": "Copilot CLI", "model": "acme-internal-v2", "vendor": "Unclassified", "tokens": 18792, "sessions": 0.54, "cost": 0.15, "loc": 41.0, "interactions": 3.8, "activeDurationMs": 584640, "durationSessions": 0.54, "editTurns": 3.1, "retries": 0.59, "applies": 1.7, "codeBlocks": 2.4 }
+      ]
+    },
+    {
+      "date": "2026-01-28",
+      "cells": [
+        { "editor": "VS Code", "model": "gpt-5", "vendor": "OpenAI", "tokens": 151875, "sessions": 4.5, "cost": 1.215, "loc": 360.0, "interactions": 32.0, "activeDurationMs": 4725000, "durationSessions": 4.5, "editTurns": 26.0, "retries": 4.68, "applies": 14.0, "codeBlocks": 20.0 },
+        { "editor": "VS Code", "model": "claude-sonnet-4.5", "vendor": "Anthropic", "tokens": 106312, "sessions": 3.15, "cost": 0.85, "loc": 252.0, "interactions": 22.4, "activeDurationMs": 3307500, "durationSessions": 3.15, "editTurns": 18.2, "retries": 3.28, "applies": 9.8, "codeBlocks": 14.0 },
+        { "editor": "VS Code", "model": "gemini-2.5-pro", "vendor": "Google", "tokens": 53156, "sessions": 1.57, "cost": 0.425, "loc": 126.0, "interactions": 11.2, "activeDurationMs": 1653750, "durationSessions": 1.57, "editTurns": 9.1, "retries": 1.64, "applies": 4.9, "codeBlocks": 7.0 },
+        { "editor": "Claude Code", "model": "claude-opus-4.8", "vendor": "Anthropic", "tokens": 121500, "sessions": 3.6, "cost": 1.701, "loc": 288.0, "interactions": 25.6, "activeDurationMs": 3780000, "durationSessions": 3.6, "editTurns": 20.8, "retries": 3.74, "applies": 11.2, "codeBlocks": 16.0 },
+        { "editor": "Copilot CLI", "model": "gpt-5", "vendor": "OpenAI", "tokens": 45562, "sessions": 1.35, "cost": 0.364, "loc": 108.0, "interactions": 9.6, "activeDurationMs": 1417500, "durationSessions": 1.35, "editTurns": 7.8, "retries": 1.4, "applies": 4.2, "codeBlocks": 6.0 },
+        { "editor": "Copilot CLI", "model": "acme-internal-v2", "vendor": "Unclassified", "tokens": 18225, "sessions": 0.54, "cost": 0.146, "loc": 43.2, "interactions": 3.8, "activeDurationMs": 567000, "durationSessions": 0.54, "editTurns": 3.1, "retries": 0.56, "applies": 1.7, "codeBlocks": 2.4 }
+      ]
+    },
+    {
+      "date": "2026-02-04",
+      "cells": [
+        { "editor": "VS Code", "model": "gpt-5", "vendor": "OpenAI", "tokens": 147150, "sessions": 4.5, "cost": 1.177, "loc": 378.0, "interactions": 32.0, "activeDurationMs": 4578000, "durationSessions": 4.5, "editTurns": 26.0, "retries": 4.47, "applies": 14.0, "codeBlocks": 20.0 },
+        { "editor": "VS Code", "model": "claude-sonnet-4.5", "vendor": "Anthropic", "tokens": 103005, "sessions": 3.15, "cost": 0.824, "loc": 264.6, "interactions": 22.4, "activeDurationMs": 3204600, "durationSessions": 3.15, "editTurns": 18.2, "retries": 3.13, "applies": 9.8, "codeBlocks": 14.0 },
+        { "editor": "VS Code", "model": "gemini-2.5-pro", "vendor": "Google", "tokens": 51503, "sessions": 1.57, "cost": 0.412, "loc": 132.3, "interactions": 11.2, "activeDurationMs": 1602300, "durationSessions": 1.57, "editTurns": 9.1, "retries": 1.57, "applies": 4.9, "codeBlocks": 7.0 },
+        { "editor": "Claude Code", "model": "claude-opus-4.8", "vendor": "Anthropic", "tokens": 117720, "sessions": 3.6, "cost": 1.648, "loc": 302.4, "interactions": 25.6, "activeDurationMs": 3662400, "durationSessions": 3.6, "editTurns": 20.8, "retries": 3.58, "applies": 11.2, "codeBlocks": 16.0 },
+        { "editor": "Copilot CLI", "model": "gpt-5", "vendor": "OpenAI", "tokens": 44145, "sessions": 1.35, "cost": 0.353, "loc": 113.4, "interactions": 9.6, "activeDurationMs": 1373400, "durationSessions": 1.35, "editTurns": 7.8, "retries": 1.34, "applies": 4.2, "codeBlocks": 6.0 },
+        { "editor": "Copilot CLI", "model": "acme-internal-v2", "vendor": "Unclassified", "tokens": 17658, "sessions": 0.54, "cost": 0.141, "loc": 45.4, "interactions": 3.8, "activeDurationMs": 549360, "durationSessions": 0.54, "editTurns": 3.1, "retries": 0.54, "applies": 1.7, "codeBlocks": 2.4 }
+      ]
+    },
+    {
+      "date": "2026-02-11",
+      "cells": [
+        { "editor": "VS Code", "model": "gpt-5", "vendor": "OpenAI", "tokens": 142425, "sessions": 4.5, "cost": 1.139, "loc": 396.0, "interactions": 32.0, "activeDurationMs": 4431000, "durationSessions": 4.5, "editTurns": 26.0, "retries": 4.26, "applies": 14.0, "codeBlocks": 20.0 },
+        { "editor": "VS Code", "model": "claude-sonnet-4.5", "vendor": "Anthropic", "tokens": 99698, "sessions": 3.15, "cost": 0.798, "loc": 277.2, "interactions": 22.4, "activeDurationMs": 3101700, "durationSessions": 3.15, "editTurns": 18.2, "retries": 2.98, "applies": 9.8, "codeBlocks": 14.0 },
+        { "editor": "VS Code", "model": "gemini-2.5-pro", "vendor": "Google", "tokens": 49849, "sessions": 1.57, "cost": 0.399, "loc": 138.6, "interactions": 11.2, "activeDurationMs": 1550850, "durationSessions": 1.57, "editTurns": 9.1, "retries": 1.49, "applies": 4.9, "codeBlocks": 7.0 },
+        { "editor": "Claude Code", "model": "claude-opus-4.8", "vendor": "Anthropic", "tokens": 113940, "sessions": 3.6, "cost": 1.595, "loc": 316.8, "interactions": 25.6, "activeDurationMs": 3544800, "durationSessions": 3.6, "editTurns": 20.8, "retries": 3.41, "applies": 11.2, "codeBlocks": 16.0 },
+        { "editor": "Copilot CLI", "model": "gpt-5", "vendor": "OpenAI", "tokens": 42728, "sessions": 1.35, "cost": 0.342, "loc": 118.8, "interactions": 9.6, "activeDurationMs": 1329300, "durationSessions": 1.35, "editTurns": 7.8, "retries": 1.28, "applies": 4.2, "codeBlocks": 6.0 },
+        { "editor": "Copilot CLI", "model": "acme-internal-v2", "vendor": "Unclassified", "tokens": 17091, "sessions": 0.54, "cost": 0.137, "loc": 47.5, "interactions": 3.8, "activeDurationMs": 531720, "durationSessions": 0.54, "editTurns": 3.1, "retries": 0.51, "applies": 1.7, "codeBlocks": 2.4 }
+      ]
+    },
+    {
+      "date": "2026-02-18",
+      "cells": [
+        { "editor": "VS Code", "model": "gpt-5", "vendor": "OpenAI", "tokens": 137700, "sessions": 4.5, "cost": 1.102, "loc": 414.0, "interactions": 32.0, "activeDurationMs": 4284000, "durationSessions": 4.5, "editTurns": 26.0, "retries": 4.06, "applies": 14.0, "codeBlocks": 20.0 },
+        { "editor": "VS Code", "model": "claude-sonnet-4.5", "vendor": "Anthropic", "tokens": 96390, "sessions": 3.15, "cost": 0.771, "loc": 289.8, "interactions": 22.4, "activeDurationMs": 2998800, "durationSessions": 3.15, "editTurns": 18.2, "retries": 2.84, "applies": 9.8, "codeBlocks": 14.0 },
+        { "editor": "VS Code", "model": "gemini-2.5-pro", "vendor": "Google", "tokens": 48195, "sessions": 1.57, "cost": 0.386, "loc": 144.9, "interactions": 11.2, "activeDurationMs": 1499400, "durationSessions": 1.57, "editTurns": 9.1, "retries": 1.42, "applies": 4.9, "codeBlocks": 7.0 },
+        { "editor": "Claude Code", "model": "claude-opus-4.8", "vendor": "Anthropic", "tokens": 110160, "sessions": 3.6, "cost": 1.542, "loc": 331.2, "interactions": 25.6, "activeDurationMs": 3427200, "durationSessions": 3.6, "editTurns": 20.8, "retries": 3.24, "applies": 11.2, "codeBlocks": 16.0 },
+        { "editor": "Copilot CLI", "model": "gpt-5", "vendor": "OpenAI", "tokens": 41310, "sessions": 1.35, "cost": 0.33, "loc": 124.2, "interactions": 9.6, "activeDurationMs": 1285200, "durationSessions": 1.35, "editTurns": 7.8, "retries": 1.22, "applies": 4.2, "codeBlocks": 6.0 },
+        { "editor": "Copilot CLI", "model": "acme-internal-v2", "vendor": "Unclassified", "tokens": 16524, "sessions": 0.54, "cost": 0.132, "loc": 49.7, "interactions": 3.8, "activeDurationMs": 514080, "durationSessions": 0.54, "editTurns": 3.1, "retries": 0.49, "applies": 1.7, "codeBlocks": 2.4 }
+      ]
+    },
+    {
+      "date": "2026-02-25",
+      "cells": [
+        { "editor": "VS Code", "model": "gpt-5", "vendor": "OpenAI", "tokens": 132975, "sessions": 4.5, "cost": 1.064, "loc": 432.0, "interactions": 32.0, "activeDurationMs": 4137000, "durationSessions": 4.5, "editTurns": 26.0, "retries": 3.85, "applies": 14.0, "codeBlocks": 20.0 },
+        { "editor": "VS Code", "model": "claude-sonnet-4.5", "vendor": "Anthropic", "tokens": 93082, "sessions": 3.15, "cost": 0.745, "loc": 302.4, "interactions": 22.4, "activeDurationMs": 2895900, "durationSessions": 3.15, "editTurns": 18.2, "retries": 2.69, "applies": 9.8, "codeBlocks": 14.0 },
+        { "editor": "VS Code", "model": "gemini-2.5-pro", "vendor": "Google", "tokens": 46541, "sessions": 1.57, "cost": 0.372, "loc": 151.2, "interactions": 11.2, "activeDurationMs": 1447950, "durationSessions": 1.57, "editTurns": 9.1, "retries": 1.35, "applies": 4.9, "codeBlocks": 7.0 },
+        { "editor": "Claude Code", "model": "claude-opus-4.8", "vendor": "Anthropic", "tokens": 106380, "sessions": 3.6, "cost": 1.489, "loc": 345.6, "interactions": 25.6, "activeDurationMs": 3309600, "durationSessions": 3.6, "editTurns": 20.8, "retries": 3.08, "applies": 11.2, "codeBlocks": 16.0 },
+        { "editor": "Copilot CLI", "model": "gpt-5", "vendor": "OpenAI", "tokens": 39892, "sessions": 1.35, "cost": 0.319, "loc": 129.6, "interactions": 9.6, "activeDurationMs": 1241100, "durationSessions": 1.35, "editTurns": 7.8, "retries": 1.15, "applies": 4.2, "codeBlocks": 6.0 },
+        { "editor": "Copilot CLI", "model": "acme-internal-v2", "vendor": "Unclassified", "tokens": 15957, "sessions": 0.54, "cost": 0.128, "loc": 51.8, "interactions": 3.8, "activeDurationMs": 496440, "durationSessions": 0.54, "editTurns": 3.1, "retries": 0.46, "applies": 1.7, "codeBlocks": 2.4 }
+      ]
+    },
+    {
+      "date": "2026-03-04",
+      "cells": [
+        { "editor": "VS Code", "model": "gpt-5", "vendor": "OpenAI", "tokens": 128250, "sessions": 4.5, "cost": 1.026, "loc": 450.0, "interactions": 32.0, "activeDurationMs": 3990000, "durationSessions": 4.5, "editTurns": 26.0, "retries": 3.64, "applies": 14.0, "codeBlocks": 20.0 },
+        { "editor": "VS Code", "model": "claude-sonnet-4.5", "vendor": "Anthropic", "tokens": 89775, "sessions": 3.15, "cost": 0.718, "loc": 315.0, "interactions": 22.4, "activeDurationMs": 2793000, "durationSessions": 3.15, "editTurns": 18.2, "retries": 2.55, "applies": 9.8, "codeBlocks": 14.0 },
+        { "editor": "VS Code", "model": "gemini-2.5-pro", "vendor": "Google", "tokens": 44888, "sessions": 1.57, "cost": 0.359, "loc": 157.5, "interactions": 11.2, "activeDurationMs": 1396500, "durationSessions": 1.57, "editTurns": 9.1, "retries": 1.27, "applies": 4.9, "codeBlocks": 7.0 },
+        { "editor": "Claude Code", "model": "claude-opus-4.8", "vendor": "Anthropic", "tokens": 102600, "sessions": 3.6, "cost": 1.436, "loc": 360.0, "interactions": 25.6, "activeDurationMs": 3192000, "durationSessions": 3.6, "editTurns": 20.8, "retries": 2.91, "applies": 11.2, "codeBlocks": 16.0 },
+        { "editor": "Copilot CLI", "model": "gpt-5", "vendor": "OpenAI", "tokens": 38475, "sessions": 1.35, "cost": 0.308, "loc": 135.0, "interactions": 9.6, "activeDurationMs": 1197000, "durationSessions": 1.35, "editTurns": 7.8, "retries": 1.09, "applies": 4.2, "codeBlocks": 6.0 },
+        { "editor": "Copilot CLI", "model": "acme-internal-v2", "vendor": "Unclassified", "tokens": 15390, "sessions": 0.54, "cost": 0.123, "loc": 54.0, "interactions": 3.8, "activeDurationMs": 478800, "durationSessions": 0.54, "editTurns": 3.1, "retries": 0.44, "applies": 1.7, "codeBlocks": 2.4 }
+      ]
+    },
+    {
+      "date": "2026-03-11",
+      "cells": [
+        { "editor": "VS Code", "model": "gpt-5", "vendor": "OpenAI", "tokens": 123525, "sessions": 4.5, "cost": 0.988, "loc": 468.0, "interactions": 32.0, "activeDurationMs": 3843000, "durationSessions": 4.5, "editTurns": 26.0, "retries": 3.43, "applies": 14.0, "codeBlocks": 20.0 },
+        { "editor": "VS Code", "model": "claude-sonnet-4.5", "vendor": "Anthropic", "tokens": 86468, "sessions": 3.15, "cost": 0.692, "loc": 327.6, "interactions": 22.4, "activeDurationMs": 2690100, "durationSessions": 3.15, "editTurns": 18.2, "retries": 2.4, "applies": 9.8, "codeBlocks": 14.0 },
+        { "editor": "VS Code", "model": "gemini-2.5-pro", "vendor": "Google", "tokens": 43234, "sessions": 1.57, "cost": 0.346, "loc": 163.8, "interactions": 11.2, "activeDurationMs": 1345050, "durationSessions": 1.57, "editTurns": 9.1, "retries": 1.2, "applies": 4.9, "codeBlocks": 7.0 },
+        { "editor": "Claude Code", "model": "claude-opus-4.8", "vendor": "Anthropic", "tokens": 98820, "sessions": 3.6, "cost": 1.383, "loc": 374.4, "interactions": 25.6, "activeDurationMs": 3074400, "durationSessions": 3.6, "editTurns": 20.8, "retries": 2.75, "applies": 11.2, "codeBlocks": 16.0 },
+        { "editor": "Copilot CLI", "model": "gpt-5", "vendor": "OpenAI", "tokens": 37058, "sessions": 1.35, "cost": 0.296, "loc": 140.4, "interactions": 9.6, "activeDurationMs": 1152900, "durationSessions": 1.35, "editTurns": 7.8, "retries": 1.03, "applies": 4.2, "codeBlocks": 6.0 },
+        { "editor": "Copilot CLI", "model": "acme-internal-v2", "vendor": "Unclassified", "tokens": 14823, "sessions": 0.54, "cost": 0.119, "loc": 56.2, "interactions": 3.8, "activeDurationMs": 461160, "durationSessions": 0.54, "editTurns": 3.1, "retries": 0.41, "applies": 1.7, "codeBlocks": 2.4 }
+      ]
+    }
+  ]
 }

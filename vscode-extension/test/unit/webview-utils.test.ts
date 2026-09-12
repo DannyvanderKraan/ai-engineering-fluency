@@ -1,7 +1,17 @@
 import test from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { getModelDisplayName, parseCustomProviderModel, getCustomProviderGroup, isCustomProviderGroup } from '../../../src/webview/shared/modelUtils';
+import {
+	getCanonicalModelId,
+	getCustomProviderGroup,
+	getModelDisplayName,
+	getModelVendor,
+	isCustomProviderGroup,
+	parseCustomProviderModel,
+	UNCLASSIFIED_VENDOR,
+	UNKNOWN_MODEL_ID,
+} from '../../../src/webview/shared/modelUtils';
+import { getBillingGroup } from '../../../src/chartDataBuilder';
 import {
 	setFormatLocale,
 	getEditorIcon,
@@ -125,6 +135,58 @@ test('isCustomProviderGroup: recognizes only custom provider groups', () => {
 	assert.equal(isCustomProviderGroup('Mistral (Custom)'), true);
 	assert.equal(isCustomProviderGroup('Mistral AI'), false);
 	assert.equal(isCustomProviderGroup('GitHub Copilot'), false);
+});
+
+// ── getCanonicalModelId / getModelVendor ────────────────────────────────
+
+test('getCanonicalModelId: wrapper ids and version spellings collapse onto one identity', () => {
+	const canonical = getCanonicalModelId('claude-opus-4.8');
+	assert.equal(getCanonicalModelId('copilot/claude-opus-4-8'), canonical);
+	assert.equal(getCanonicalModelId('copilot/claude-opus-4.8'), canonical);
+	assert.equal(getCanonicalModelId('3b0f52c1-9d4e-4a77-8b21-77c1f0a9e512/claude-opus-4-8'), canonical);
+	assert.equal(getCanonicalModelId('CLAUDE-OPUS-4.8'), canonical);
+});
+
+test('getCanonicalModelId: a custom endpoint is identified by its model, not the user-typed label', () => {
+	assert.equal(getCanonicalModelId('customendpoint/Acme Corp/mistral-medium-latest'), 'mistral-medium-latest');
+	// Two endpoints labelled differently but serving the same model are one model.
+	assert.equal(
+		getCanonicalModelId('customendpoint/Acme Corp/mistral-medium-latest'),
+		getCanonicalModelId('unify-chat-provider/Skunkworks/mistral-medium-latest'),
+	);
+});
+
+test('getCanonicalModelId: sessions that name no model get the unknown identity', () => {
+	assert.equal(getCanonicalModelId(''), UNKNOWN_MODEL_ID);
+	assert.equal(getCanonicalModelId('   '), UNKNOWN_MODEL_ID);
+});
+
+test('getModelVendor: classifies the model maker from the model id', () => {
+	assert.equal(getModelVendor('claude-sonnet-4.5'), 'Anthropic');
+	assert.equal(getModelVendor('copilot/claude-opus-4-8'), 'Anthropic');
+	assert.equal(getModelVendor('gpt-5'), 'OpenAI');
+	assert.equal(getModelVendor('o4-mini'), 'OpenAI');
+	assert.equal(getModelVendor('gemini-2.5-pro'), 'Google');
+	assert.equal(getModelVendor('grok-4'), 'xAI');
+	assert.equal(getModelVendor('mistral-medium-latest'), 'Mistral AI');
+});
+
+test('getModelVendor: is the model maker, not the billing group', () => {
+	// On a Copilot surface the *bill* is GitHub Copilot's whatever model runs;
+	// the vendor filter has to keep reporting who built the model.
+	assert.equal(getBillingGroup('VS Code', 'claude-sonnet-4.5'), 'GitHub Copilot');
+	assert.equal(getModelVendor('claude-sonnet-4.5'), 'Anthropic');
+	// And a custom endpoint bills under the user's own label, which is not a maker.
+	assert.equal(getBillingGroup('VS Code', 'customendpoint/Acme Corp/mistral-medium-latest'), 'Acme Corp (Custom)');
+	assert.equal(getModelVendor('customendpoint/Acme Corp/mistral-medium-latest'), 'Mistral AI');
+});
+
+test('getModelVendor: unrecognized models stay visible as Unclassified rather than being guessed at', () => {
+	assert.equal(getModelVendor('acme-internal-v2'), UNCLASSIFIED_VENDOR);
+	assert.equal(getModelVendor('customendpoint/Acme Corp/acme-internal-v2'), UNCLASSIFIED_VENDOR);
+	assert.equal(getModelVendor(''), UNCLASSIFIED_VENDOR);
+	// Unclassified is a bucket, not a drop: the model keeps a usable identity.
+	assert.equal(getCanonicalModelId('acme-internal-v2'), 'acme-internal-v2');
 });
 
 // ── formatDurationShort ─────────────────────────────────────────────────

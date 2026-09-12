@@ -74,7 +74,25 @@ const INTERACTIVE_SELECTOR = [
   'a[href^="command:"]',
   'input[type="checkbox"]',
   'input[type="radio"]',
+  'select',
 ].join(', ');
+
+/** Upper bound on deep-crawl passes, so a view that re-renders forever cannot hang the run. */
+const MAX_CRAWL_PASSES = 40;
+
+/**
+ * Identity of a control across re-renders. Deliberately ignores the tag index
+ * (which is reassigned every pass) and the selected/active state classes, so a
+ * tab does not look like a new control once clicking it marks it active.
+ */
+function controlKey(control) {
+  const classes = (control.classes || '')
+    .split(/\s+/)
+    .filter((cls) => cls && cls !== 'active' && cls !== 'selected')
+    .sort()
+    .join(' ');
+  return `${control.tag}|${control.id || ''}|${classes}|${control.label || ''}`;
+}
 
 /** Reads the extension-side handled-command set once, for the unhandled check. */
 function loadHandledCommands() {
@@ -118,13 +136,23 @@ const TAG_CONTROLS = (selector) => {
       el.getAttribute('aria-pressed') === 'true' ||
       el.getAttribute('aria-selected') === 'true' ||
       (el instanceof HTMLInputElement && el.type === 'radio' && el.checked);
+    // A <select> is driven by picking a different option, not by clicking, so
+    // carry the options along; one with nothing else to pick is inert by design.
+    const options =
+      el instanceof HTMLSelectElement
+        ? Array.from(el.options)
+            .filter((option) => !option.disabled)
+            .map((option) => option.value)
+        : null;
     controls.push({
       index,
       tag: el.tagName.toLowerCase(),
       id: el.id || null,
       classes: el.className && typeof el.className === 'string' ? el.className.slice(0, 80) : null,
       label: label || null,
-      alreadySelected,
+      alreadySelected: alreadySelected || (options !== null && options.length < 2),
+      options,
+      selectedValue: el instanceof HTMLSelectElement ? el.value : null,
     });
     index++;
   }
@@ -218,8 +246,14 @@ async function waitForQuietDom(page, { pollMs = 100, maxWaitMs = 3000 } = {}) {
   return false;
 }
 
-async function clickControl(page, control) {
-  // Settle first, so what we measure is this click's doing and not the last one's.
+/**
+ * Drives one control the way a user would: a click for buttons and links, an
+ * option change for a `<select>`. Picking an option is what fires `change`, and
+ * a filter dropdown wired to nothing looks exactly like a working one until
+ * something actually changes its value.
+ */
+async function exerciseControl(page, control) {
+  // Settle first, so what we measure is this interaction's doing and not the last one's.
   const quiet = await waitForQuietDom(page);
   const before = await page.evaluate(DOM_SIGNATURE);
   await page.evaluate(() => {
@@ -229,9 +263,17 @@ async function clickControl(page, control) {
 
   const locator = page.locator(`[data-smoke-id="${control.index}"]`);
   try {
-    await locator.click({ timeout: 1500, force: false, noWaitAfter: true });
+    if (control.options) {
+      const next = control.options.find((value) => value !== control.selectedValue);
+      if (next === undefined) {
+        return { status: 'skipped', reason: 'select has no other option to pick' };
+      }
+      await locator.selectOption(next, { timeout: 1500, noWaitAfter: true });
+    } else {
+      await locator.click({ timeout: 1500, force: false, noWaitAfter: true });
+    }
   } catch (error) {
-    return { status: 'skipped', reason: `not clickable in this pass: ${String(error.message).split('\n')[0]}` };
+    return { status: 'skipped', reason: `not reachable in this pass: ${String(error.message).split('\n')[0]}` };
   }
 
   await page.waitForTimeout(120);
@@ -274,55 +316,78 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
   let page = await openPage(browser, pageFile, view, defaults);
 
   const renderErrors = await page.evaluate(() => window.__HARNESS_ERRORS__.slice());
-  const controls = await page.evaluate(TAG_CONTROLS, INTERACTIVE_SELECTOR);
 
   const results = [];
   const findings = [];
+  // A view that re-renders its whole body (a tab switch, a filter change) throws
+  // away the tags this pass handed out, so everything after the first such
+  // control is unreachable. `crawl: "deep"` re-tags and keeps going until no
+  // unvisited control is left, which is what it takes to reach controls that
+  // only exist inside a non-default tab.
+  const maxPasses = view.crawl === 'deep' ? MAX_CRAWL_PASSES : 1;
+  const visited = new Set();
 
-  for (const control of controls) {
-    if (isolate && results.length > 0) {
-      await page.close();
-      page = await openPage(browser, pageFile, view, defaults);
-      await page.evaluate(TAG_CONTROLS, INTERACTIVE_SELECTOR);
-    }
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const controls = await page.evaluate(TAG_CONTROLS, INTERACTIVE_SELECTOR);
+    let exercised = 0;
+    for (const control of controls) {
+      const deep = maxPasses > 1;
+      if (deep && visited.has(controlKey(control))) { continue; }
+      if (isolate && results.length > 0) {
+        await page.close();
+        page = await openPage(browser, pageFile, view, defaults);
+        await page.evaluate(TAG_CONTROLS, INTERACTIVE_SELECTOR);
+      }
 
-    const outcome = await clickControl(page, control);
-    results.push({ ...control, ...outcome });
+      const outcome = await exerciseControl(page, control);
+      if (deep && outcome.status === 'skipped') {
+        // The tag went stale when something earlier re-rendered the page. Leave
+        // it unvisited: the next pass re-tags and reaches it for real.
+        break;
+      }
+      if (deep) { visited.add(controlKey(control)); }
+      exercised += 1;
+      results.push({ ...control, ...outcome });
 
-    const where = `${control.tag}${control.id ? `#${control.id}` : ''}${control.label ? ` "${control.label}"` : ''}`;
+      const where = `${control.tag}${control.id ? `#${control.id}` : ''}${control.label ? ` "${control.label}"` : ''}`;
 
-    if (outcome.status === 'dead' && outcome.quiet === false) {
-      // The DOM never stopped moving, so "nothing changed" is not trustworthy here.
-      results[results.length - 1].status = 'inconclusive';
-    } else if (outcome.status === 'dead' && control.alreadySelected) {
-      results[results.length - 1].status = 'noop-selected';
-    } else if (outcome.status === 'dead') {
-      findings.push({
-        view: view.id,
-        kind: 'dead-control',
-        control: where,
-        detail: 'clicking it posts no message to the host and changes nothing on screen',
-      });
-    }
-    if (outcome.status === 'error') {
-      findings.push({
-        view: view.id,
-        kind: 'click-threw',
-        control: where,
-        detail: outcome.errors.join(' | ').slice(0, 400),
-      });
-    }
-    for (const message of outcome.posted || []) {
-      const command = message && (message.command || message.type);
-      if (typeof command === 'string' && !handledCommands.has(command)) {
+      if (outcome.status === 'dead' && outcome.quiet === false) {
+        // The DOM never stopped moving, so "nothing changed" is not trustworthy here.
+        results[results.length - 1].status = 'inconclusive';
+      } else if (outcome.status === 'dead' && control.alreadySelected) {
+        results[results.length - 1].status = 'noop-selected';
+      } else if (outcome.status === 'dead') {
         findings.push({
           view: view.id,
-          kind: 'unhandled-command',
+          kind: 'dead-control',
           control: where,
-          detail: `posts '${command}', which no handler on the extension side matches`,
+          detail: 'clicking it posts no message to the host and changes nothing on screen',
         });
       }
+      if (outcome.status === 'error') {
+        findings.push({
+          view: view.id,
+          kind: 'click-threw',
+          control: where,
+          detail: outcome.errors.join(' | ').slice(0, 400),
+        });
+      }
+      for (const message of outcome.posted || []) {
+        const command = message && (message.command || message.type);
+        if (typeof command === 'string' && !handledCommands.has(command)) {
+          findings.push({
+            view: view.id,
+            kind: 'unhandled-command',
+            control: where,
+            detail: `posts '${command}', which no handler on the extension side matches`,
+          });
+        }
+      }
+      // This control replaced the page body, so every remaining tag is stale.
+      if (deep && outcome.domChanged) { break; }
     }
+    // A pass that reached nothing new means the crawl has converged.
+    if (exercised === 0) { break; }
   }
 
   await page.close();

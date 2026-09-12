@@ -1,6 +1,6 @@
 import type { ApplyButtonUsage, DailyModelEfficiency, DailyTokenStats, ModelUsage, UsageAnalysisPeriod } from './types';
 import type { CacheBreakagePeriodStats } from './cacheBreakage';
-import { getModelDisplayName } from './webview/shared/modelUtils';
+import { getCanonicalModelId, getModelDisplayName, getModelVendor, UNKNOWN_MODEL_ID } from './webview/shared/modelUtils';
 import { createEmptyDailyModelEfficiencyEntry, mergeDailyModelEfficiency } from './modelEfficiency';
 
 /**
@@ -76,6 +76,14 @@ export interface EfficiencySessionInput {
 	totalTokens?: number;
 	/** Agent-skill invocation counts by skill name (e.g. { graphify: 2 }); absent when none detected. */
 	skillCalls?: { [skillName: string]: number };
+	/** Editor / session source (e.g. "VS Code"), for the Combined tab's editor filter. */
+	editor?: string;
+	/** Per-model token weights (raw model ids) used to attribute this session's whole-session signals. */
+	modelShares?: { [model: string]: number };
+	/** Per-model edit turns (raw model ids) — exact counters, used as attribution weights. */
+	modelEditTurns?: { [model: string]: number };
+	/** Per-model edit retries (raw model ids) — exact counters, used as attribution weights. */
+	modelRetries?: { [model: string]: number };
 }
 
 /** One week of derived efficiency ratios. Ratio fields are null when the denominator is 0. */
@@ -155,21 +163,8 @@ function foldSessionIntoWeek(week: WeekAccum, s: EfficiencySessionInput): void {
 	week.codeBlocks += s.codeBlocks ?? 0;
 }
 
-/**
- * Builds the weekly efficiency-ratio series for the trailing `weeksBack` weeks
- * (including the current, partial week).
- *
- * Volume ratios (tokens/session, turns/session, cost/KLOC) come from the daily
- * stats; behavioural ratios (active minutes, retry rate, apply rate) come from
- * the per-session inputs.
- */
-export function buildEfficiencyTrends(
-	dailyStats: DailyTokenStats[],
-	sessions: EfficiencySessionInput[],
-	deps: EfficiencyDeps,
-	weeksBack: number = DEFAULT_TREND_WEEKS,
-): EfficiencyWeekPoint[] {
-	const now = deps.now ?? new Date();
+/** Allocates the `weeksBack` trailing week buckets (including the current, partial week). */
+function buildEmptyWeeks(now: Date, weeksBack: number): Map<string, WeekAccum> {
 	const thisMonday = getMondayOfWeek(now);
 	const weeks = new Map<string, WeekAccum>();
 	for (let w = weeksBack - 1; w >= 0; w--) {
@@ -177,17 +172,15 @@ export function buildEfficiencyTrends(
 		monday.setDate(thisMonday.getDate() - w * 7);
 		weeks.set(fmtKey(monday), emptyWeekAccum(monday));
 	}
+	return weeks;
+}
 
-	for (const day of dailyStats) {
-		const week = weeks.get(fmtKey(getMondayOfWeek(new Date(day.date + 'T00:00:00'))));
-		if (week) { foldDayIntoWeek(week, day, deps); }
-	}
-
-	for (const s of sessions) {
-		const week = weeks.get(fmtKey(getMondayOfWeek(new Date(s.dayKey + 'T00:00:00'))));
-		if (week) { foldSessionIntoWeek(week, s); }
-	}
-
+/**
+ * Turns week accumulators into the public week points. Shared by the unfiltered
+ * trends and the filtered Combined aggregation so both apply the same ratio
+ * definitions and the same retry-rate sample gate.
+ */
+function weekPointsFrom(weeks: Map<string, WeekAccum>): EfficiencyWeekPoint[] {
 	return Array.from(weeks.entries())
 		.sort(([a], [b]) => a.localeCompare(b))
 		.map(([weekKey, w]) => ({
@@ -208,6 +201,35 @@ export function buildEfficiencyTrends(
 			durationSessions: w.durationSessions,
 			editTurns: w.editTurns,
 		}));
+}
+
+/**
+ * Builds the weekly efficiency-ratio series for the trailing `weeksBack` weeks
+ * (including the current, partial week).
+ *
+ * Volume ratios (tokens/session, turns/session, cost/KLOC) come from the daily
+ * stats; behavioural ratios (active minutes, retry rate, apply rate) come from
+ * the per-session inputs.
+ */
+export function buildEfficiencyTrends(
+	dailyStats: DailyTokenStats[],
+	sessions: EfficiencySessionInput[],
+	deps: EfficiencyDeps,
+	weeksBack: number = DEFAULT_TREND_WEEKS,
+): EfficiencyWeekPoint[] {
+	const weeks = buildEmptyWeeks(deps.now ?? new Date(), weeksBack);
+
+	for (const day of dailyStats) {
+		const week = weeks.get(fmtKey(getMondayOfWeek(new Date(day.date + 'T00:00:00'))));
+		if (week) { foldDayIntoWeek(week, day, deps); }
+	}
+
+	for (const s of sessions) {
+		const week = weeks.get(fmtKey(getMondayOfWeek(new Date(s.dayKey + 'T00:00:00'))));
+		if (week) { foldSessionIntoWeek(week, s); }
+	}
+
+	return weekPointsFrom(weeks);
 }
 
 // ---------------------------------------------------------------------------
@@ -1295,6 +1317,12 @@ export interface EfficiencyViewData {
 	/** True when at least two models cleared the comparison sample floor. */
 	hasModelComparison: boolean;
 	/**
+	 * Compact 12-week (editor × canonical model) payload backing the Combined
+	 * tab's vendor/model/editor filters. The tab re-slices it client-side, so
+	 * changing a filter never re-reads session files or posts to the host.
+	 */
+	combinedDaily: CombinedDailyPoint[];
+	/**
 	 * Prompt-cache breakage over the last 30 days. Null for users whose editors
 	 * do not report per-turn cache token counts (today: anything but Claude Code
 	 * / Claude Desktop), in which case the Cache tab is hidden entirely rather
@@ -1305,4 +1333,453 @@ export interface EfficiencyViewData {
 	backendConfigured: boolean;
 	compactNumbers?: boolean;
 	isDebugMode?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Combined-chart filters (model vendor × model × editor)
+// ---------------------------------------------------------------------------
+
+/** Sentinel meaning "do not filter on this dimension". */
+export const COMBINED_FILTER_ALL = 'all';
+
+/** Editor label used when a session's source could not be determined. */
+export const COMBINED_UNKNOWN_EDITOR = 'Unknown';
+
+/** Session-equivalents below which a Combined selection is too thin to read as a trend. */
+export const MIN_COMBINED_SESSION_EQUIVALENTS = 5;
+
+/** Edit turns below which a Combined selection's behavioural ratios are too thin to read. */
+export const MIN_COMBINED_EDIT_TURNS = 10;
+
+/** The three Combined-tab filter dimensions. `COMBINED_FILTER_ALL` on any of them means unfiltered. */
+export interface CombinedFilter {
+	/** Underlying model maker (Anthropic, OpenAI, …) or `Unclassified` — never a billing group. */
+	vendor: string;
+	/** Canonical model id. */
+	model: string;
+	/** Editor / session source. */
+	editor: string;
+}
+
+/** The default, fully unfiltered selection. */
+export const UNFILTERED_COMBINED: CombinedFilter = {
+	vendor: COMBINED_FILTER_ALL,
+	model: COMBINED_FILTER_ALL,
+	editor: COMBINED_FILTER_ALL,
+};
+
+/**
+ * One (day × editor × canonical model) cell of the Combined-chart payload.
+ *
+ * Every number here is *attributed*, not directly observed per model: token
+ * totals and estimated cost follow each model's own share, while the
+ * session-level signals a session cannot report per model (duration, lines of
+ * code, applies, code blocks, interactions, and the session denominator itself)
+ * are split by the same token-share contract the Models tab already uses.
+ *
+ * Summing all cells of a day reproduces that day's unfiltered totals, so
+ * mutually exclusive model slices add back up without double-counting a
+ * mixed-model session.
+ */
+export interface CombinedDailyCell {
+	/** Editor / session source. */
+	editor: string;
+	/** Canonical model id (`unknown` when the usage names no model). */
+	model: string;
+	/** Underlying model maker, or `Unclassified`. */
+	vendor: string;
+	tokens: number;
+	/** Fractional session-equivalents (a 2-model session contributes 0.5 to each). */
+	sessions: number;
+	/** Copilot-equivalent estimated cost in USD — not billed spend. */
+	cost: number;
+	/** Lines added + removed attributed to this cell. */
+	loc: number;
+	interactions: number;
+	activeDurationMs: number;
+	/** Fractional sessions backing `activeDurationMs`. */
+	durationSessions: number;
+	editTurns: number;
+	retries: number;
+	applies: number;
+	codeBlocks: number;
+}
+
+/** One day of the Combined payload. Days with no attributable activity are omitted. */
+export interface CombinedDailyPoint {
+	/** Local day key, YYYY-MM-DD. */
+	date: string;
+	cells: CombinedDailyCell[];
+}
+
+/** One selectable value on a filter dimension, with the volume behind it. */
+export interface CombinedFacetOption {
+	value: string;
+	sessions: number;
+	tokens: number;
+}
+
+/** Selectable values per dimension, each faceted by the *other* two selections. */
+export interface CombinedFacets {
+	vendors: CombinedFacetOption[];
+	models: CombinedFacetOption[];
+	editors: CombinedFacetOption[];
+}
+
+/** How much evidence stands behind the current selection. */
+export interface CombinedSelectionSummary {
+	sessions: number;
+	tokens: number;
+	cost: number;
+	loc: number;
+	editTurns: number;
+	/** Weeks in the window with any matching activity. */
+	activeWeeks: number;
+	/** No matching data at all. */
+	empty: boolean;
+	/** Matching data exists but is too thin to read as a trend. */
+	lowSample: boolean;
+}
+
+function emptyCombinedCell(editor: string, model: string): CombinedDailyCell {
+	return {
+		editor, model, vendor: getModelVendor(model),
+		tokens: 0, sessions: 0, cost: 0, loc: 0, interactions: 0,
+		activeDurationMs: 0, durationSessions: 0, editTurns: 0, retries: 0, applies: 0, codeBlocks: 0,
+	};
+}
+
+/**
+ * Normalizes raw per-model weights to sum to 1, collapsing raw model ids onto
+ * their canonical identity on the way. Returns an empty map when nothing
+ * positive was supplied, so callers can fall back to the unknown-model bucket.
+ */
+function canonicalShares(raw: { [model: string]: number } | undefined): Map<string, number> {
+	const byModel = new Map<string, number>();
+	let total = 0;
+	for (const [model, value] of Object.entries(raw ?? {})) {
+		if (!(value > 0)) { continue; }
+		const canonical = getCanonicalModelId(model);
+		byModel.set(canonical, (byModel.get(canonical) ?? 0) + value);
+		total += value;
+	}
+	if (total === 0) { return new Map(); }
+	for (const [model, value] of byModel) { byModel.set(model, value / total); }
+	return byModel;
+}
+
+/** Token weights (input + output) per canonical model for one `ModelUsage` map. */
+function modelTokenShares(modelUsage: ModelUsage | undefined): Map<string, number> {
+	const raw: { [model: string]: number } = {};
+	for (const [model, usage] of Object.entries(modelUsage ?? {})) {
+		raw[model] = (usage.inputTokens || 0) + (usage.outputTokens || 0);
+	}
+	return canonicalShares(raw);
+}
+
+/** Estimated-cost weights per canonical model, so a pricier model keeps its price signal. */
+function modelCostShares(modelUsage: ModelUsage | undefined, deps: EfficiencyDeps): Map<string, number> {
+	const raw: { [model: string]: number } = {};
+	for (const [model, usage] of Object.entries(modelUsage ?? {})) {
+		raw[model] = deps.calculateEstimatedCost({ [model]: usage }, 'copilot');
+	}
+	return canonicalShares(raw);
+}
+
+/** Share of `weights` for `key`, falling back to `fallback` when the weights are empty. */
+function shareOf(weights: Map<string, number>, key: string, fallback: number): number {
+	if (weights.size === 0) { return fallback; }
+	return weights.get(key) ?? 0;
+}
+
+type CellLookup = (date: string, editor: string, model: string) => CombinedDailyCell;
+
+/** Normalized weights for one dimension, or an empty map when nothing positive was supplied. */
+function normalizedWeights(keys: string[], pick: (key: string) => number): Map<string, number> {
+	const raw = keys.map(key => Math.max(0, pick(key)));
+	const total = raw.reduce((a, b) => a + b, 0);
+	const weights = new Map<string, number>();
+	if (total <= 0) { return weights; }
+	keys.forEach((key, index) => weights.set(key, raw[index] / total));
+	return weights;
+}
+
+/**
+ * Splits one day's totals across its (editor × model) cells.
+ *
+ * Every quantity is allocated as `dayTotal × share`, where the share comes from
+ * the most exact breakdown available (per-editor tokens/sessions/LOC, per-model
+ * tokens, per-model estimated cost) *normalized against the day total*. That
+ * keeps each model's own token and price signal while guaranteeing that the
+ * cells of a day add back up to the unfiltered day.
+ */
+function foldDayIntoCells(day: DailyTokenStats, deps: EfficiencyDeps, cellFor: CellLookup): void {
+	const editors = Object.keys(day.editorUsage ?? {});
+	if (editors.length === 0) { return; }
+	const dayLoc = (day.linesAdded ?? 0) + (day.linesRemoved ?? 0);
+	const dayCost = deps.calculateEstimatedCost(day.modelUsage, 'copilot');
+	const equalShare = 1 / editors.length;
+
+	const tokenW = normalizedWeights(editors, e => day.editorUsage[e]?.tokens ?? 0);
+	const sessionW = normalizedWeights(editors, e => day.editorUsage[e]?.sessions ?? 0);
+	const locW = normalizedWeights(editors, e => (day.editorUsage[e]?.linesAdded ?? 0) + (day.editorUsage[e]?.linesRemoved ?? 0));
+	const costW = normalizedWeights(editors, e => deps.calculateEstimatedCost(day.editorModelUsage?.[e] ?? {}, 'copilot'));
+
+	for (const editor of editors) {
+		const tokenShare = shareOf(tokenW, editor, equalShare);
+		const editorTokens = day.tokens * tokenShare;
+		const editorSessions = day.sessions * shareOf(sessionW, editor, equalShare);
+		const editorInteractions = day.interactions * tokenShare;
+		const editorLoc = dayLoc * (locW.size > 0 ? shareOf(locW, editor, equalShare) : tokenShare);
+		const editorCost = dayCost * (costW.size > 0 ? shareOf(costW, editor, equalShare) : tokenShare);
+
+		const usage = day.editorModelUsage?.[editor];
+		const byTokens = modelTokenShares(usage);
+		const byCost = modelCostShares(usage, deps);
+		const models = byTokens.size > 0 ? [...byTokens.keys()] : [UNKNOWN_MODEL_ID];
+		for (const model of models) {
+			const share = shareOf(byTokens, model, 1);
+			const cell = cellFor(day.date, editor, model);
+			cell.tokens += editorTokens * share;
+			cell.sessions += editorSessions * share;
+			cell.interactions += editorInteractions * share;
+			cell.loc += editorLoc * share;
+			cell.cost += editorCost * (byCost.size > 0 ? shareOf(byCost, model, 0) : share);
+		}
+	}
+}
+
+/**
+ * Splits one session's whole-session signals across its models, on the session's
+ * last active day — the same convention the unfiltered trends already use.
+ *
+ * Edit turns and retries are per-model counters and keep their exact relative
+ * split; duration, applies and code blocks are session-wide and are attributed
+ * by token share.
+ */
+function foldSessionIntoCells(s: EfficiencySessionInput, cellFor: CellLookup): void {
+	const editor = s.editor || COMBINED_UNKNOWN_EDITOR;
+	const tokenShares = canonicalShares(s.modelShares);
+	const shares = tokenShares.size > 0 ? tokenShares : new Map([[UNKNOWN_MODEL_ID, 1]]);
+
+	if (s.activeDurationMs !== undefined && s.activeDurationMs > 0) {
+		for (const [model, share] of shares) {
+			const cell = cellFor(s.dayKey, editor, model);
+			cell.activeDurationMs += s.activeDurationMs * share;
+			cell.durationSessions += share;
+		}
+	}
+
+	const addWeighted = (
+		total: number | undefined,
+		weights: Map<string, number>,
+		apply: (cell: CombinedDailyCell, value: number) => void,
+	): void => {
+		if (!total || total <= 0) { return; }
+		const use = weights.size > 0 ? weights : shares;
+		for (const [model, share] of use) { apply(cellFor(s.dayKey, editor, model), total * share); }
+	};
+	addWeighted(s.applies, shares, (cell, value) => { cell.applies += value; });
+	addWeighted(s.codeBlocks, shares, (cell, value) => { cell.codeBlocks += value; });
+	addWeighted(s.editTurns, canonicalShares(s.modelEditTurns), (cell, value) => { cell.editTurns += value; });
+	addWeighted(s.retries, canonicalShares(s.modelRetries), (cell, value) => { cell.retries += value; });
+}
+
+/**
+ * Builds the Combined tab's filterable payload: one entry per day in the
+ * trailing `weeksBack` weeks, each holding its (editor × canonical model) cells.
+ *
+ * Deliberately compact — no session ids, file paths, prompts or a second year of
+ * history — because the whole point is that the webview can re-slice it
+ * client-side without another round trip to the extension host.
+ */
+export function buildCombinedDaily(
+	dailyStats: DailyTokenStats[],
+	sessions: EfficiencySessionInput[],
+	deps: EfficiencyDeps,
+	weeksBack: number = DEFAULT_TREND_WEEKS,
+): CombinedDailyPoint[] {
+	const thisMonday = getMondayOfWeek(deps.now ?? new Date());
+	const start = new Date(thisMonday);
+	start.setDate(thisMonday.getDate() - (weeksBack - 1) * 7);
+	const end = new Date(thisMonday);
+	end.setDate(thisMonday.getDate() + 6);
+	const startKey = fmtKey(start);
+	const endKey = fmtKey(end);
+	const inWindow = (dayKey: string): boolean => dayKey >= startKey && dayKey <= endKey;
+
+	const byDate = new Map<string, Map<string, CombinedDailyCell>>();
+	const cellFor: CellLookup = (date, editor, model) => {
+		let cells = byDate.get(date);
+		if (!cells) { cells = new Map(); byDate.set(date, cells); }
+		const key = `${editor} ${model}`;
+		let cell = cells.get(key);
+		if (!cell) { cell = emptyCombinedCell(editor, model); cells.set(key, cell); }
+		return cell;
+	};
+
+	for (const day of dailyStats) {
+		if (inWindow(day.date)) { foldDayIntoCells(day, deps, cellFor); }
+	}
+	for (const s of sessions) {
+		if (inWindow(s.dayKey)) { foldSessionIntoCells(s, cellFor); }
+	}
+
+	return Array.from(byDate.entries())
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([date, cells]) => ({ date, cells: Array.from(cells.values()) }));
+}
+
+/** Whether a cell survives the current selection. */
+function cellMatches(cell: CombinedDailyCell, filter: CombinedFilter): boolean {
+	return (filter.vendor === COMBINED_FILTER_ALL || cell.vendor === filter.vendor)
+		&& (filter.model === COMBINED_FILTER_ALL || cell.model === filter.model)
+		&& (filter.editor === COMBINED_FILTER_ALL || cell.editor === filter.editor);
+}
+
+function foldCellIntoWeek(week: WeekAccum, cell: CombinedDailyCell): void {
+	week.tokens += cell.tokens;
+	week.sessions += cell.sessions;
+	week.interactions += cell.interactions;
+	week.loc += cell.loc;
+	week.cost += cell.cost;
+	week.activeDurationMs += cell.activeDurationMs;
+	week.durationSessions += cell.durationSessions;
+	week.editTurns += cell.editTurns;
+	week.retries += cell.retries;
+	week.applies += cell.applies;
+	week.codeBlocks += cell.codeBlocks;
+}
+
+/**
+ * Re-aggregates the Combined payload into the same weekly series shape the
+ * unfiltered chart draws, keeping only the cells matching `filter`.
+ *
+ * Pure and cheap enough to run on every filter change in the webview. With the
+ * fully unfiltered selection it reproduces {@link buildEfficiencyTrends} over
+ * the same inputs.
+ */
+export function aggregateCombinedWeekly(
+	points: CombinedDailyPoint[],
+	filter: CombinedFilter = UNFILTERED_COMBINED,
+	now: Date = new Date(),
+	weeksBack: number = DEFAULT_TREND_WEEKS,
+): EfficiencyWeekPoint[] {
+	const weeks = buildEmptyWeeks(now, weeksBack);
+	for (const point of points) {
+		const week = weeks.get(fmtKey(getMondayOfWeek(new Date(point.date + 'T00:00:00'))));
+		if (!week) { continue; }
+		for (const cell of point.cells) {
+			if (cellMatches(cell, filter)) { foldCellIntoWeek(week, cell); }
+		}
+	}
+	return weekPointsFrom(weeks);
+}
+
+/** Sums the weeks matching `filter` into a single evidence summary for disclosure. */
+export function summarizeCombinedSelection(
+	points: CombinedDailyPoint[],
+	filter: CombinedFilter = UNFILTERED_COMBINED,
+	now: Date = new Date(),
+	weeksBack: number = DEFAULT_TREND_WEEKS,
+): CombinedSelectionSummary {
+	const weekly = aggregateCombinedWeekly(points, filter, now, weeksBack);
+	let sessions = 0, tokens = 0, cost = 0, loc = 0, editTurns = 0, activeWeeks = 0;
+	for (const week of weekly) {
+		sessions += week.sessions;
+		tokens += week.tokens;
+		cost += week.cost;
+		loc += week.loc;
+		editTurns += week.editTurns;
+		if (week.sessions > 0 || week.tokens > 0 || week.editTurns > 0) { activeWeeks += 1; }
+	}
+	const empty = activeWeeks === 0;
+	return {
+		sessions, tokens, cost, loc, editTurns, activeWeeks,
+		empty,
+		lowSample: !empty && (sessions < MIN_COMBINED_SESSION_EQUIVALENTS || editTurns < MIN_COMBINED_EDIT_TURNS),
+	};
+}
+
+function facetOptions(
+	points: CombinedDailyPoint[],
+	filter: CombinedFilter,
+	dimension: keyof CombinedFilter,
+	pick: (cell: CombinedDailyCell) => string,
+): CombinedFacetOption[] {
+	// Ignore this dimension's own selection so choosing a value never hides the
+	// alternatives on the same control — the other two still narrow what is offered.
+	const others: CombinedFilter = { ...filter, [dimension]: COMBINED_FILTER_ALL };
+	const totals = new Map<string, CombinedFacetOption>();
+	for (const point of points) {
+		for (const cell of point.cells) {
+			if (!cellMatches(cell, others)) { continue; }
+			const value = pick(cell);
+			const option = totals.get(value) ?? { value, sessions: 0, tokens: 0 };
+			option.sessions += cell.sessions;
+			option.tokens += cell.tokens;
+			totals.set(value, option);
+		}
+	}
+	return Array.from(totals.values()).sort((a, b) => b.tokens - a.tokens || a.value.localeCompare(b.value));
+}
+
+/**
+ * The values each filter can currently take, faceted against the other two
+ * selections so an intersection that would produce an empty chart is not
+ * offered in the first place.
+ */
+export function listCombinedFacets(points: CombinedDailyPoint[], filter: CombinedFilter): CombinedFacets {
+	return {
+		vendors: facetOptions(points, filter, 'vendor', cell => cell.vendor),
+		models: facetOptions(points, filter, 'model', cell => cell.model),
+		editors: facetOptions(points, filter, 'editor', cell => cell.editor),
+	};
+}
+
+/** The filter dimensions, in control order. */
+const COMBINED_DIMENSIONS: (keyof CombinedFilter)[] = ['vendor', 'model', 'editor'];
+
+function optionsForDimension(facets: CombinedFacets, dimension: keyof CombinedFilter): CombinedFacetOption[] {
+	switch (dimension) {
+		case 'vendor': return facets.vendors;
+		case 'model': return facets.models;
+		case 'editor': return facets.editors;
+	}
+}
+
+/** True when nothing at all matches the selection. */
+function hasNoMatchingCells(points: CombinedDailyPoint[], filter: CombinedFilter): boolean {
+	return !points.some(point => point.cells.some(cell => cellMatches(cell, filter)));
+}
+
+/**
+ * Drops selections the data no longer supports and leaves the still-valid ones
+ * alone — narrowing the vendor must not silently reset the editor too.
+ *
+ * `changed` names the dimension the user just picked. The other two are checked
+ * against *that* selection alone, so one stale selection cannot drag a
+ * still-valid one down with it. If the survivors still do not overlap, only the
+ * dimension the user actually changed is kept.
+ */
+export function reconcileCombinedFilter(
+	points: CombinedDailyPoint[],
+	filter: CombinedFilter,
+	changed?: keyof CombinedFilter,
+): CombinedFilter {
+	const result: CombinedFilter = { ...filter };
+	const base: CombinedFilter = changed
+		? { ...UNFILTERED_COMBINED, [changed]: result[changed] }
+		: { ...UNFILTERED_COMBINED };
+	for (const dimension of COMBINED_DIMENSIONS) {
+		if (dimension === changed || result[dimension] === COMBINED_FILTER_ALL) { continue; }
+		const options = optionsForDimension(listCombinedFacets(points, base), dimension);
+		if (!options.some(option => option.value === result[dimension])) { result[dimension] = COMBINED_FILTER_ALL; }
+	}
+	if (hasNoMatchingCells(points, result)) {
+		for (const dimension of COMBINED_DIMENSIONS) {
+			if (dimension !== changed) { result[dimension] = COMBINED_FILTER_ALL; }
+		}
+	}
+	return result;
 }

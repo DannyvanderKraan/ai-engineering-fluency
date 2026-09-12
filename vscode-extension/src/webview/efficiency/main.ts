@@ -11,9 +11,12 @@ import themeStyles from '../shared/theme.css';
 import styles from './styles.css';
 import { getWindowData } from '../../../../src/webview/shared/dataLoader';
 import type {
+	CombinedFacetOption,
+	CombinedFilter,
 	CostAttribution,
 	EfficiencyDelta,
 	EfficiencyViewData,
+	EfficiencyWeekPoint,
 	ModelComparison,
 	ModelComparisonMetricId,
 	ModelComparisonRow,
@@ -22,15 +25,24 @@ import type {
 	SkillImpact,
 } from '../../../../src/efficiencyAnalysis';
 import {
+	aggregateCombinedWeekly,
 	buildModelWeeklySeries,
+	COMBINED_FILTER_ALL,
 	compareModels,
 	computeModelPeriodMetrics,
+	listCombinedFacets,
 	listComparableModels,
+	MIN_COMBINED_EDIT_TURNS,
+	MIN_COMBINED_SESSION_EQUIVALENTS,
+	reconcileCombinedFilter,
 	resolveModelCompareWindow,
 	selectDaysInWindow,
+	summarizeCombinedSelection,
+	UNFILTERED_COMBINED,
 	windowHasModelData,
 } from '../../../../src/efficiencyAnalysis';
-import { initializeWebviewLocalization, setCurrentLanguage } from '../shared/localization';
+import { getModelDisplayName } from '../../../../src/webview/shared/modelUtils';
+import { initializeWebviewLocalization, localize, localizeFormat, setCurrentLanguage } from '../shared/localization';
 
 // Minimal structural types for the dynamically imported Chart.js bundle —
 // a `typeof import('chart.js/auto')` type-import trips TS1542 under CJS resolution.
@@ -458,10 +470,138 @@ function renderValueTab(d: EfficiencyViewData): string {
 		${hint}`;
 }
 
-function renderCombinedTab(d: EfficiencyViewData): string {
+// ── Combined tab ───────────────────────────────────────────────────────
+
+/**
+ * Current Combined-chart selection. Purely client-side: every change re-slices
+ * the `combinedDaily` payload already in the page, so nothing is posted to the
+ * extension host and no session file is read again.
+ */
+const combinedFilter: CombinedFilter = { ...UNFILTERED_COMBINED };
+
+/** Control to re-focus after the next render, so keyboard focus survives a filter change. */
+let pendingFocusId: string | null = null;
+
+/** True when the host sent the filterable payload (older payloads have none). */
+function hasCombinedPayload(d: EfficiencyViewData): boolean {
+	return Array.isArray(d.combinedDaily) && d.combinedDaily.length > 0;
+}
+
+/** The weekly series the Combined chart should draw under the current selection. */
+function combinedWeekly(d: EfficiencyViewData): EfficiencyWeekPoint[] {
+	if (!hasCombinedPayload(d)) { return d.weekly; }
+	return aggregateCombinedWeekly(d.combinedDaily, combinedFilter, payloadNow(d));
+}
+
+/** Options for one filter control: "All" first, then the faceted values. */
+function facetSelectOptions(options: CombinedFacetOption[], label: (value: string) => string): { value: string; label: string }[] {
+	return [
+		{ value: COMBINED_FILTER_ALL, label: localize('efficiency.combined.optionAll') },
+		...options.map(o => ({ value: o.value, label: label(o.value) })),
+	];
+}
+
+/** Human description of the active selection, or "all" when nothing is narrowed. */
+function combinedSelectionText(): string {
+	const parts: string[] = [];
+	const add = (labelKey: string, value: string): void => {
+		if (value !== COMBINED_FILTER_ALL) { parts.push(localizeFormat('efficiency.combined.selectionPart', localize(labelKey), value)); }
+	};
+	add('efficiency.combined.vendorLabel', combinedFilter.vendor);
+	add('efficiency.combined.modelLabel', combinedFilter.model === COMBINED_FILTER_ALL ? COMBINED_FILTER_ALL : getModelDisplayName(combinedFilter.model));
+	add('efficiency.combined.editorLabel', combinedFilter.editor);
+	return parts.length > 0 ? parts.join(' · ') : localize('efficiency.combined.selectionAll');
+}
+
+function renderCombinedFilters(d: EfficiencyViewData): string {
+	const facets = listCombinedFacets(d.combinedDaily, combinedFilter);
+	const control = (id: string, labelKey: string, options: { value: string; label: string }[], selected: string): string => `
+		<span class="combined-filter">
+			<label for="${id}">${escapeHtml(localize(labelKey))}</label>
+			${selectHtml(id, options, selected)}
+		</span>`;
+	const unfiltered = combinedFilter.vendor === COMBINED_FILTER_ALL
+		&& combinedFilter.model === COMBINED_FILTER_ALL
+		&& combinedFilter.editor === COMBINED_FILTER_ALL;
 	return `
+		<div class="combined-filters" role="group" aria-label="${escapeHtml(localize('efficiency.combined.filtersLegend'))}">
+			${control('combined-vendor', 'efficiency.combined.vendorLabel', facetSelectOptions(facets.vendors, v => v), combinedFilter.vendor)}
+			${control('combined-model', 'efficiency.combined.modelLabel', facetSelectOptions(facets.models, getModelDisplayName), combinedFilter.model)}
+			${control('combined-editor', 'efficiency.combined.editorLabel', facetSelectOptions(facets.editors, v => v), combinedFilter.editor)}
+			<button type="button" id="combined-clear" class="combined-clear"${unfiltered ? ' disabled' : ''}>${escapeHtml(localize('efficiency.combined.clearFilters'))}</button>
+		</div>`;
+}
+
+/**
+ * Screen-reader equivalent of the canvas: the same weeks and the same series,
+ * as a table. Without it the Combined chart is a picture with no content.
+ */
+function combinedChartSummary(weekly: EfficiencyWeekPoint[], series: { label: string; values: (number | null)[]; show: boolean }[]): string {
+	const shown = series.filter(s => s.show);
+	const head = shown.map(s => `<th scope="col">${escapeHtml(s.label)}</th>`).join('');
+	const rows = weekly.map((w, i) => `
+		<tr><th scope="row">${escapeHtml(w.label)}</th>${shown.map(s => `<td>${s.values[i] === null ? '—' : (s.values[i] as number).toFixed(0)}</td>`).join('')}</tr>`).join('');
+	return `
+		<table class="sr-only">
+			<caption>${escapeHtml(localize('efficiency.combined.summaryCaption'))}</caption>
+			<thead><tr><th scope="col">${escapeHtml(localize('efficiency.combined.weekColumn'))}</th>${head}</tr></thead>
+			<tbody>${rows}</tbody>
+		</table>`;
+}
+
+function renderCombinedTab(d: EfficiencyViewData): string {
+	const note = `
 		<p class="eff-section-note">Everything on one chart. Ratio lines are <b>indexed to 100</b> at their first measured week so different units share one axis — a line falling below 100 means that ratio improved (except apply rate, where up is good). Bars show raw lines-of-code output per week: efficiency gains only count if the bars hold up.</p>
-		<div class="combined-wrap"><canvas id="combined-chart"></canvas></div>`;
+	`;
+	if (!hasCombinedPayload(d)) {
+		return `${note}<div class="combined-wrap"><canvas id="combined-chart"></canvas></div>`;
+	}
+	const summary = summarizeCombinedSelection(d.combinedDaily, combinedFilter, payloadNow(d));
+	const weekly = combinedWeekly(d);
+	const status = `
+		<p class="combined-status" id="combined-status" role="status" aria-live="polite">${escapeHtml(
+		summary.empty
+			? localizeFormat('efficiency.combined.statusEmpty', combinedSelectionText())
+			: localizeFormat('efficiency.combined.status', combinedSelectionText(), summary.sessions.toFixed(1), String(Math.round(summary.editTurns)), String(summary.activeWeeks)),
+	)}</p>`;
+	if (summary.empty) {
+		return `${note}${renderCombinedFilters(d)}${status}
+			<div class="combined-empty">
+				<p>${escapeHtml(localize('efficiency.combined.empty'))}</p>
+				<button type="button" id="combined-clear-empty" class="combined-clear">${escapeHtml(localize('efficiency.combined.clearFilters'))}</button>
+			</div>`;
+	}
+	const caution = summary.lowSample
+		? `<p class="combined-caution">${escapeHtml(localizeFormat('efficiency.combined.lowSample', String(MIN_COMBINED_SESSION_EQUIVALENTS), String(MIN_COMBINED_EDIT_TURNS)))}</p>`
+		: '';
+	return `${note}${renderCombinedFilters(d)}${status}${caution}
+		<div class="combined-wrap"><canvas id="combined-chart" role="img" aria-label="${escapeHtml(localize('efficiency.combined.chartLabel'))}"></canvas></div>
+		${combinedChartSummary(weekly, combinedSeries(d, weekly))}
+		<p class="combined-attribution">${escapeHtml(localize('efficiency.combined.attribution'))}</p>`;
+}
+
+/** Wires the Combined filters. Each change re-slices the payload and re-renders in place. */
+function wireCombinedControls(): void {
+	const apply = (id: string, dimension: keyof CombinedFilter) => {
+		document.getElementById(id)?.addEventListener('change', ev => {
+			combinedFilter[dimension] = (ev.target as HTMLSelectElement).value;
+			if (data && hasCombinedPayload(data)) {
+				Object.assign(combinedFilter, reconcileCombinedFilter(data.combinedDaily, combinedFilter, dimension));
+			}
+			pendingFocusId = id;
+			render();
+		});
+	};
+	apply('combined-vendor', 'vendor');
+	apply('combined-model', 'model');
+	apply('combined-editor', 'editor');
+	for (const id of ['combined-clear', 'combined-clear-empty']) {
+		document.getElementById(id)?.addEventListener('click', () => {
+			Object.assign(combinedFilter, UNFILTERED_COMBINED);
+			pendingFocusId = 'combined-vendor';
+			render();
+		});
+	}
 }
 
 // ── Models tab ─────────────────────────────────────────────────────────
@@ -1003,22 +1143,34 @@ function indexTo100(values: (number | null)[]): (number | null)[] {
 	return values.map(v => (v === null ? null : (v / base) * 100));
 }
 
+/**
+ * The indexed ratio series drawn on the Combined chart, in legend order.
+ *
+ * Visibility is derived from the series actually handed in rather than from the
+ * payload-wide `has*` flags, so a filtered selection that carries no LOC or no
+ * measurable retry rate drops those lines instead of drawing an empty axis.
+ */
+function combinedSeries(d: EfficiencyViewData, weekly: EfficiencyWeekPoint[]): { label: string; values: (number | null)[]; color: string; show: boolean }[] {
+	return [
+		{ label: 'Cost per 1K lines (index)', values: indexTo100(weekly.map(w => w.costPerKloc)), color: cssVar('--vscode-charts-red', '#fb7185'), show: weekly.some(w => w.costPerKloc !== null) },
+		{ label: 'Tokens per session (index)', values: indexTo100(weekly.map(w => w.tokensPerSession)), color: cssVar('--vscode-charts-blue', '#60a5fa'), show: true },
+		{ label: 'Turns per session (index)', values: indexTo100(weekly.map(w => w.turnsPerSession)), color: cssVar('--vscode-charts-purple', '#c37bff'), show: true },
+		{ label: 'Active min per session (index)', values: indexTo100(weekly.map(w => w.activeMinutesPerSession)), color: cssVar('--vscode-charts-yellow', '#fbbf24'), show: weekly.some(w => w.activeMinutesPerSession !== null) },
+		{ label: 'Retry rate (index)', values: indexTo100(weekly.map(w => w.retryRate)), color: cssVar('--vscode-charts-orange', '#ff9f40'), show: d.hasRetry && weekly.some(w => w.retryRate !== null) },
+	];
+}
+
 async function drawCombinedChart(d: EfficiencyViewData): Promise<void> {
 	await loadChartModule();
 	if (!Chart) { return; }
 	const canvas = document.getElementById('combined-chart') as HTMLCanvasElement | null;
 	if (!canvas) { return; }
-	const labels = d.weekly.map(w => w.label);
+	const weekly = combinedWeekly(d);
+	const labels = weekly.map(w => w.label);
 	const fg = cssVar('--vscode-descriptionForeground', '#999');
 	const grid = cssVar('--vscode-widget-border', 'rgba(128,128,128,0.2)');
-	const lineDefs: { label: string; values: (number | null)[]; color: string; show: boolean }[] = [
-		{ label: 'Cost per 1K lines (index)', values: indexTo100(d.weekly.map(w => w.costPerKloc)), color: cssVar('--vscode-charts-red', '#fb7185'), show: d.hasLoc },
-		{ label: 'Tokens per session (index)', values: indexTo100(d.weekly.map(w => w.tokensPerSession)), color: cssVar('--vscode-charts-blue', '#60a5fa'), show: true },
-		{ label: 'Turns per session (index)', values: indexTo100(d.weekly.map(w => w.turnsPerSession)), color: cssVar('--vscode-charts-purple', '#c37bff'), show: true },
-		{ label: 'Active min per session (index)', values: indexTo100(d.weekly.map(w => w.activeMinutesPerSession)), color: cssVar('--vscode-charts-yellow', '#fbbf24'), show: d.hasDuration },
-		{ label: 'Retry rate (index)', values: indexTo100(d.weekly.map(w => w.retryRate)), color: cssVar('--vscode-charts-orange', '#ff9f40'), show: d.hasRetry },
-	];
-	const datasets: object[] = lineDefs.filter(l => l.show).map(l => ({
+	const hasLoc = weekly.some(w => w.loc > 0);
+	const datasets: object[] = combinedSeries(d, weekly).filter(l => l.show).map(l => ({
 		type: 'line' as const,
 		label: l.label,
 		data: l.values,
@@ -1029,11 +1181,11 @@ async function drawCombinedChart(d: EfficiencyViewData): Promise<void> {
 		pointRadius: 2,
 		yAxisID: 'y',
 	}));
-	if (d.hasLoc) {
+	if (hasLoc) {
 		datasets.push({
 			type: 'bar' as const,
 			label: 'Lines changed (output)',
-			data: d.weekly.map(w => w.loc),
+			data: weekly.map(w => w.loc),
 			backgroundColor: 'rgba(74, 222, 128, 0.35)',
 			borderColor: cssVar('--vscode-charts-green', '#4ade80'),
 			borderWidth: 1,
@@ -1056,7 +1208,7 @@ async function drawCombinedChart(d: EfficiencyViewData): Promise<void> {
 					ticks: { color: fg },
 					grid: { color: grid },
 				},
-				...(d.hasLoc ? {
+				...(hasLoc ? {
 					yLoc: {
 						position: 'right' as const,
 						beginAtZero: true,
@@ -1145,6 +1297,7 @@ function wireEvents(): void {
 		});
 	});
 	wireModelControls();
+	wireCombinedControls();
 	document.getElementById('btn-refresh')?.addEventListener('click', () => { vscode.postMessage({ command: 'refresh' }); });
 	document.getElementById('btn-details')?.addEventListener('click', () => { vscode.postMessage({ command: 'showDetails' }); });
 	document.getElementById('btn-chart')?.addEventListener('click', () => { vscode.postMessage({ command: 'showChart' }); });
@@ -1154,6 +1307,28 @@ function wireEvents(): void {
 	document.getElementById('btn-diagnostics')?.addEventListener('click', () => { vscode.postMessage({ command: 'showDiagnostics' }); });
 	document.getElementById('btn-dashboard')?.addEventListener('click', () => { vscode.postMessage({ command: 'showDashboard' }); });
 	wireExtensionPointButtons(vscode);
+	// A filter change re-renders the whole view, which would otherwise drop
+	// keyboard focus back to the document — put it back on the control just used.
+	if (pendingFocusId) {
+		document.getElementById(pendingFocusId)?.focus();
+		pendingFocusId = null;
+		announceCombinedStatus();
+	}
+}
+
+/**
+ * Re-announces the Combined status line.
+ *
+ * The re-render replaces the whole view, so the live region is a *new* node and
+ * assistive technology has nothing to compare it against — it stays silent.
+ * Rewriting its text after it is in the document is what makes it speak.
+ */
+function announceCombinedStatus(): void {
+	const status = document.getElementById('combined-status');
+	if (!status) { return; }
+	const text = status.textContent ?? '';
+	status.textContent = '';
+	setTimeout(() => { status.textContent = text; }, 50);
 }
 
 async function bootstrap(): Promise<void> {

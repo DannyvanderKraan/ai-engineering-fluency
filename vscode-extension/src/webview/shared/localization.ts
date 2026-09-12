@@ -63,6 +63,23 @@ export interface WebviewLocalization {
 	'logviewer.summary.timeline': string;
 	'logviewer.summary.started': string;
 	'logviewer.summary.lastActivity': string;
+	// Efficiency view — Combined tab filters (model vendor × model × editor)
+	'efficiency.combined.filtersLegend': string;
+	'efficiency.combined.vendorLabel': string;
+	'efficiency.combined.modelLabel': string;
+	'efficiency.combined.editorLabel': string;
+	'efficiency.combined.optionAll': string;
+	'efficiency.combined.clearFilters': string;
+	'efficiency.combined.selectionAll': string;
+	'efficiency.combined.selectionPart': string;
+	'efficiency.combined.status': string;
+	'efficiency.combined.statusEmpty': string;
+	'efficiency.combined.empty': string;
+	'efficiency.combined.lowSample': string;
+	'efficiency.combined.chartLabel': string;
+	'efficiency.combined.summaryCaption': string;
+	'efficiency.combined.weekColumn': string;
+	'efficiency.combined.attribution': string;
 
 	// Add other webview-localizable strings here as needed
 	[key: string]: string;
@@ -117,7 +134,24 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'logviewer.summary.modified': 'Modified',
 	'logviewer.summary.timeline': 'Timeline',
 	'logviewer.summary.started': 'Started',
-	'logviewer.summary.lastActivity': 'Last activity'
+	'logviewer.summary.lastActivity': 'Last activity',
+	// Efficiency view — Combined tab filters
+	'efficiency.combined.filtersLegend': "Filter the Combined chart",
+	'efficiency.combined.vendorLabel': "Model vendor",
+	'efficiency.combined.modelLabel': "Model",
+	'efficiency.combined.editorLabel': "Editor",
+	'efficiency.combined.optionAll': "All",
+	'efficiency.combined.clearFilters': "Clear filters",
+	'efficiency.combined.selectionAll': "All editors, all vendors, all models",
+	'efficiency.combined.selectionPart': "{0}: {1}",
+	'efficiency.combined.status': "{0} — {1} session-equivalents and {2} edit turns across {3} active weeks.",
+	'efficiency.combined.statusEmpty': "{0} — no matching activity in the last 12 weeks.",
+	'efficiency.combined.empty': "No sessions match this combination in the last 12 weeks. Widen or clear the filters to see the chart again.",
+	'efficiency.combined.lowSample': "Low sample: this selection has fewer than {0} session-equivalents or fewer than {1} edit turns. Read the lines as a hint, not a conclusion.",
+	'efficiency.combined.chartLabel': "Indexed efficiency ratios and weekly lines-of-code output for the current selection",
+	'efficiency.combined.summaryCaption': "Combined chart values by week for the current selection",
+	'efficiency.combined.weekColumn': "Week",
+	'efficiency.combined.attribution': "Per-model and per-vendor numbers are attributed, not directly observed: token totals and counters are exact per model, while session duration, lines of code, applies, interactions and the session denominator are split by each model’s share of the session’s tokens. Cost is a Copilot-equivalent estimate for comparison across filters, not billed spend — the model vendor (who built the model) and the billing source (who charges for the call) are different things. Models we cannot place appear under Unclassified rather than being guessed at or dropped."
 };
 
 // Current localization strings, initialized with defaults

@@ -26,6 +26,7 @@ import * as loadingHtml from './loadingHtml';
 // --- Core types ---
 import type {
   TokenUsageStats,
+  ModelEfficiencyUsage,
   ModelUsage,
   ModelId,
   ModelPricing,
@@ -210,10 +211,12 @@ import {
   accumulateDailyModelTokens as _accumulateDailyModelTokens,
   accumulateDailyModelCounters as _accumulateDailyModelCounters,
   buildSessionEfficiencyAttribution as _buildSessionEfficiencyAttribution,
+  computeModelTokenShares as _computeModelTokenShares,
 } from '../../src/modelEfficiency';
 
 // --- Efficiency analysis ---
 import {
+  buildCombinedDaily as _buildCombinedDaily,
   buildEfficiencyTrends as _buildEfficiencyTrends,
   buildSkillUsageTrends as _buildSkillUsageTrends,
   computeCostAttribution as _computeCostAttribution,
@@ -4208,6 +4211,24 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'logviewer.summary.timeline': l10n.t('logviewer.summary.timeline'),
 			'logviewer.summary.started': l10n.t('logviewer.summary.started'),
 			'logviewer.summary.lastActivity': l10n.t('logviewer.summary.lastActivity'),
+			// Efficiency view — Combined tab filters. Templates with {0} placeholders are
+			// resolved webview-side by localizeFormat(), so they pass through unformatted.
+			'efficiency.combined.filtersLegend': l10n.t('efficiency.combined.filtersLegend'),
+			'efficiency.combined.vendorLabel': l10n.t('efficiency.combined.vendorLabel'),
+			'efficiency.combined.modelLabel': l10n.t('efficiency.combined.modelLabel'),
+			'efficiency.combined.editorLabel': l10n.t('efficiency.combined.editorLabel'),
+			'efficiency.combined.optionAll': l10n.t('efficiency.combined.optionAll'),
+			'efficiency.combined.clearFilters': l10n.t('efficiency.combined.clearFilters'),
+			'efficiency.combined.selectionAll': l10n.t('efficiency.combined.selectionAll'),
+			'efficiency.combined.selectionPart': l10n.t('efficiency.combined.selectionPart'),
+			'efficiency.combined.status': l10n.t('efficiency.combined.status'),
+			'efficiency.combined.statusEmpty': l10n.t('efficiency.combined.statusEmpty'),
+			'efficiency.combined.empty': l10n.t('efficiency.combined.empty'),
+			'efficiency.combined.lowSample': l10n.t('efficiency.combined.lowSample'),
+			'efficiency.combined.chartLabel': l10n.t('efficiency.combined.chartLabel'),
+			'efficiency.combined.summaryCaption': l10n.t('efficiency.combined.summaryCaption'),
+			'efficiency.combined.weekColumn': l10n.t('efficiency.combined.weekColumn'),
+			'efficiency.combined.attribution': l10n.t('efficiency.combined.attribution'),
 			// Current language for reference
 			'__language__': language
 		};
@@ -9525,15 +9546,38 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 		this.efficiencyPanel.webview.html = this.getEfficiencyHtml(this.efficiencyPanel.webview, data);
 	}
 
+	/**
+	 * Session totals and the per-model split of edit turns and retries. The
+	 * per-model numbers are exact counters; the Combined tab uses them as the
+	 * attribution weights for a mixed-model session.
+	 */
+	private splitEditCounters(modelEfficiency: ModelEfficiencyUsage | undefined): {
+		editTurns: number; retries: number;
+		modelEditTurns: { [model: string]: number }; modelRetries: { [model: string]: number };
+	} {
+		let editTurns = 0, retries = 0;
+		const modelEditTurns: { [model: string]: number } = {};
+		const modelRetries: { [model: string]: number } = {};
+		for (const [model, c] of Object.entries(modelEfficiency ?? {})) {
+			editTurns += c.editTurns;
+			retries += c.retries;
+			modelEditTurns[model] = (modelEditTurns[model] ?? 0) + c.editTurns;
+			modelRetries[model] = (modelRetries[model] ?? 0) + c.retries;
+		}
+		return { editTurns, retries, modelEditTurns, modelRetries };
+	}
+
 	/** Maps one cached session to the pure-module input shape for efficiency trends. */
-	private toEfficiencySessionInput(sessionData: SessionFileCache, mtime: number): EfficiencySessionInput {
+	private toEfficiencySessionInput(sessionData: SessionFileCache, mtime: number, editor?: string): EfficiencySessionInput {
 		const dayKey = this.computeLastActivityKey(sessionData, mtime);
 		const ua = sessionData.usageAnalysis;
-		let editTurns = 0, retries = 0;
-		for (const c of Object.values(ua?.modelEfficiency ?? {})) { editTurns += c.editTurns; retries += c.retries; }
+		const { editTurns, retries, modelEditTurns, modelRetries } = this.splitEditCounters(ua?.modelEfficiency);
 		const skillCalls = ua?.skillCalls?.byName && Object.keys(ua.skillCalls.byName).length > 0
 			? ua.skillCalls.byName
 			: undefined;
+		// Token weights for the Combined tab's per-model attribution — the same
+		// token-share contract the Models tab uses for whole-session signals.
+		const modelShares = Object.fromEntries(_computeModelTokenShares(_buildSessionEfficiencyAttribution(sessionData)));
 		return {
 			dayKey,
 			activeDurationMs: ua?.sessionDuration?.activeDurationMs,
@@ -9544,6 +9588,10 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 			interactions: sessionData.interactions,
 			totalTokens: sessionData.actualTokens ?? sessionData.tokens,
 			skillCalls,
+			editor,
+			modelShares,
+			modelEditTurns,
+			modelRetries,
 		};
 	}
 
@@ -9567,7 +9615,7 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 			const { results } = await this.loadUsageSessionFiles(undefined, cutoff.getTime());
 			for (const r of results) {
 				if (!r || r.sessionData.interactions === 0) { continue; }
-				inputs.push(this.toEfficiencySessionInput(r.sessionData, r.mtime));
+				inputs.push(this.toEfficiencySessionInput(r.sessionData, r.mtime, this.getEditorTypeFromPath(r.sessionFile)));
 			}
 			this.lastEfficiencySessionInputs = inputs;
 		} catch (error) {
@@ -9619,6 +9667,7 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 		};
 		const weekly = _buildEfficiencyTrends(dailyStats, sessionInputs, deps);
 		const modelDaily = this.buildModelDailyPayload(dailyStats, now);
+		const combinedDaily = _buildCombinedDaily(dailyStats, sessionInputs, deps);
 		const skillTrends = _buildSkillUsageTrends(sessionInputs, deps);
 		const skillImpact = _computeSkillImpact(sessionInputs);
 		const { prevDays, curDays } = _splitTrailingWindows(dailyStats, now);
@@ -9674,6 +9723,7 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 			hasSkills: skillTrends.totalCalls > 0,
 			modelDaily,
 			hasModelComparison: _listComparableModels(modelDaily).filter(m => m.sampleSufficient).length >= 2,
+			combinedDaily,
 			cacheBreakage: usage.last30Days.cacheBreakage ?? null,
 			lastUpdated: now.toISOString(),
 			backendConfigured: this.isBackendConfigured(),

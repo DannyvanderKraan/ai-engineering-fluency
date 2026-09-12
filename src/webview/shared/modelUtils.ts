@@ -134,3 +134,104 @@ export function getModelDisplayName(model: string): string {
     if (UUID_PREFIX.test(model)) { return model.replace(UUID_PREFIX, ''); }
     return decodeSegment(model);
 }
+
+// ---------------------------------------------------------------------------
+// Canonical model identity and underlying model vendor
+// ---------------------------------------------------------------------------
+
+/** Canonical id standing in for "this usage names no model". */
+export const UNKNOWN_MODEL_ID = 'unknown';
+
+/**
+ * Vendor bucket for models we cannot place. Deliberately *not* a guess: an
+ * unrecognized model stays visible under this label instead of being dropped or
+ * filed under a vendor it may not come from.
+ */
+export const UNCLASSIFIED_VENDOR = 'Unclassified';
+
+/**
+ * Canonical identity used when a model has to be *grouped* rather than merely
+ * displayed: the same underlying model reached through `copilot/`, an
+ * org-scoped catalog id, a custom endpoint, or a dash-vs-dot version spelling
+ * collapses onto one key.
+ *
+ * Prefers the id the pricing JSON knows (so `copilot/claude-opus-4-8` and
+ * `claude-opus-4.8` land on the same canonical id); otherwise falls back to the
+ * most-stripped candidate, lowercased so casing differences between editors do
+ * not split a model in two.
+ *
+ * Returns {@link UNKNOWN_MODEL_ID} for sessions that name no model at all.
+ */
+export function getCanonicalModelId(model: string): string {
+	const raw = (model ?? '').trim();
+	if (!raw) { return UNKNOWN_MODEL_ID; }
+	const candidates = getModelLookupCandidates(raw);
+	for (const candidate of candidates) {
+		if (_modelNames[candidate]) { return candidate.toLowerCase(); }
+	}
+	const fallback = candidates.length > 0 ? candidates[candidates.length - 1] : raw;
+	return decodeSegment(fallback).toLowerCase();
+}
+
+/**
+ * Canonical-id prefix → the company that *makes* the model, checked in order.
+ *
+ * This is deliberately a different question from {@link
+ * import('../../chartDataBuilder').getModelBillingProvider} / `getBillingGroup`,
+ * which answer "who bills for this call" — Copilot-hosted calls bill as GitHub
+ * Copilot whatever model runs them, and custom endpoints bill under the
+ * provider name the user typed. Neither tells you who built the model, so
+ * neither may be used as the meaning of a model-vendor filter.
+ */
+const MODEL_VENDOR_PREFIXES: Array<[string, string]> = [
+	['anthropic', 'Anthropic'],
+	['claude', 'Anthropic'],
+	['chatgpt', 'OpenAI'],
+	['codex', 'OpenAI'],
+	['davinci', 'OpenAI'],
+	['gpt', 'OpenAI'],
+	['o1', 'OpenAI'],
+	['o3', 'OpenAI'],
+	['o4', 'OpenAI'],
+	['gemini', 'Google'],
+	['gemma', 'Google'],
+	['google', 'Google'],
+	['codestral', 'Mistral AI'],
+	['devstral', 'Mistral AI'],
+	['magistral', 'Mistral AI'],
+	['ministral', 'Mistral AI'],
+	['mistral', 'Mistral AI'],
+	['pixtral', 'Mistral AI'],
+	['goldeneye', 'xAI'],
+	['grok', 'xAI'],
+	['raptor', 'xAI'],
+	['codellama', 'Meta'],
+	['llama', 'Meta'],
+	['deepseek', 'DeepSeek'],
+	['kimi', 'Moonshot AI'],
+	['moonshot', 'Moonshot AI'],
+	['glm', 'Zhipu AI'],
+	['qwen', 'Alibaba'],
+	['qwq', 'Alibaba'],
+	['mai-', 'Microsoft'],
+	['phi-', 'Microsoft'],
+	['command-', 'Cohere'],
+	['sonar', 'Perplexity'],
+	['minimax', 'MiniMax'],
+];
+
+/**
+ * The company that makes the model behind a raw model id — *not* who bills for
+ * it. Classified from the canonical model id, so a custom endpoint's
+ * user-typed provider label ("Acme" in `customendpoint/Acme/mistral-large`)
+ * never becomes a vendor: only the model part (`mistral-large`) is read.
+ *
+ * @returns the vendor name, or {@link UNCLASSIFIED_VENDOR} when the id matches
+ *          nothing we recognize.
+ */
+export function getModelVendor(model: string): string {
+	const canonical = getCanonicalModelId(model);
+	if (canonical === UNKNOWN_MODEL_ID) { return UNCLASSIFIED_VENDOR; }
+	const match = MODEL_VENDOR_PREFIXES.find(([prefix]) => canonical.startsWith(prefix));
+	return match ? match[1] : UNCLASSIFIED_VENDOR;
+}

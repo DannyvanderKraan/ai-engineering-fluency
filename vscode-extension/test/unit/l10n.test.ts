@@ -196,6 +196,56 @@ test('l10n: usage context-pressure keys resolve in zh-cn', () => {
 	}
 });
 
+test('l10n: Efficiency Combined-filter keys resolve in English', () => {
+	// These label the three Combined-tab filter controls. A missing key here puts
+	// a raw `efficiency.combined.vendorLabel` next to a dropdown.
+	const expected: Record<string, string> = {
+		'efficiency.combined.vendorLabel': 'Model vendor',
+		'efficiency.combined.modelLabel': 'Model',
+		'efficiency.combined.editorLabel': 'Editor',
+		'efficiency.combined.optionAll': 'All',
+		'efficiency.combined.clearFilters': 'Clear filters',
+		'efficiency.combined.selectionAll': 'All editors, all vendors, all models',
+	};
+	for (const [key, english] of Object.entries(expected)) {
+		assert.equal(t(key), english, `English value for ${key}`);
+	}
+	assert.equal(t('efficiency.combined.selectionPart', 'Model vendor', 'Anthropic'), 'Model vendor: Anthropic');
+	assert.equal(
+		t('efficiency.combined.status', 'Model vendor: Anthropic', '6.5', '18', '9'),
+		'Model vendor: Anthropic — 6.5 session-equivalents and 18 edit turns across 9 active weeks.',
+	);
+	// The disclosure has to keep saying that vendor and billing source differ.
+	assert.match(t('efficiency.combined.attribution'), /attributed, not directly observed/);
+	assert.match(t('efficiency.combined.attribution'), /Unclassified/);
+});
+
+test('l10n: Efficiency Combined-filter keys resolve in zh-cn', () => {
+	mock.setLanguage('zh-cn');
+	try {
+		const expected: Record<string, string> = {
+			'efficiency.combined.vendorLabel': '模型厂商',
+			'efficiency.combined.modelLabel': '模型',
+			'efficiency.combined.editorLabel': '编辑器',
+			'efficiency.combined.optionAll': '全部',
+			'efficiency.combined.clearFilters': '清除筛选',
+			'efficiency.combined.weekColumn': '周',
+		};
+		for (const [key, chinese] of Object.entries(expected)) {
+			assert.equal(t(key), chinese, `zh-cn value for ${key}`);
+		}
+		// The Chinese phrasing puts the week count first, so the placeholders are
+		// not in the English order — a plain concatenation would scramble them.
+		assert.equal(
+			t('efficiency.combined.status', '全部编辑器、全部厂商、全部模型', '6.5', '18', '9'),
+			'全部编辑器、全部厂商、全部模型 — 在 9 个活跃周内共 6.5 个会话当量和 18 次编辑轮次。',
+		);
+		assert.equal(t('efficiency.combined.lowSample', '5', '10'), '样本过少：此选择的会话当量少于 5 个，或编辑轮次少于 10 次。这些折线仅供参考，不能作为结论。');
+	} finally {
+		mock.setLanguage('en');
+	}
+});
+
 test("l10n: what's-new notification keys resolve in English", () => {
 	// The two buttons on the one-a-day new-feature notification. A missing key
 	// here would put a raw `whatsNew.takeMeThere` on the button, which is the

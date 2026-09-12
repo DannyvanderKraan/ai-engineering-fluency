@@ -12,6 +12,10 @@
     "`node render-views.js --view <id>` to check it renders.",
     "",
     "noiseFloorPixels: how many differing pixels count as run-to-run noise",
+    "crawl: set to \"deep\" for a view whose controls live behind a tab or a",
+    "re-render — the interaction smoke then re-tags and keeps crawling instead of",
+    "stopping at the first control that replaces the page body.",
+    "",
     "rather than a real change. Only views that draw to a <canvas> need it —",
     "anti-aliasing there is not perfectly reproducible. Omit it (default 0) so",
     "DOM-rendered views are compared exactly."
@@ -72,7 +76,8 @@
       "title": "Efficiency",
       "bundle": "efficiency",
       "global": "__INITIAL_EFFICIENCY__",
-      "fixture": "efficiency.json"
+      "fixture": "efficiency.json",
+      "crawl": "deep"
     },
     {
       "id": "whatsnew",
