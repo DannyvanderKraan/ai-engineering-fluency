@@ -103,6 +103,39 @@ test('a translated string is HTML-escaped, so bundle content cannot inject marku
 	}
 });
 
+test('a placeholder template is escaped too, not just its arguments', () => {
+	// localizeFormat() escapes only what you pass in; the template itself comes from the bundle and
+	// was going in raw. A stray `<` in a translation must render as text, not as markup.
+	initializeWebviewLocalization({
+		'usage.githubActivity.updated': '<em>pwned</em> {0} · {1}',
+		'usage.githubActivity.revalidatingBody': '<em>pwned</em> {0}',
+	});
+	try {
+		const fresh = snapshotFreshnessHtml(FRESH, NOTE, NOW);
+		assert.ok(!fresh.includes('<em>'), fresh);
+		assert.match(fresh, /&lt;em&gt;pwned/);
+		// The argument is trusted HTML by construction, so its own markup still renders.
+		assert.match(fresh, /<strong>/);
+
+		const stale = snapshotFreshnessHtml(STALE, NOTE, NOW);
+		assert.ok(!stale.includes('<em>'), stale);
+		assert.match(stale, /&lt;em&gt;pwned/);
+	} finally {
+		initializeWebviewLocalization({});
+	}
+});
+
+test('a template with no placeholders still renders its slots literally', () => {
+	// A translation that drops {1} must leave the slot visible rather than swallowing the value.
+	initializeWebviewLocalization({ 'usage.githubActivity.updated': 'Updated {0}' });
+	try {
+		const html = snapshotFreshnessHtml(FRESH, NOTE, NOW);
+		assert.match(html, /Updated <strong>/);
+	} finally {
+		initializeWebviewLocalization({});
+	}
+});
+
 test('the English defaults are what the banner shows with no bundle loaded', () => {
 	assert.equal(localize('usage.githubActivity.refreshNow'), '🔄 Refresh now');
 	assert.equal(localize('usage.githubActivity.partialTitle'), 'Partial data — the figures below are a lower bound.');

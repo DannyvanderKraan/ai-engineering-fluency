@@ -19,7 +19,7 @@
  * be unit tested without rendering the whole Usage Analysis panel.
  */
 import { escapeHtml, getTimeSince } from '../shared/formatUtils';
-import { localize, localizeFormat } from '../shared/localization';
+import { localize } from '../shared/localization';
 
 /** The message command the Refresh now button posts to the extension host. */
 export const REFRESH_GITHUB_ACTIVITY_COMMAND = 'refreshGitHubActivity';
@@ -59,19 +59,34 @@ export function snapshotFreshnessState(data: SnapshotFreshness, now: number): Sn
 	return now >= fetchedMs + intervalMs ? 'stale' : 'fresh';
 }
 
+/**
+ * Localize a `{0}`/`{1}` template and interpolate already-safe HTML fragments into it.
+ *
+ * Unlike `localizeFormat()`, the **template itself** is escaped before substitution. A bundle value
+ * is first-party, but it is still data: a stray `<` in a translation should render as text, not as
+ * markup, and a helper that only escapes the arguments quietly trusts every future translator.
+ * The arguments are the trusted half here — every caller builds them from `escapeHtml()` output.
+ */
+function localizeHtmlTemplate(key: string, ...safeHtmlArgs: string[]): string {
+	return escapeHtml(localize(key)).replace(/\{(\d+)\}/g, (match, index) => {
+		const i = Number(index);
+		return i < safeHtmlArgs.length ? safeHtmlArgs[i] : match;
+	});
+}
+
 /** The status line for a snapshot that has been fetched at least once. */
 function statusLineHtml(data: SnapshotFreshness, state: SnapshotFreshnessState): string {
 	const age = `<strong>${escapeHtml(getTimeSince(data.fetchedAt!))}</strong>`;
 	if (state === 'stale') {
 		return `⏳ <strong>${escapeHtml(localize('usage.githubActivity.revalidatingTitle'))}</strong> `
-			+ localizeFormat('usage.githubActivity.revalidatingBody', age);
+			+ localizeHtmlTemplate('usage.githubActivity.revalidatingBody', age);
 	}
 	const fetchedMs = Date.parse(data.fetchedAt!);
 	const intervalMs = data.refreshIntervalMs ?? 0;
 	const nextRefresh = Number.isFinite(fetchedMs) && intervalMs > 0
 		? new Date(fetchedMs + intervalMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 		: localize('usage.githubActivity.unknownNextRefresh');
-	return localizeFormat('usage.githubActivity.updated', age, escapeHtml(nextRefresh));
+	return localizeHtmlTemplate('usage.githubActivity.updated', age, escapeHtml(nextRefresh));
 }
 
 /**

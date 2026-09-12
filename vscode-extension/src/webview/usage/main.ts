@@ -2434,8 +2434,11 @@ function wireGitHubActivityRefresh(): void {
 	if (githubActivityRefreshWired) { return; }
 	githubActivityRefreshWired = true;
 	document.addEventListener('click', (event) => {
-		const target = event.target as HTMLElement | null;
-		if (!target?.closest(`[data-action="${REFRESH_GITHUB_ACTIVITY_ACTION}"]`)) { return; }
+		// `event.target` is only guaranteed to be an EventTarget — a non-Element target has no
+		// closest(), so calling it unguarded would throw instead of ignoring the click.
+		const target = event.target;
+		if (!(target instanceof Element)) { return; }
+		if (!target.closest(`[data-action="${REFRESH_GITHUB_ACTIVITY_ACTION}"]`)) { return; }
 		vscode.postMessage({ command: REFRESH_GITHUB_ACTIVITY_COMMAND });
 	});
 }
