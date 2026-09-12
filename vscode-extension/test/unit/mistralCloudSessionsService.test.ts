@@ -166,6 +166,35 @@ test('requestMistralJson: destroys the socket on timeout instead of leaving it h
 	}
 });
 
+test('requestMistralJson: destroys the socket when an abort signal fires', async () => {
+	// collectMistralCloudSessions ties this signal to the same deadline as withTimeout's own
+	// promise-level rejection, so the transport actually gets torn down instead of continuing to
+	// receive (and buffer) bytes after the caller has already moved on.
+	let capturedReq: FakeClientRequest | undefined;
+	const requestFn = ((() => {
+		const req = new FakeClientRequest();
+		capturedReq = req;
+		return req as unknown as http.ClientRequest;
+	}) as unknown) as MistralRequestFn;
+	let destroyed = false;
+	const originalDestroy = FakeClientRequest.prototype.destroy;
+	FakeClientRequest.prototype.destroy = function (err?: Error) {
+		destroyed = true;
+		return originalDestroy.call(this, err);
+	};
+	try {
+		const controller = new AbortController();
+		const resultPromise = requestMistralJson('/v1/conversations', 'key', requestFn, controller.signal);
+		controller.abort();
+		const result = await resultPromise;
+		assert.equal(destroyed, true, 'expected the socket to be destroyed when the signal aborts');
+		assert.match(result.error ?? '', /abort/i);
+		assert.ok(capturedReq, 'expected a request to have been created');
+	} finally {
+		FakeClientRequest.prototype.destroy = originalDestroy;
+	}
+});
+
 test('collectMistralCloudSessions: success sets authenticated=true and no error', async () => {
 	const body = [{ id: 'c1', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', agent_id: 'a', name: 'n', description: null, object: 'conversation' }];
 	const result = await collectMistralCloudSessions('key', { requestFn: makeRequestFn(makeResponse(body)) });
@@ -243,6 +272,21 @@ test('collectMistralCloudSessions: stops at a bounded page cap instead of pagina
 	// The page cap cut a listing that still looked full short, so the total must read as larger
 	// than what was actually fetched — otherwise the "N of Total" UI would present it as complete.
 	assert.ok(result.totalCount > result.conversations.length, 'expected the total to signal truncation');
+});
+
+test('collectMistralCloudSessions: trusts an API-reported total that exactly equals the page-cap fetch count', async () => {
+	// Every page reports the true total (2000) via `total`, and it happens to exactly equal what
+	// the page cap fetches (20 pages * 100). The API's own total is authoritative here — a real
+	// "that's everything" signal — and must not be second-guessed into a false "2000 of 2001".
+	const fullPage = { data: Array.from({ length: 100 }, (_, i) => conv(`x-${i}`)), total: 2000 };
+	const requestFn = (((_opts: any, callback: (res: http.IncomingMessage) => void) => {
+		const req = new FakeClientRequest();
+		process.nextTick(() => callback(makeResponse(fullPage)));
+		return req as unknown as http.ClientRequest;
+	}) as unknown) as typeof http.request;
+	const result = await collectMistralCloudSessions('key', { requestFn });
+	assert.equal(result.conversations.length, 2000);
+	assert.equal(result.totalCount, 2000, 'expected the authoritative API total, not a synthesized truncation bump');
 });
 
 test('collectMistralCloudSessions: a later-page failure keeps the pages already fetched but reports it as incomplete', async () => {

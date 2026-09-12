@@ -301,7 +301,10 @@ let isLoading = true;
 let currentBackendInfo: BackendStorageInfo | undefined;
 let currentGithubAuth: GitHubAuthStatus | undefined;
 let currentMistralCloudSessions: MistralCloudSessionsResult | undefined;
-let currentMistralApiKeyConfigured = false;
+// undefined until the first status/result message arrives. Rendering "Connect" as a default
+// before that would let a user with an existing key click it and overwrite that key before the
+// real (already "configured") status shows up a moment later.
+let currentMistralApiKeyConfigured: boolean | undefined;
 // True from the moment Connect/Refresh is clicked until a result (success or error) — or, for a
 // cancelled Connect prompt, mistralCloudPromptCancelled — comes back. Guards against rapid clicks
 // firing concurrent requests against the beta API's rate limits.
@@ -3463,7 +3466,11 @@ function renderMistralCloudSummaryCards(result: MistralCloudSessionsResult | und
 </div>`;
 }
 
-function renderMistralCloudButtons(configured: boolean, requestInFlight: boolean): string {
+function renderMistralCloudButtons(configured: boolean, requestInFlight: boolean, statusKnown: boolean): string {
+  // Before the first status/result message arrives, rendering "Connect" by default would let a
+  // user with an existing key click it and overwrite that key moments before the real
+  // (already "configured") status shows up — render nothing until the status is actually known.
+  if (!statusKnown) { return ""; }
   const disabledAttr = requestInFlight ? " disabled" : "";
   return configured
     ? `<button class="button" id="btn-mistral-refresh"${disabledAttr}><span>🔄</span><span>${localize("mistral.button.refresh")}</span></button>
@@ -3473,12 +3480,13 @@ function renderMistralCloudButtons(configured: boolean, requestInFlight: boolean
 
 function renderMistralCloudTab(
   result: MistralCloudSessionsResult | undefined,
-  apiKeyConfigured: boolean,
+  apiKeyConfigured: boolean | undefined,
   requestInFlight: boolean,
 ): string {
   const betaLabel = localize("mistral.betaBadge");
   const betaBadge = `<span class="beta-badge" title="${escapeHtml(betaLabel)}">${escapeHtml(betaLabel)}</span>`;
-  const configured = apiKeyConfigured || !!result?.authenticated;
+  const statusKnown = apiKeyConfigured !== undefined || result !== undefined;
+  const configured = !!apiKeyConfigured || !!result?.authenticated;
   const errorBox = result?.error
     ? `<div class="info-box" style="border-left:4px solid #d9534f;"><div><b>${localize("mistral.error.label")}</b> ${escapeHtml(result.error)}</div></div>`
     : "";
@@ -3495,7 +3503,7 @@ ${introText} ${scopeText} ${keyStorageText}
 ${renderMistralCloudSummaryCards(result, configured)}
 ${errorBox}
 <div class="button-group" id="mistral-cloud-buttons">
-${renderMistralCloudButtons(configured, requestInFlight)}
+${renderMistralCloudButtons(configured, requestInFlight, statusKnown)}
 </div>
 ${renderMistralConversationTable(result?.conversations ?? [])}
 </div>`;

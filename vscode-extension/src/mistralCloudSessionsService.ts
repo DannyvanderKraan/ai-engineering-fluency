@@ -72,6 +72,7 @@ export function requestMistralJson(
   path: string,
   apiKey: string,
   requestFn: MistralRequestFn = https.request,
+  signal?: AbortSignal,
 ): Promise<MistralJsonResult> {
   return new Promise((resolve) => {
     // Both the request and its response can fail independently (e.g. the response socket resets
@@ -82,6 +83,7 @@ export function requestMistralJson(
       settled = true;
       resolve(result);
     };
+    if (signal?.aborted) { settle({ error: 'Aborted' }); return; }
     const url = new URL(path, MISTRAL_API_BASE);
     const req = requestFn(
       {
@@ -120,6 +122,16 @@ export function requestMistralJson(
         });
       },
     );
+    // `withTimeout` at the collectMistralCloudSessions level only rejects that outer promise; on
+    // its own it never stops this request. Without destroying the socket here too, a response that
+    // keeps trickling bytes without ending would keep accumulating in `data` and holding the
+    // connection open indefinitely after the UI has already reported the timeout.
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        req.destroy();
+        settle({ error: 'Aborted' });
+      }, { once: true });
+    }
     attachRequestFailureHandling(req, FETCH_TIMEOUT_MS, (message) => settle({ error: message }));
     req.end();
   });
@@ -164,6 +176,12 @@ export interface MistralListResult {
    */
   rawCount?: number;
   totalCount?: number;
+  /**
+   * True when `totalCount` came from the API's own `total` field rather than falling back to this
+   * page's own (post-filter) conversation count. Distinguishes a genuine "this is everything"
+   * signal from a same-page fallback that happens to have no aggregate meaning across pages.
+   */
+  totalIsFromApi?: boolean;
   statusCode?: number;
   error?: string;
 }
@@ -174,12 +192,12 @@ export interface MistralListResult {
  */
 export async function listMistralConversations(
   apiKey: string,
-  options: { pageSize?: number; page?: number; requestFn?: MistralRequestFn } = {},
+  options: { pageSize?: number; page?: number; requestFn?: MistralRequestFn; signal?: AbortSignal } = {},
 ): Promise<MistralListResult> {
   const pageSize = Math.min(Math.max(options.pageSize ?? DEFAULT_PAGE_SIZE, 1), 100);
   const page = Math.max(options.page ?? 0, 0);
   const path = `/v1/conversations?page_size=${pageSize}${page > 0 ? `&page=${page}` : ''}`;
-  const result = await requestMistralJson(path, apiKey, options.requestFn);
+  const result = await requestMistralJson(path, apiKey, options.requestFn, options.signal);
   if (result.error) { return { error: result.error, statusCode: result.statusCode }; }
   const body = result.body;
   // The API may return a bare array, or an object envelope keyed `conversations` (the documented
@@ -195,22 +213,30 @@ export async function listMistralConversations(
     const conv = normalizeConversation(raw);
     if (conv) { conversations.push(conv); }
   }
+  const totalIsFromApi = typeof body?.total === 'number';
   return {
     conversations,
     rawCount: rawList.length,
-    totalCount: typeof body?.total === 'number' ? body.total : conversations.length,
+    totalCount: totalIsFromApi ? body.total : conversations.length,
+    totalIsFromApi,
     statusCode: result.statusCode,
   };
 }
 
 /**
- * The total to report to the caller: the API's own total when it's larger than what we actually
- * fetched, otherwise a synthetic "more than shown" total when the page cap cut the listing short
- * while the last fetched page was still full. That keeps the existing "N of Total" UI honest about
- * truncation even when the API never reports a `total` at all.
+ * The total to report to the caller. An API-reported total is trusted outright — including when
+ * it exactly equals what we fetched, which is a genuine "this is everything" signal, not something
+ * to override with a synthetic truncation bump. Only when the API never reported a total at all do
+ * we synthesize a "more than shown" total for a listing the page cap cut short while the last
+ * fetched page was still full, so the existing "N of Total" UI stays honest about truncation.
  */
-function computeEffectiveTotal(fetchedCount: number, apiTotal: number | undefined, hitPageCap: boolean): number {
-  if (apiTotal !== undefined && apiTotal > fetchedCount) { return apiTotal; }
+function computeEffectiveTotal(
+  fetchedCount: number,
+  apiTotal: number | undefined,
+  apiTotalIsAuthoritative: boolean,
+  hitPageCap: boolean,
+): number {
+  if (apiTotalIsAuthoritative && apiTotal !== undefined) { return apiTotal; }
   return hitPageCap ? fetchedCount + 1 : fetchedCount;
 }
 
@@ -226,16 +252,17 @@ function computeEffectiveTotal(fetchedCount: number, apiTotal: number | undefine
  */
 async function listAllMistralConversations(
   apiKey: string,
-  options: { pageSize?: number; requestFn?: MistralRequestFn } = {},
+  options: { pageSize?: number; requestFn?: MistralRequestFn; signal?: AbortSignal } = {},
 ): Promise<MistralListResult & { partialError?: string }> {
   const pageSize = Math.min(Math.max(options.pageSize ?? DEFAULT_PAGE_SIZE, 1), 100);
   const conversations: MistralCloudConversation[] = [];
   let totalCount: number | undefined;
+  let totalIsFromApi = false;
   let statusCode: number | undefined;
   let hitPageCap = false;
   let partialError: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
-    const pageResult = await listMistralConversations(apiKey, { pageSize, page, requestFn: options.requestFn });
+    const pageResult = await listMistralConversations(apiKey, { pageSize, page, requestFn: options.requestFn, signal: options.signal });
     if (pageResult.error) {
       if (page === 0) { return { error: pageResult.error, statusCode: pageResult.statusCode }; }
       partialError = `Refresh stopped after page ${page + 1}: ${pageResult.error}`;
@@ -244,13 +271,16 @@ async function listAllMistralConversations(
     statusCode = pageResult.statusCode;
     const pageConversations = pageResult.conversations ?? [];
     conversations.push(...pageConversations);
-    if (typeof pageResult.totalCount === 'number') { totalCount = pageResult.totalCount; }
+    if (typeof pageResult.totalCount === 'number') {
+      totalCount = pageResult.totalCount;
+      totalIsFromApi = !!pageResult.totalIsFromApi;
+    }
     if ((pageResult.rawCount ?? pageConversations.length) < pageSize) { break; }
     if (page === MAX_PAGES - 1) { hitPageCap = true; }
   }
   return {
     conversations,
-    totalCount: computeEffectiveTotal(conversations.length, totalCount, hitPageCap),
+    totalCount: computeEffectiveTotal(conversations.length, totalCount, totalIsFromApi, hitPageCap),
     statusCode,
     partialError,
   };
@@ -266,9 +296,16 @@ export async function collectMistralCloudSessions(
   options: { pageSize?: number; requestFn?: MistralRequestFn } = {},
 ): Promise<MistralCloudSessionsResult> {
   const fetchedAt = new Date().toISOString();
+  // withTimeout below only rejects this function's own promise when the deadline fires — on its
+  // own it does nothing to the underlying HTTPS request. Without this, a response that keeps
+  // trickling bytes without ending (or a request that otherwise never settles) would keep
+  // accumulating data and holding the socket open indefinitely after the UI has already reported
+  // the timeout. Abort it on the same deadline so the transport actually gets torn down.
+  const abortController = new AbortController();
+  const abortTimer = setTimeout(() => abortController.abort(), FETCH_TIMEOUT_MS);
   try {
     const list = await withTimeout(
-      listAllMistralConversations(apiKey, options),
+      listAllMistralConversations(apiKey, { ...options, signal: abortController.signal }),
       FETCH_TIMEOUT_MS,
       'Mistral cloud sessions fetch',
     );
@@ -304,5 +341,7 @@ export async function collectMistralCloudSessions(
       fetchedAt,
       error: e instanceof Error ? e.message : String(e),
     };
+  } finally {
+    clearTimeout(abortTimer);
   }
 }

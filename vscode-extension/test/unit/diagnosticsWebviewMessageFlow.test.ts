@@ -343,9 +343,31 @@ test('restoring the Mistral Cloud tab reveals the Research leaf bar and marks it
 	assert.ok(mistralTabContent?.classList.contains('active'), 'expected the Mistral Cloud tab content to be active');
 });
 
-test('Mistral Cloud tab: Connect posts promptMistralApiKey when no key is configured', async () => {
+test('Mistral Cloud tab: neither Connect nor Refresh render before the Mistral status is known', async () => {
+	// A real diagnostics load has no mistralCloudSessionsStatus in its initial payload — it arrives
+	// later via backendStorageInfoLoaded. Defaulting to "not configured" in the meantime would let a
+	// user with an existing key click Connect and overwrite it before the real status shows up.
 	await preloadBundle();
 	const harness = bootWebviewUnsettled(buildInitialData());
+	await harness.settle();
+
+	assert.equal(harness.window.document.getElementById('btn-mistral-connect'), null, 'Connect must not render before status is known');
+	assert.equal(harness.window.document.getElementById('btn-mistral-refresh'), null, 'Refresh must not render before status is known');
+
+	harness.post({
+		command: 'backendStorageInfoLoaded',
+		backendStorageInfo: configuredBackendStorageInfo(),
+		githubAuth: { authenticated: false },
+		mistralCloudSessionsStatus: { apiKeyConfigured: true },
+	});
+	await harness.settle();
+
+	assert.ok(harness.window.document.getElementById('btn-mistral-refresh'), 'expected Refresh once status arrives and reports a configured key');
+});
+
+test('Mistral Cloud tab: Connect posts promptMistralApiKey when no key is configured', async () => {
+	await preloadBundle();
+	const harness = bootWebviewUnsettled(buildInitialData({ mistralCloudSessionsStatus: { apiKeyConfigured: false } }));
 	await harness.settle();
 
 	const connectButton = harness.window.document.getElementById('btn-mistral-connect') as HTMLButtonElement | null;
@@ -504,7 +526,7 @@ test('Mistral Cloud tab: Refresh disables itself while the request is in flight 
 
 test('Mistral Cloud tab: Connect disables itself while the prompt is in flight and re-enables on cancellation', async () => {
 	await preloadBundle();
-	const harness = bootWebviewUnsettled(buildInitialData());
+	const harness = bootWebviewUnsettled(buildInitialData({ mistralCloudSessionsStatus: { apiKeyConfigured: false } }));
 	await harness.settle();
 	const connectButton = () => harness.window.document.getElementById('btn-mistral-connect') as HTMLButtonElement | null;
 

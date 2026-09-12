@@ -253,6 +253,7 @@
   "mistral.error.label": "Error:",
   "mistral.error.storeFailed": "Failed to store the Mistral API key.",
   "mistral.error.keyCheckFailed": "Couldn't verify the Mistral API key is still current; try Refresh again.",
+  "mistral.error.removeFailed": "Failed to remove the Mistral API key.",
   "mistral.button.refresh": "Refresh",
   "mistral.button.removeApiKey": "Remove API key",
   "mistral.button.connectApiKey": "Connect Mistral API key",

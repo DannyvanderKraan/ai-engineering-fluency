@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as childProcess from 'child_process';
+import * as crypto from 'crypto';
 
 // Localization support (key-based resolver over package.nls*.json — see l10n.ts
 // for why vscode.l10n.t() cannot be used directly with key-based strings)
@@ -580,6 +581,12 @@ class CopilotTokenTracker implements vscode.Disposable {
 	private diagnosticsAllSessionFiles: string[] = [];
 	// BETA: last Mistral cloud (web) sessions result fetched for the diagnostics Research tab.
 	private _lastMistralCloudSessions?: MistralCloudSessionsResult;
+	// BETA: non-reversible fingerprint of the API key `_lastMistralCloudSessions` was fetched
+	// under (see fingerprintMistralApiKey). A plain "is a key configured" boolean can't tell one
+	// configured key from another, so this lets sendBackendStorageInfoEarly detect a key changed
+	// in another VS Code window (whose own generation counter this window never sees) before
+	// rehydrating a cached listing that actually belongs to a different account.
+	private _lastMistralCloudSessionsKeyFingerprint?: string;
 	// BETA: bumped on every refresh/clear so a slow in-flight refresh can detect it was superseded
 	// (e.g. by "Remove API key") and discard its result instead of repopulating stale data.
 	private _mistralCloudRefreshGeneration = 0;
@@ -10795,9 +10802,10 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       this.log('Mistral API key stored.');
       // Drop the previous key's cached listing now, synchronously with the store: otherwise it
       // stays around until the refresh below resolves, and closing/reopening the panel during
-      // that window would have sendBackendStorageInfoEarly rehydrate the old account's
+      // that window would have let sendBackendStorageInfoEarly rehydrate the old account's
       // conversations under the newly-entered key.
       this._lastMistralCloudSessions = undefined;
+      this._lastMistralCloudSessionsKeyFingerprint = undefined;
       await this.diagHandleRefreshMistralCloudSessions();
     } catch (error) {
       this.error('Failed to store Mistral API key:', error);
@@ -10816,18 +10824,42 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       await this.context.secrets.delete(MISTRAL_API_KEY_SECRET);
       this._mistralCloudRefreshGeneration++;
       this._lastMistralCloudSessions = undefined;
+      this._lastMistralCloudSessionsKeyFingerprint = undefined;
       this.log('Mistral API key removed.');
       if (this.diagnosticsPanel && this.isPanelOpen(this.diagnosticsPanel)) {
         this.diagnosticsPanel.webview.postMessage({ command: 'mistralCloudSessionsResult', result: this.buildEmptyMistralCloudSessionsResult() });
       }
     } catch (error) {
       this.error('Failed to remove Mistral API key:', error);
+      // Unlike the store path, a silent log line here leaves the user thinking the key was
+      // removed when the configured state (and any cached listing) is actually unchanged.
+      vscode.window.showErrorMessage(l10n.t('mistral.error.removeFailed'));
     }
   }
 
   /** BETA: empty result shape used when no key is configured or the key was cleared. */
   private buildEmptyMistralCloudSessionsResult(): MistralCloudSessionsResult {
     return { conversations: [], totalCount: 0, authenticated: false, fetchedAt: '', error: '' };
+  }
+
+  /**
+   * BETA: cheap non-reversible fingerprint of an API key, used only to detect whether
+   * `_lastMistralCloudSessions` still belongs to the currently configured key — never used for
+   * authentication, logged, or persisted anywhere.
+   */
+  private static fingerprintMistralApiKey(key: string): string {
+    return crypto.createHash('sha256').update(key).digest('hex');
+  }
+
+  /** BETA: fingerprint of the currently stored Mistral API key, or undefined if none is configured
+   * or the read failed. */
+  private async getCurrentMistralApiKeyFingerprint(): Promise<string | undefined> {
+    try {
+      const key = await this.context.secrets.get(MISTRAL_API_KEY_SECRET);
+      return key ? CopilotTokenTracker.fingerprintMistralApiKey(key) : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** BETA: whether a Mistral API key is currently stored. Sent as initial data to the webview. */
@@ -10878,6 +10910,7 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     if (generation !== this._mistralCloudRefreshGeneration || !this.diagnosticsPanel || !this.isPanelOpen(this.diagnosticsPanel)) { return; }
     if (!apiKey) {
       this._lastMistralCloudSessions = this.buildEmptyMistralCloudSessionsResult();
+      this._lastMistralCloudSessionsKeyFingerprint = undefined;
       this.diagnosticsPanel.webview.postMessage({ command: 'mistralCloudSessionsResult', result: this._lastMistralCloudSessions });
       return;
     }
@@ -10894,8 +10927,18 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       this.postMistralKeyCheckFailedResult();
       return;
     }
-    if (currentKey !== apiKey) { return; }
+    if (currentKey !== apiKey) {
+      // The key changed to something else while this fetch was in flight, but not through a path
+      // that bumped this window's generation counter — e.g. Connect/Remove used in a different VS
+      // Code window, which has its own separate in-memory counter untouched by this one. A silent
+      // return here would leave this window's cache and the webview's in-flight state stuck
+      // reflecting neither the old nor the new key; re-run the refresh so it settles on whatever
+      // key is actually current now instead.
+      await this.diagHandleRefreshMistralCloudSessions();
+      return;
+    }
     this._lastMistralCloudSessions = result;
+    this._lastMistralCloudSessionsKeyFingerprint = CopilotTokenTracker.fingerprintMistralApiKey(apiKey);
     if (this.diagnosticsPanel && this.isPanelOpen(this.diagnosticsPanel)) {
       this.diagnosticsPanel.webview.postMessage({ command: 'mistralCloudSessionsResult', result });
     }
@@ -12050,17 +12093,20 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     backendStorageInfo: any;
     githubAuthStatus: { authenticated: boolean; username?: string };
   }> {
-    const backendStorageInfo = await this.getBackendStorageInfo();
+    // BETA: run alongside getBackendStorageInfo() (which performs session discovery and can take a
+    // while) rather than after it — otherwise a user with an existing key would see "No API key
+    // configured" and a clickable Connect button for however long that scan takes, long enough to
+    // click through and overwrite the real key before its status arrives. Generation-guarded (see
+    // getFreshMistralCloudSessionsStatus) so a set/clear landing while this read is in flight can't
+    // win a race against that handler's own, more current, status message.
+    const [backendStorageInfo, mistralCloudSessionsStatus] = await Promise.all([
+      this.getBackendStorageInfo(),
+      this.getFreshMistralCloudSessionsStatus(),
+    ]);
     this.log(
       `Backend storage info retrieved: azure.enabled=${backendStorageInfo.azure?.enabled}, azure.configured=${backendStorageInfo.azure?.isConfigured}, teamServer.enabled=${backendStorageInfo.teamServer?.enabled}, teamServer.configured=${backendStorageInfo.teamServer?.isConfigured}`,
     );
     const githubAuthStatus = this.getGitHubAuthStatus();
-    // BETA: sent early (rather than only in the later diagnosticDataLoaded message) so a user with
-    // an existing key doesn't briefly see "No API key configured" and a Connect button while the
-    // full diagnostics scan is still running. Generation-guarded (see
-    // getFreshMistralCloudSessionsStatus) so a set/clear landing while this read is in flight can't
-    // win a race against that handler's own, more current, status message.
-    const mistralCloudSessionsStatus = await this.getFreshMistralCloudSessionsStatus();
     if (this.isPanelOpen(panel)) {
       panel.webview.postMessage({
         command: "backendStorageInfoLoaded",
@@ -12070,12 +12116,19 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       });
       // BETA: rehydrate a previously fetched conversation listing (kept in memory across panel
       // close/reopen within the same extension host session) so it doesn't disappear until the
-      // user clicks Refresh again. Only when the just-read status still says a key is configured —
-      // otherwise the key was cleared outside diagHandleClearMistralApiKey (which already resets
-      // _lastMistralCloudSessions itself), and resending the stale authenticated result here would
-      // flip the webview back to "configured" with conversations that no longer belong to any key.
+      // user clicks Refresh again. `apiKeyConfigured` alone can't tell "still the same key" from
+      // "a different key that also happens to be configured" (e.g. changed in another VS Code
+      // window, whose own generation counter this window never sees), so also verify the cached
+      // listing's key fingerprint still matches the currently configured key before rehydrating —
+      // otherwise drop it rather than show one account's conversations under another's key.
       if (this._lastMistralCloudSessions && mistralCloudSessionsStatus.apiKeyConfigured) {
-        panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this._lastMistralCloudSessions });
+        const currentKeyFingerprint = await this.getCurrentMistralApiKeyFingerprint();
+        if (currentKeyFingerprint && currentKeyFingerprint === this._lastMistralCloudSessionsKeyFingerprint) {
+          panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this._lastMistralCloudSessions });
+        } else {
+          this._lastMistralCloudSessions = undefined;
+          this._lastMistralCloudSessionsKeyFingerprint = undefined;
+        }
       }
     }
     return { backendStorageInfo, githubAuthStatus };
