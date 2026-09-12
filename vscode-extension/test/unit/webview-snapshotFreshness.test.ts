@@ -1,19 +1,20 @@
 import test from 'node:test';
 import * as assert from 'node:assert/strict';
 import {
-	AGENT_SESSIONS_PARTIAL_NOTE,
+	AGENT_SESSIONS_PARTIAL_NOTE_KEY,
 	REFRESH_GITHUB_ACTIVITY_ACTION,
 	REFRESH_GITHUB_ACTIVITY_COMMAND,
-	REPO_PR_PARTIAL_NOTE,
+	REPO_PR_PARTIAL_NOTE_KEY,
 	snapshotFreshnessHtml,
 	snapshotFreshnessState,
 } from '../../src/webview/usage/snapshotFreshness';
+import { initializeWebviewLocalization, localize } from '../../src/webview/shared/localization';
 
 const HOUR = 60 * 60 * 1000;
 const NOW = Date.parse('2026-08-29T12:00:00Z');
 const FRESH = { fetchedAt: '2026-08-29T11:30:00Z', refreshIntervalMs: HOUR };
 const STALE = { fetchedAt: '2026-08-29T10:00:00Z', refreshIntervalMs: HOUR };
-const NOTE = { partialNote: REPO_PR_PARTIAL_NOTE };
+const NOTE = { partialNoteKey: REPO_PR_PARTIAL_NOTE_KEY };
 
 test('a snapshot that has never been fetched says so and still offers a refresh', () => {
 	assert.equal(snapshotFreshnessState({}, NOW), 'never-fetched');
@@ -61,7 +62,7 @@ test('partial data is called out as a lower bound, with the panel-specific reaso
 	assert.match(html, /lower bound/);
 	assert.ok(html.includes('did not complete'), html);
 
-	const agentHtml = snapshotFreshnessHtml({ ...FRESH, partial: true }, { partialNote: AGENT_SESSIONS_PARTIAL_NOTE }, NOW);
+	const agentHtml = snapshotFreshnessHtml({ ...FRESH, partial: true }, { partialNoteKey: AGENT_SESSIONS_PARTIAL_NOTE_KEY }, NOW);
 	assert.ok(agentHtml.includes('task-detail budget'), agentHtml);
 });
 
@@ -69,10 +70,42 @@ test('complete data carries no lower-bound warning', () => {
 	assert.ok(!snapshotFreshnessHtml({ ...FRESH, partial: false }, NOTE, NOW).includes('lower bound'));
 });
 
-test('the partial note is HTML-escaped, so a hostile note cannot inject markup', () => {
-	const html = snapshotFreshnessHtml({ ...FRESH, partial: true }, { partialNote: '<img src=x onerror=alert(1)>' }, NOW);
-	assert.ok(!html.includes('<img'), html);
-	assert.match(html, /&lt;img/);
+test('every banner string goes through the localization bundle', () => {
+	// The webview renders whatever the extension host passed for these keys. Rendering with a
+	// translated bundle must change the banner — if a string were still hardcoded it would stay
+	// English here, which is exactly what the hardcoded-strings gate exists to catch.
+	initializeWebviewLocalization({
+		'usage.githubActivity.revalidatingTitle': '[[revalidating]]',
+		'usage.githubActivity.cachePolicy': '[[policy]]',
+		'usage.githubActivity.refreshNow': '[[refresh]]',
+		'usage.githubActivity.partialTitle': '[[partial]]',
+		'usage.githubActivity.partialRepoPrs': '[[repo-note]]',
+	});
+	try {
+		const html = snapshotFreshnessHtml({ ...STALE, partial: true }, NOTE, NOW);
+		for (const marker of ['[[revalidating]]', '[[policy]]', '[[refresh]]', '[[partial]]', '[[repo-note]]']) {
+			assert.ok(html.includes(marker), `${marker} missing from ${html}`);
+		}
+		assert.ok(!html.includes('Revalidating.'), html);
+	} finally {
+		initializeWebviewLocalization({});
+	}
+});
+
+test('a translated string is HTML-escaped, so bundle content cannot inject markup', () => {
+	initializeWebviewLocalization({ 'usage.githubActivity.partialRepoPrs': '<img src=x onerror=alert(1)>' });
+	try {
+		const html = snapshotFreshnessHtml({ ...FRESH, partial: true }, NOTE, NOW);
+		assert.ok(!html.includes('<img'), html);
+		assert.match(html, /&lt;img/);
+	} finally {
+		initializeWebviewLocalization({});
+	}
+});
+
+test('the English defaults are what the banner shows with no bundle loaded', () => {
+	assert.equal(localize('usage.githubActivity.refreshNow'), '🔄 Refresh now');
+	assert.equal(localize('usage.githubActivity.partialTitle'), 'Partial data — the figures below are a lower bound.');
 });
 
 test('the refresh button posts the command the extension host handles', () => {

@@ -19,6 +19,7 @@
  * be unit tested without rendering the whole Usage Analysis panel.
  */
 import { escapeHtml, getTimeSince } from '../shared/formatUtils';
+import { localize, localizeFormat } from '../shared/localization';
 
 /** The message command the Refresh now button posts to the extension host. */
 export const REFRESH_GITHUB_ACTIVITY_COMMAND = 'refreshGitHubActivity';
@@ -30,9 +31,11 @@ export const REFRESH_GITHUB_ACTIVITY_ACTION = 'refresh-github-activity';
 const BOX_STYLE = 'margin-bottom:12px; padding:8px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; font-size:11px; color:var(--text-secondary);';
 
 /** The button that asks the host for an immediate revalidation of both GitHub-activity caches. */
-const REFRESH_BUTTON = `<button type="button" data-action="${REFRESH_GITHUB_ACTIVITY_ACTION}"
+function refreshButtonHtml(): string {
+	return `<button type="button" data-action="${REFRESH_GITHUB_ACTIVITY_ACTION}"
     style="margin-left:8px; padding:2px 8px; font-size:11px; cursor:pointer; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary);"
-    title="Revalidate the cached GitHub data now instead of waiting for the next hourly refresh">🔄 Refresh now</button>`;
+    title="${escapeHtml(localize('usage.githubActivity.refreshNowTooltip'))}">${escapeHtml(localize('usage.githubActivity.refreshNow'))}</button>`;
+}
 
 /** The subset of a snapshot the banner reads — both result shapes structurally satisfy it. */
 export interface SnapshotFreshness {
@@ -56,41 +59,51 @@ export function snapshotFreshnessState(data: SnapshotFreshness, now: number): Sn
 	return now >= fetchedMs + intervalMs ? 'stale' : 'fresh';
 }
 
-/**
- * Render the freshness banner.
- *
- * @param partialNote Panel-specific explanation of *why* the data can be a lower bound.
- * @param now Injected for testing; defaults to the current time.
- */
-export function snapshotFreshnessHtml(
-	data: SnapshotFreshness,
-	options: { partialNote: string },
-	now: number = Date.now(),
-): string {
-	const state = snapshotFreshnessState(data, now);
-	if (state === 'never-fetched') {
-		return `<div style="${BOX_STYLE}">🕒 <strong>Not fetched yet.</strong> The snapshot is refreshed hourly by the main VS Code window — it will appear here once that first refresh completes.${REFRESH_BUTTON}</div>`;
+/** The status line for a snapshot that has been fetched at least once. */
+function statusLineHtml(data: SnapshotFreshness, state: SnapshotFreshnessState): string {
+	const age = `<strong>${escapeHtml(getTimeSince(data.fetchedAt!))}</strong>`;
+	if (state === 'stale') {
+		return `⏳ <strong>${escapeHtml(localize('usage.githubActivity.revalidatingTitle'))}</strong> `
+			+ localizeFormat('usage.githubActivity.revalidatingBody', age);
 	}
 	const fetchedMs = Date.parse(data.fetchedAt!);
 	const intervalMs = data.refreshIntervalMs ?? 0;
 	const nextRefresh = Number.isFinite(fetchedMs) && intervalMs > 0
 		? new Date(fetchedMs + intervalMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-		: 'unknown';
-	const status = state === 'stale'
-		? `⏳ <strong>Revalidating.</strong> Showing the cached snapshot from <strong>${escapeHtml(getTimeSince(data.fetchedAt!))}</strong> while it is refreshed.`
-		: `🕒 Updated <strong>${escapeHtml(getTimeSince(data.fetchedAt!))}</strong> · next refresh after ${escapeHtml(nextRefresh)}.`;
+		: localize('usage.githubActivity.unknownNextRefresh');
+	return localizeFormat('usage.githubActivity.updated', age, escapeHtml(nextRefresh));
+}
+
+/**
+ * Render the freshness banner.
+ *
+ * @param partialNoteKey Localization key for the panel-specific explanation of *why* the data can
+ *   be a lower bound — {@link REPO_PR_PARTIAL_NOTE_KEY} or {@link AGENT_SESSIONS_PARTIAL_NOTE_KEY}.
+ * @param now Injected for testing; defaults to the current time.
+ */
+export function snapshotFreshnessHtml(
+	data: SnapshotFreshness,
+	options: { partialNoteKey: string },
+	now: number = Date.now(),
+): string {
+	const state = snapshotFreshnessState(data, now);
+	if (state === 'never-fetched') {
+		return `<div style="${BOX_STYLE}">🕒 <strong>${escapeHtml(localize('usage.githubActivity.notFetchedTitle'))}</strong> `
+			+ `${escapeHtml(localize('usage.githubActivity.notFetchedBody'))}${refreshButtonHtml()}</div>`;
+	}
 	const partial = data.partial
-		? `<div style="margin-top:4px;">⚠️ <strong>Partial data — the figures below are a lower bound.</strong> ${escapeHtml(options.partialNote)}</div>`
+		? `<div style="margin-top:4px;">⚠️ <strong>${escapeHtml(localize('usage.githubActivity.partialTitle'))}</strong> `
+			+ `${escapeHtml(localize(options.partialNoteKey))}</div>`
 		: '';
 	return `<div style="${BOX_STYLE}">
-    ${status}
-    Cached and refreshed at most once an hour, by a single VS Code window, to keep GitHub API usage low.${REFRESH_BUTTON}
+    ${statusLineHtml(data, state)}
+    ${escapeHtml(localize('usage.githubActivity.cachePolicy'))}${refreshButtonHtml()}
     ${partial}
   </div>`;
 }
 
-/** Why the Repository PRs figures can be a lower bound. */
-export const REPO_PR_PARTIAL_NOTE = 'At least one repository listing did not complete (an error, a timeout, or the page cap), so some pull requests in the window are not counted.';
+/** Localization key for why the Repository PRs figures can be a lower bound. */
+export const REPO_PR_PARTIAL_NOTE_KEY = 'usage.githubActivity.partialRepoPrs';
 
-/** Why the Cloud Agent figures can be a lower bound. */
-export const AGENT_SESSIONS_PARTIAL_NOTE = 'Some tasks were not detailed this pass — the task-detail budget was exhausted, or a task listing did not complete.';
+/** Localization key for why the Cloud Agent figures can be a lower bound. */
+export const AGENT_SESSIONS_PARTIAL_NOTE_KEY = 'usage.githubActivity.partialAgentTasks';

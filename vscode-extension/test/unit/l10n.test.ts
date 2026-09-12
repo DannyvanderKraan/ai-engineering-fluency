@@ -298,3 +298,114 @@ test('l10n: log viewer summary card labels resolve in zh-cn', () => {
 		mock.setLanguage('en');
 	}
 });
+
+// HydraFusion Routing section (log viewer) and its Session Steps Overview integration
+// (hardcoded-strings baseline fix) — guards against these strings resurfacing in English
+// for zh-CN users. Ported from PR #2065: these strings landed on main un-localized, so this
+// gate is red on the base branch too; the port makes it a no-op once #2065 merges.
+test('l10n: HydraFusion Routing labels resolve in English', () => {
+	const expected: Record<string, string> = {
+		'hydrafusion.table.cost': 'Cost',
+		'hydrafusion.turn.costTooltip': 'Cost for this turn',
+		'hydrafusion.turn.jumpToStepTooltip': 'Jump to step #{0} in the Session Steps Overview below',
+		'hydrafusion.turn.jumpToStepLabel': '⤵ step #{0}',
+		'hydrafusion.turnsPanel.subtitle': 'Expand a turn to see each leg, what it decided, and what it cost. ● marks the leg whose output you actually received; ✗ marks a leg a judge rejected. The same legs also appear under their step in the Session Steps Overview below.',
+		'hydrafusion.overview.toggleLegsAriaLabel': 'Toggle HydraFusion legs for step #{0}',
+		'hydrafusion.overview.showLegsTooltip': 'Show the HydraFusion legs behind this step',
+		'hydrafusion.overview.legsCaption': '⚡ HydraFusion legs for step #{0} — total',
+		'hydrafusion.overview.modelChangedTooltip': 'Model changed from the previous step',
+		'hydrafusion.overview.expandHint': '⚡ expand a step to see the HydraFusion legs behind it',
+	};
+	for (const [key, english] of Object.entries(expected)) {
+		assert.equal(t(key), english, `English value for ${key}`);
+	}
+});
+
+test('l10n: HydraFusion Routing labels resolve in zh-cn', () => {
+	mock.setLanguage('zh-cn');
+	try {
+		const expected: Record<string, string> = {
+			'hydrafusion.table.cost': '成本',
+			'hydrafusion.turn.costTooltip': '本轮成本',
+			'hydrafusion.turn.jumpToStepTooltip': '跳转到下方会话步骤概览中的步骤 #{0}',
+			'hydrafusion.turn.jumpToStepLabel': '⤵ 步骤 #{0}',
+			'hydrafusion.turnsPanel.subtitle': '展开某一轮以查看每个环节，它的判定结果及花费。● 标记你实际收到输出的环节；✗ 标记被评审判定拒绝的环节。相同的环节也会出现在下方会话步骤概览中对应的步骤下。',
+			'hydrafusion.overview.toggleLegsAriaLabel': '切换步骤 #{0} 的 HydraFusion 环节',
+			'hydrafusion.overview.showLegsTooltip': '显示此步骤背后的 HydraFusion 环节',
+			'hydrafusion.overview.legsCaption': '⚡ 步骤 #{0} 的 HydraFusion 环节 — 共计',
+			'hydrafusion.overview.modelChangedTooltip': '模型较上一步骤有变化',
+			'hydrafusion.overview.expandHint': '⚡ 展开步骤以查看其背后的 HydraFusion 环节',
+		};
+		for (const [key, chinese] of Object.entries(expected)) {
+			assert.equal(t(key), chinese, `zh-cn value for ${key}`);
+		}
+	} finally {
+		mock.setLanguage('en');
+	}
+});
+
+// Usage view — the GitHub activity freshness banner shared by the Repository PRs and Cloud Agent
+// tabs. These are rendered webview-side through localize()/localizeFormat(), so a missing or
+// mistranslated key silently shows English to zh-CN users instead of failing anywhere.
+test('l10n: GitHub activity freshness banner labels resolve in English', () => {
+	const expected: Record<string, string> = {
+		'usage.githubActivity.refreshNow': '🔄 Refresh now',
+		'usage.githubActivity.refreshNowTooltip': 'Revalidate the cached GitHub data now instead of waiting for the next hourly refresh',
+		'usage.githubActivity.notFetchedTitle': 'Not fetched yet.',
+		'usage.githubActivity.notFetchedBody': 'The snapshot is refreshed hourly by the main VS Code window — it will appear here once that first refresh completes.',
+		'usage.githubActivity.revalidatingTitle': 'Revalidating.',
+		'usage.githubActivity.revalidatingBody': 'Showing the cached snapshot from {0} while it is refreshed.',
+		'usage.githubActivity.updated': '🕒 Updated {0} · next refresh after {1}.',
+		'usage.githubActivity.unknownNextRefresh': 'unknown',
+		'usage.githubActivity.cachePolicy': 'Cached and refreshed at most once an hour, by a single VS Code window, to keep GitHub API usage low.',
+		'usage.githubActivity.partialTitle': 'Partial data — the figures below are a lower bound.',
+		'usage.githubActivity.partialRepoPrs': 'At least one repository listing did not complete (an error, a timeout, or the page cap), so some pull requests in the window are not counted.',
+		'usage.githubActivity.partialAgentTasks': 'Some tasks were not detailed this pass — the task-detail budget was exhausted, or a task listing did not complete.',
+	};
+	for (const [key, english] of Object.entries(expected)) {
+		assert.equal(t(key), english, `English value for ${key}`);
+	}
+});
+
+test('l10n: GitHub activity freshness banner labels resolve in zh-cn', () => {
+	mock.setLanguage('zh-cn');
+	try {
+		const expected: Record<string, string> = {
+			'usage.githubActivity.refreshNow': '🔄 立即刷新',
+			'usage.githubActivity.refreshNowTooltip': '立即重新校验已缓存的 GitHub 数据，无需等待下一次每小时刷新',
+			'usage.githubActivity.notFetchedTitle': '尚未获取。',
+			'usage.githubActivity.notFetchedBody': '快照由主 VS Code 窗口每小时刷新一次 — 首次刷新完成后会显示在这里。',
+			'usage.githubActivity.revalidatingTitle': '正在重新校验。',
+			'usage.githubActivity.revalidatingBody': '刷新期间显示 {0} 的缓存快照。',
+			'usage.githubActivity.updated': '🕒 更新于 {0} · 下次刷新在 {1} 之后。',
+			'usage.githubActivity.unknownNextRefresh': '未知',
+			'usage.githubActivity.cachePolicy': '由单个 VS Code 窗口缓存并最多每小时刷新一次，以降低 GitHub API 用量。',
+			'usage.githubActivity.partialTitle': '数据不完整 — 下方数字为下限值。',
+			'usage.githubActivity.partialRepoPrs': '至少有一个仓库的列表未能完整枚举（出错、超时或达到分页上限），因此时间窗口内的部分拉取请求未被计入。',
+			'usage.githubActivity.partialAgentTasks': '本次未获取全部任务的明细 — 任务明细预算已用尽，或任务列表未能完整枚举。',
+		};
+		for (const [key, chinese] of Object.entries(expected)) {
+			assert.equal(t(key), chinese, `zh-cn value for ${key}`);
+		}
+	} finally {
+		mock.setLanguage('en');
+	}
+});
+
+test('l10n: the banner\'s placeholder templates keep their {0}/{1} slots in both languages', () => {
+	// localizeFormat() fills these webview-side; a translation that drops a slot would silently
+	// swallow the snapshot age or the next-refresh time.
+	for (const key of ['usage.githubActivity.revalidatingBody', 'usage.githubActivity.updated']) {
+		assert.match(t(key), /\{0\}/, `English ${key} keeps its {0} slot`);
+	}
+	assert.match(t('usage.githubActivity.updated'), /\{1\}/, 'English updated keeps its {1} slot');
+	mock.setLanguage('zh-cn');
+	try {
+		for (const key of ['usage.githubActivity.revalidatingBody', 'usage.githubActivity.updated']) {
+			assert.match(t(key), /\{0\}/, `zh-cn ${key} keeps its {0} slot`);
+		}
+		assert.match(t('usage.githubActivity.updated'), /\{1\}/, 'zh-cn updated keeps its {1} slot');
+	} finally {
+		mock.setLanguage('en');
+	}
+});

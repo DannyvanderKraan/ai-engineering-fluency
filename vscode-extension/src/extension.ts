@@ -4279,6 +4279,20 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'usage.contextPressure.nearLimitLabel': l10n.t('usage.contextPressure.nearLimitLabel'),
 			'usage.contextPressure.worstFill': l10n.t('usage.contextPressure.worstFill'),
 			'usage.contextPressure.nearLimitTooltip': l10n.t('usage.contextPressure.nearLimitTooltip'),
+			// Usage view — GitHub activity freshness banner. Templates with {0}/{1} are
+			// resolved webview-side by localizeFormat(), so they are passed through unformatted.
+			'usage.githubActivity.refreshNow': l10n.t('usage.githubActivity.refreshNow'),
+			'usage.githubActivity.refreshNowTooltip': l10n.t('usage.githubActivity.refreshNowTooltip'),
+			'usage.githubActivity.notFetchedTitle': l10n.t('usage.githubActivity.notFetchedTitle'),
+			'usage.githubActivity.notFetchedBody': l10n.t('usage.githubActivity.notFetchedBody'),
+			'usage.githubActivity.revalidatingTitle': l10n.t('usage.githubActivity.revalidatingTitle'),
+			'usage.githubActivity.revalidatingBody': l10n.t('usage.githubActivity.revalidatingBody'),
+			'usage.githubActivity.updated': l10n.t('usage.githubActivity.updated'),
+			'usage.githubActivity.cachePolicy': l10n.t('usage.githubActivity.cachePolicy'),
+			'usage.githubActivity.partialTitle': l10n.t('usage.githubActivity.partialTitle'),
+			'usage.githubActivity.unknownNextRefresh': l10n.t('usage.githubActivity.unknownNextRefresh'),
+			'usage.githubActivity.partialRepoPrs': l10n.t('usage.githubActivity.partialRepoPrs'),
+			'usage.githubActivity.partialAgentTasks': l10n.t('usage.githubActivity.partialAgentTasks'),
 			// Details view — collapsible "Usage by Editor" section heading tooltips
 			'details.editorSection.show': l10n.t('details.editorSection.show'),
 			'details.editorSection.hide': l10n.t('details.editorSection.hide'),
@@ -4309,6 +4323,19 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'logviewer.summary.timeline': l10n.t('logviewer.summary.timeline'),
 			'logviewer.summary.started': l10n.t('logviewer.summary.started'),
 			'logviewer.summary.lastActivity': l10n.t('logviewer.summary.lastActivity'),
+			// HydraFusion Routing section (log viewer) and its Session Steps Overview integration.
+			// Templates with {0} are resolved webview-side by localizeFormat(), so they are passed
+			// through unformatted here.
+			'hydrafusion.table.cost': l10n.t('hydrafusion.table.cost'),
+			'hydrafusion.turn.costTooltip': l10n.t('hydrafusion.turn.costTooltip'),
+			'hydrafusion.turn.jumpToStepTooltip': l10n.t('hydrafusion.turn.jumpToStepTooltip'),
+			'hydrafusion.turn.jumpToStepLabel': l10n.t('hydrafusion.turn.jumpToStepLabel'),
+			'hydrafusion.turnsPanel.subtitle': l10n.t('hydrafusion.turnsPanel.subtitle'),
+			'hydrafusion.overview.toggleLegsAriaLabel': l10n.t('hydrafusion.overview.toggleLegsAriaLabel'),
+			'hydrafusion.overview.showLegsTooltip': l10n.t('hydrafusion.overview.showLegsTooltip'),
+			'hydrafusion.overview.legsCaption': l10n.t('hydrafusion.overview.legsCaption'),
+			'hydrafusion.overview.modelChangedTooltip': l10n.t('hydrafusion.overview.modelChangedTooltip'),
+			'hydrafusion.overview.expandHint': l10n.t('hydrafusion.overview.expandHint'),
 			// Current language for reference
 			'__language__': language
 		};

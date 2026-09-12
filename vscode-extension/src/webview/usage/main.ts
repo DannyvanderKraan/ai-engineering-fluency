@@ -4,10 +4,10 @@ import { createPeriodSelector, PERIOD_LABELS, type Period } from '../shared/peri
 import { navButtonsHtml } from '../shared/buttonConfig';
 import { ContextReferenceUsage, getTotalContextRefs } from '../shared/contextRefUtils';
 import {
-	AGENT_SESSIONS_PARTIAL_NOTE,
+	AGENT_SESSIONS_PARTIAL_NOTE_KEY,
 	REFRESH_GITHUB_ACTIVITY_ACTION,
 	REFRESH_GITHUB_ACTIVITY_COMMAND,
-	REPO_PR_PARTIAL_NOTE,
+	REPO_PR_PARTIAL_NOTE_KEY,
 	snapshotFreshnessHtml,
 } from './snapshotFreshness';
 import { escapeHtml, formatCompact, formatCost, formatDurationShort, formatFileSize, formatFixed, formatNumber, formatPercent, getTimeSince, safeSectionHtml, setFormatLocale } from '../shared/formatUtils';
@@ -2561,7 +2561,7 @@ function renderRepoPrRow(r: RepoPrInfo, cell: string, cellCenter: string): strin
 
 /** Freshness line for the Repository PRs snapshot. */
 function repoPrSnapshotFreshnessHtml(data: RepoPrStatsResult): string {
-  return snapshotFreshnessHtml(data, { partialNote: REPO_PR_PARTIAL_NOTE });
+  return snapshotFreshnessHtml(data, { partialNoteKey: REPO_PR_PARTIAL_NOTE_KEY });
 }
 
 function renderReposPrContent(data: RepoPrStatsResult): string {
@@ -2682,7 +2682,7 @@ function buildAgentSessionRows(data: AgentSessionsResult, cell: string, cellCent
 
 /** Freshness line for the Cloud Agent snapshot. */
 function agentSnapshotFreshnessHtml(data: AgentSessionsResult): string {
-  return snapshotFreshnessHtml(data, { partialNote: AGENT_SESSIONS_PARTIAL_NOTE });
+  return snapshotFreshnessHtml(data, { partialNoteKey: AGENT_SESSIONS_PARTIAL_NOTE_KEY });
 }
 
 function renderAgentSessionsContent(data: AgentSessionsResult): string {

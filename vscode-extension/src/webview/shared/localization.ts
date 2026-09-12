@@ -32,6 +32,20 @@ export interface WebviewLocalization {
 	'usage.contextPressure.worstFill': string;
 	'usage.contextPressure.nearLimitTooltip': string;
 
+	// Usage view — GitHub activity (Repository PRs / Cloud Agent) freshness banner
+	'usage.githubActivity.refreshNow': string;
+	'usage.githubActivity.refreshNowTooltip': string;
+	'usage.githubActivity.notFetchedTitle': string;
+	'usage.githubActivity.notFetchedBody': string;
+	'usage.githubActivity.revalidatingTitle': string;
+	'usage.githubActivity.revalidatingBody': string;
+	'usage.githubActivity.updated': string;
+	'usage.githubActivity.cachePolicy': string;
+	'usage.githubActivity.partialTitle': string;
+	'usage.githubActivity.unknownNextRefresh': string;
+	'usage.githubActivity.partialRepoPrs': string;
+	'usage.githubActivity.partialAgentTasks': string;
+
 	// Details view — collapsible "Usage by Editor" section heading tooltips
 	'details.editorSection.show': string;
 	'details.editorSection.hide': string;
@@ -64,6 +78,18 @@ export interface WebviewLocalization {
 	'logviewer.summary.started': string;
 	'logviewer.summary.lastActivity': string;
 
+	// HydraFusion Routing section (log viewer) and its Session Steps Overview integration
+	'hydrafusion.table.cost': string;
+	'hydrafusion.turn.costTooltip': string;
+	'hydrafusion.turn.jumpToStepTooltip': string;
+	'hydrafusion.turn.jumpToStepLabel': string;
+	'hydrafusion.turnsPanel.subtitle': string;
+	'hydrafusion.overview.toggleLegsAriaLabel': string;
+	'hydrafusion.overview.showLegsTooltip': string;
+	'hydrafusion.overview.legsCaption': string;
+	'hydrafusion.overview.modelChangedTooltip': string;
+	'hydrafusion.overview.expandHint': string;
+
 	// Add other webview-localizable strings here as needed
 	[key: string]: string;
 }
@@ -90,6 +116,18 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'usage.contextPressure.nearLimitLabel': '⚠️ Sessions near the limit',
 	'usage.contextPressure.worstFill': 'Fullest session reached {0}% of its window',
 	'usage.contextPressure.nearLimitTooltip': 'Copilot CLI sessions that filled at least {0}% of their context window without compacting — the early-warning band before context starts getting dropped',
+	'usage.githubActivity.refreshNow': '🔄 Refresh now',
+	'usage.githubActivity.refreshNowTooltip': 'Revalidate the cached GitHub data now instead of waiting for the next hourly refresh',
+	'usage.githubActivity.notFetchedTitle': 'Not fetched yet.',
+	'usage.githubActivity.notFetchedBody': 'The snapshot is refreshed hourly by the main VS Code window — it will appear here once that first refresh completes.',
+	'usage.githubActivity.revalidatingTitle': 'Revalidating.',
+	'usage.githubActivity.revalidatingBody': 'Showing the cached snapshot from {0} while it is refreshed.',
+	'usage.githubActivity.updated': '🕒 Updated {0} · next refresh after {1}.',
+	'usage.githubActivity.cachePolicy': 'Cached and refreshed at most once an hour, by a single VS Code window, to keep GitHub API usage low.',
+	'usage.githubActivity.partialTitle': 'Partial data — the figures below are a lower bound.',
+	'usage.githubActivity.unknownNextRefresh': 'unknown',
+	'usage.githubActivity.partialRepoPrs': 'At least one repository listing did not complete (an error, a timeout, or the page cap), so some pull requests in the window are not counted.',
+	'usage.githubActivity.partialAgentTasks': 'Some tasks were not detailed this pass — the task-detail budget was exhausted, or a task listing did not complete.',
 	'details.editorSection.show': 'Show Usage by Editor',
 	'details.editorSection.hide': 'Hide Usage by Editor',
 	'logviewer.summary.interactions': 'Interactions',
@@ -117,7 +155,17 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'logviewer.summary.modified': 'Modified',
 	'logviewer.summary.timeline': 'Timeline',
 	'logviewer.summary.started': 'Started',
-	'logviewer.summary.lastActivity': 'Last activity'
+	'logviewer.summary.lastActivity': 'Last activity',
+	'hydrafusion.table.cost': 'Cost',
+	'hydrafusion.turn.costTooltip': 'Cost for this turn',
+	'hydrafusion.turn.jumpToStepTooltip': 'Jump to step #{0} in the Session Steps Overview below',
+	'hydrafusion.turn.jumpToStepLabel': '⤵ step #{0}',
+	'hydrafusion.turnsPanel.subtitle': 'Expand a turn to see each leg, what it decided, and what it cost. ● marks the leg whose output you actually received; ✗ marks a leg a judge rejected. The same legs also appear under their step in the Session Steps Overview below.',
+	'hydrafusion.overview.toggleLegsAriaLabel': 'Toggle HydraFusion legs for step #{0}',
+	'hydrafusion.overview.showLegsTooltip': 'Show the HydraFusion legs behind this step',
+	'hydrafusion.overview.legsCaption': '⚡ HydraFusion legs for step #{0} — total',
+	'hydrafusion.overview.modelChangedTooltip': 'Model changed from the previous step',
+	'hydrafusion.overview.expandHint': '⚡ expand a step to see the HydraFusion legs behind it'
 };
 
 // Current localization strings, initialized with defaults
