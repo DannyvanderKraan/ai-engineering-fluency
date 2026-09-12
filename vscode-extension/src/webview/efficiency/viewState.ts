@@ -36,7 +36,22 @@ export interface EfficiencyScopeState {
 	/** Underlying model vendor to narrow the Models tab to; empty means every vendor. */
 	vendor: string;
 	/** Drill-down stack, outermost first. The last entry is the active range. */
-	drill: EfficiencyRange[];
+	drill: DrillStep[];
+}
+
+/**
+ * One level of the drill-down stack.
+ *
+ * Carries the resolution that was selected *before* the drill so Back can put
+ * it back. Without it an explicit choice is silently downgraded to `auto` on
+ * the way out — pick Weekly on the 30-day range, drill into a week, press
+ * Back, and the chart returns as Auto/daily rather than the Weekly the user
+ * asked for.
+ */
+export interface DrillStep {
+	range: EfficiencyRange;
+	/** The resolution in effect before this drill level was entered. */
+	from: EfficiencyResolution;
 }
 
 /** How deep a drill-down chain may go before the Back trail stops being useful. */
@@ -57,6 +72,22 @@ function isRange(value: unknown): value is EfficiencyRange {
 }
 
 /**
+ * Accepts either a {@link DrillStep} or a bare range — the shape this stack
+ * had before it carried the pre-drill resolution. A legacy entry restores to
+ * `auto`, which is what it used to do anyway.
+ */
+function toDrillStep(value: unknown): DrillStep | null {
+	if (isRange(value)) { return { range: { ...value, id: 'custom' }, from: 'auto' }; }
+	if (typeof value !== 'object' || value === null) { return null; }
+	const step = value as Partial<DrillStep>;
+	if (!isRange(step.range)) { return null; }
+	return {
+		range: { ...step.range, id: 'custom' },
+		from: typeof step.from === 'string' && RESOLUTIONS.has(step.from) ? step.from as EfficiencyResolution : 'auto',
+	};
+}
+
+/**
  * Coerces a persisted (possibly older, possibly absent) state blob into a valid
  * scope. Anything unrecognised falls back to the default rather than being
  * carried forward, so a stale field can never select a range that no longer exists.
@@ -70,7 +101,9 @@ export function normalizeScopeState(raw: unknown): EfficiencyScopeState {
 		resolution: typeof r.resolution === 'string' && RESOLUTIONS.has(r.resolution) ? r.resolution as EfficiencyResolution : base.resolution,
 		editor: typeof r.editor === 'string' ? r.editor : base.editor,
 		vendor: typeof r.vendor === 'string' ? r.vendor : base.vendor,
-		drill: Array.isArray(r.drill) ? r.drill.filter(isRange).slice(0, MAX_DRILL_DEPTH).map(d => ({ ...d, id: 'custom' as const })) : base.drill,
+		drill: Array.isArray(r.drill)
+			? r.drill.map(toDrillStep).filter((d): d is DrillStep => d !== null).slice(0, MAX_DRILL_DEPTH)
+			: base.drill,
 	};
 }
 
@@ -81,7 +114,7 @@ export function isDrilled(state: EfficiencyScopeState): boolean {
 
 /** The range currently being charted: the deepest drill-down, else the preset. */
 export function activeRange(state: EfficiencyScopeState, now: Date): EfficiencyRange {
-	return state.drill.at(-1) ?? resolveEfficiencyRange(state.rangeId, now);
+	return state.drill.at(-1)?.range ?? resolveEfficiencyRange(state.rangeId, now);
 }
 
 /** The concrete bucket width for the active range. */
@@ -112,18 +145,22 @@ export function canDrillInto(resolution: EfficiencyBucketResolution): boolean {
  */
 export function drillInto(state: EfficiencyScopeState, bucket: EfficiencyBucket): EfficiencyScopeState {
 	if (!canDrillInto(bucket.resolution) || state.drill.length >= MAX_DRILL_DEPTH) { return state; }
-	return { ...state, resolution: 'daily', drill: [...state.drill, drillRangeForBucket(bucket)] };
+	return {
+		...state,
+		resolution: 'daily',
+		drill: [...state.drill, { range: drillRangeForBucket(bucket), from: state.resolution }],
+	};
 }
 
 /**
- * Pops one level off the drill stack, restoring the preceding range. Resolution
- * returns to `auto` once the stack is empty so the preset is charted the way it
- * was before the drill-down.
+ * Pops one level off the drill stack, restoring both the preceding range and
+ * the resolution that was in effect before that level was entered — so an
+ * explicit Weekly or Monthly choice survives a round trip through a drill-down.
  */
 export function drillBack(state: EfficiencyScopeState): EfficiencyScopeState {
-	if (state.drill.length === 0) { return state; }
-	const drill = state.drill.slice(0, -1);
-	return { ...state, drill, resolution: drill.length === 0 ? 'auto' : 'daily' };
+	const popped = state.drill.at(-1);
+	if (!popped) { return state; }
+	return { ...state, drill: state.drill.slice(0, -1), resolution: popped.from };
 }
 
 /** Selecting a preset leaves any drill-down behind — the preset *is* the new scope. */
@@ -145,6 +182,12 @@ export interface ScopeDescriptionLabels {
 	allEditors: string;
 	/** Localized "all vendors", used when no vendor filter is active. */
 	allVendors: string;
+	/**
+	 * Whether the vendor filter applies to the chart being announced. It is a
+	 * Models-only filter, so including it elsewhere would describe a scope the
+	 * chart does not actually have.
+	 */
+	includeVendor?: boolean;
 }
 
 /**
@@ -154,9 +197,9 @@ export interface ScopeDescriptionLabels {
  * which otherwise would change the charts without announcing anything.
  */
 export function describeScope(state: EfficiencyScopeState, labels: ScopeDescriptionLabels): string {
-	const editor = state.editor || labels.allEditors;
-	const vendor = state.vendor || labels.allVendors;
-	return `${labels.range}, ${labels.resolution}, ${editor}, ${vendor}`;
+	const parts = [labels.range, labels.resolution, state.editor || labels.allEditors];
+	if (labels.includeVendor !== false) { parts.push(state.vendor || labels.allVendors); }
+	return parts.join(', ');
 }
 
 /** True when the range reaches further back than the behavioural session window. */

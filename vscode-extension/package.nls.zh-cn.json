@@ -266,5 +266,6 @@
   "efficiency.scope.drillHintMonthly": "点击图表中的某一月可下钻查看其各天数据",
   "efficiency.scope.announce": "当前显示：{0}。",
   "efficiency.scope.behaviorGap": "⚠️ 会话派生指标（活跃分钟数、重试率、应用率、技能）仅收集最近 {0} 周的数据，因此该范围内较早的分桶显示为缺口而非零值。",
-  "efficiency.scope.editorScoped": "已限定为 {0}。无法确定所属编辑器的会话不计入此视图。"
+  "efficiency.scope.editorScoped": "已限定为 {0}。无法确定所属编辑器的会话不计入此视图。",
+  "efficiency.scope.noDataFor": "{0}（无数据）"
 }

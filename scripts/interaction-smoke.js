@@ -305,11 +305,23 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
   const results = [];
   const findings = [];
 
-  for (const control of controls) {
+  // Re-tag before each interaction rather than trusting the first enumeration.
+  // A control that re-renders its view (a tab button, a filter `<select>`)
+  // replaces every tagged node, and the stale `data-smoke-id`s then make every
+  // later control report `skipped` — untested, while the run still exits 0.
+  // Re-tagging keeps the pass honest without `--isolate`'s page reload.
+  for (let index = 0; index < controls.length; index++) {
     if (isolate && results.length > 0) {
       await page.close();
       page = await openPage(browser, pageFile, view, defaults);
-      await page.evaluate(TAG_CONTROLS, INTERACTIVE_SELECTOR);
+    }
+    const current = await page.evaluate(TAG_CONTROLS, INTERACTIVE_SELECTOR);
+    // The set can legitimately shrink (a tab with fewer controls). Nothing left
+    // at this position means nothing to exercise, not a failure.
+    const control = current[index];
+    if (!control) {
+      results.push({ ...controls[index], status: 'skipped', reason: 'no longer present after an earlier interaction' });
+      continue;
     }
 
     const outcome = await clickControl(page, control);

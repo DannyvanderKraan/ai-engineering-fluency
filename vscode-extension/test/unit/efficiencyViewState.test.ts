@@ -71,7 +71,7 @@ test('normalizeScopeState: malformed or inverted drill entries are dropped', () 
 		],
 	});
 	assert.equal(state.drill.length, 1);
-	assert.equal(state.drill[0].label, 'good');
+	assert.equal(state.drill[0].range.label, 'good');
 });
 
 test('activeRange / activeResolution: follow the selected preset when not drilled in', () => {
@@ -136,6 +136,61 @@ test('drillBack: unwinds one level at a time, keeping deeper drills intact', () 
 	const back = drillBack(second);
 	assert.equal(back.drill.length, 1);
 	assert.equal(activeRange(back, NOW).startKey, month.startKey);
+});
+
+test('drillBack: restores an explicit resolution chosen before the drill-down', () => {
+	// The regression this guards: Back used to reset to `auto` unconditionally,
+	// so picking Weekly on the 30-day range and drilling into a week came back
+	// as Auto (= daily), silently discarding the user's explicit choice.
+	const start: EfficiencyScopeState = { ...defaultScopeState(), rangeId: 'last30d', resolution: 'weekly' };
+	const week = activeBuckets(start, NOW)[0];
+	const drilled = drillInto(start, week);
+	assert.equal(drilled.resolution, 'daily');
+	const back = drillBack(drilled);
+	assert.equal(back.resolution, 'weekly');
+	assert.equal(activeResolution(back, NOW), 'weekly');
+});
+
+test('drillBack: a drill entered from auto still comes back as auto', () => {
+	const start = defaultScopeState();
+	const back = drillBack(drillInto(start, activeBuckets(start, NOW)[0]));
+	assert.equal(back.resolution, 'auto');
+});
+
+test('drillBack: each level restores the resolution that was in effect when it was entered', () => {
+	const start: EfficiencyScopeState = { ...defaultScopeState(), rangeId: 'last1y', resolution: 'monthly' };
+	const month = activeBuckets(start, NOW)[0];
+	const first = drillInto(start, month);
+	const week = buildEfficiencyBuckets(activeRange(first, NOW), 'weekly')[0];
+	const second = drillInto({ ...first, resolution: 'weekly' }, week);
+	assert.equal(drillBack(second).resolution, 'weekly');
+	assert.equal(drillBack(drillBack(second)).resolution, 'monthly');
+});
+
+test('normalizeScopeState: a legacy drill stack of bare ranges still restores', () => {
+	// Written before the stack carried the pre-drill resolution.
+	const state = normalizeScopeState({
+		drill: [{ label: 'Jun 2–8', startKey: '2026-06-02', endKey: '2026-06-08', id: 'custom' }],
+	});
+	assert.equal(state.drill.length, 1);
+	assert.equal(state.drill[0].range.startKey, '2026-06-02');
+	assert.equal(state.drill[0].from, 'auto');
+	assert.equal(drillBack(state).resolution, 'auto');
+});
+
+test('normalizeScopeState: round-trips a drill stack with its pre-drill resolution', () => {
+	const saved = { drill: [{ range: { id: 'custom', label: 'Jun 2–8', startKey: '2026-06-02', endKey: '2026-06-08' }, from: 'weekly' }] };
+	const state = normalizeScopeState(JSON.parse(JSON.stringify(saved)));
+	assert.equal(state.drill[0].from, 'weekly');
+	assert.equal(drillBack(state).resolution, 'weekly');
+});
+
+test('describeScope: omits the Models-only vendor filter on tabs that ignore it', () => {
+	const scoped = { ...defaultScopeState(), vendor: 'Anthropic' };
+	assert.equal(describeScope(scoped, { ...LABELS, includeVendor: true }), '12 weeks, Weekly, All editors, Anthropic');
+	// On Trends/Combined/Skills the vendor is not applied, so announcing it
+	// would describe a scope the chart does not have.
+	assert.equal(describeScope(scoped, { ...LABELS, includeVendor: false }), '12 weeks, Weekly, All editors');
 });
 
 test('drillBack: at the top of the stack it is a no-op', () => {

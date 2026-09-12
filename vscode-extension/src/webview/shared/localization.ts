@@ -88,6 +88,7 @@ export interface WebviewLocalization {
 	'efficiency.scope.announce': string;
 	'efficiency.scope.behaviorGap': string;
 	'efficiency.scope.editorScoped': string;
+	'efficiency.scope.noDataFor': string;
 
 	// Add other webview-localizable strings here as needed
 	[key: string]: string;
@@ -166,7 +167,8 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'efficiency.scope.drillHintMonthly': 'Click a month on a chart to drill into its days',
 	'efficiency.scope.announce': 'Showing {0}.',
 	'efficiency.scope.behaviorGap': '⚠️ Session-derived metrics (active minutes, retry rate, apply rate, skills) are only collected for the last {0} weeks, so earlier buckets in this range show gaps rather than zeros.',
-	'efficiency.scope.editorScoped': 'Scoped to {0}. Sessions whose editor could not be determined are excluded from this view.'
+	'efficiency.scope.editorScoped': 'Scoped to {0}. Sessions whose editor could not be determined are excluded from this view.',
+	'efficiency.scope.noDataFor': 'No data for {0}'
 };
 
 // Current localization strings, initialized with defaults

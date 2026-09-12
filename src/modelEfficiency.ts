@@ -22,7 +22,7 @@
  * This module is intentionally pure (no VS Code API, no filesystem access) so it
  * can be unit-tested with mocked data and reused by the CLI and the webview.
  */
-import type { DailyModelEfficiency, DailyModelEfficiencyEntry, ModelEfficiencyCounters, ModelEfficiencyUsage, ModelPricing, ModelUsage, SessionFileCache } from './types';
+import type { DailyModelEfficiency, DailyModelEfficiencyEntry, DailyTokenStats, ModelEfficiencyCounters, ModelEfficiencyUsage, ModelPricing, ModelUsage, SessionFileCache } from './types';
 import { calculateEstimatedCost } from './tokenEstimation';
 
 // ---------------------------------------------------------------------------
@@ -517,4 +517,53 @@ export function computeLongTailModels(usage: ModelEfficiencyUsage): Set<string> 
 	const tailLength = cutoffIndex === -1 ? 0 : ranked.length - cutoffIndex;
 	if (cutoffIndex === -1 || smallestRatio >= 0.5 || tailLength < 2) { return new Set(); }
 	return new Set(ranked.slice(cutoffIndex).map(entry => entry.model));
+}
+
+// ---------------------------------------------------------------------------
+// Day + per-editor accumulation (kept paired by construction)
+// ---------------------------------------------------------------------------
+
+/**
+ * The per-editor slice of a day's model-efficiency counters, created on demand.
+ *
+ * Every session belongs to exactly one editor, so merging all slices of a day
+ * reproduces that day's `modelEfficiency` exactly. The Efficiency view's editor
+ * filter depends on that invariant holding, which is why the two writes below
+ * live in one function rather than at each call site: a caller cannot update
+ * the day total and forget the editor slice.
+ */
+function getOrCreateEditorSlice(entry: DailyTokenStats, editor: string): DailyModelEfficiency {
+	if (!entry.modelEfficiency) { entry.modelEfficiency = {}; }
+	if (!entry.editorModelEfficiency) { entry.editorModelEfficiency = {}; }
+	if (!entry.editorModelEfficiency[editor]) { entry.editorModelEfficiency[editor] = {}; }
+	return entry.editorModelEfficiency[editor];
+}
+
+/**
+ * Folds a session's token/cost usage into both the day total and the editor
+ * slice. See {@link getOrCreateEditorSlice} for why these are not separate calls.
+ */
+export function accumulateDayAndEditorModelTokens(
+	entry: DailyTokenStats,
+	editor: string,
+	modelUsage: ModelUsage,
+	pricing: { [model: string]: ModelPricing },
+): void {
+	const slice = getOrCreateEditorSlice(entry, editor);
+	accumulateDailyModelTokens(entry.modelEfficiency!, modelUsage, pricing);
+	accumulateDailyModelTokens(slice, modelUsage, pricing);
+}
+
+/**
+ * Folds a session's per-model turn counters (and its token-share-attributed
+ * duration, LOC and apply counts) into both the day total and the editor slice.
+ */
+export function accumulateDayAndEditorModelCounters(
+	entry: DailyTokenStats,
+	editor: string,
+	input: SessionEfficiencyAttribution,
+): void {
+	const slice = getOrCreateEditorSlice(entry, editor);
+	accumulateDailyModelCounters(entry.modelEfficiency!, input);
+	accumulateDailyModelCounters(slice, input);
 }

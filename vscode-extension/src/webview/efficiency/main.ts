@@ -279,13 +279,33 @@ function resolutionSelectHtml(d: EfficiencyViewData): string {
 	return selectHtml('eff-resolution', options, scope.resolution);
 }
 
+/**
+ * Keeps a persisted filter value visible even when it no longer exists in the
+ * data — a machine that used to have Claude Code sessions, an editor that has
+ * aged out of the window.
+ *
+ * Without this the `<select>` would fall back to showing its first option
+ * ("All editors") while the charts stayed filtered to the missing value, so an
+ * empty result would look like it came from the visible selection.
+ */
+function withStaleValue(options: { value: string; label: string }[], selected: string): { value: string; label: string }[] {
+	if (!selected || options.some(o => o.value === selected)) { return options; }
+	return [...options, { value: selected, label: localizeFormat('efficiency.scope.noDataFor', selected) }];
+}
+
 function editorSelectHtml(d: EfficiencyViewData): string {
-	const options = [{ value: '', label: localize('efficiency.scope.allEditors') }, ...(d.editors ?? []).map(e => ({ value: e, label: e }))];
+	const options = withStaleValue(
+		[{ value: '', label: localize('efficiency.scope.allEditors') }, ...(d.editors ?? []).map(e => ({ value: e, label: e }))],
+		scope.editor,
+	);
 	return selectHtml('eff-editor', options, scope.editor);
 }
 
 function vendorSelectHtml(d: EfficiencyViewData): string {
-	const options = [{ value: '', label: localize('efficiency.scope.allVendors') }, ...listModelVendors(d.modelDaily).map(v => ({ value: v, label: v }))];
+	const options = withStaleValue(
+		[{ value: '', label: localize('efficiency.scope.allVendors') }, ...listModelVendors(d.modelDaily).map(v => ({ value: v, label: v }))],
+		scope.vendor,
+	);
 	return selectHtml('eff-vendor', options, scope.vendor);
 }
 
@@ -304,11 +324,14 @@ function renderScopeToolbar(d: EfficiencyViewData, s: ScopedData): string {
 		: canDrillInto(s.resolution)
 			? `<span class="scope-hint">${escapeHtml(localize(`efficiency.scope.drillHint${s.resolution === 'weekly' ? 'Weekly' : 'Monthly'}`))}</span>`
 			: '';
+	// The vendor filter only applies on Models; announcing it elsewhere would
+	// tell a screen-reader user the chart is scoped in a way it is not.
 	const announcement = describeScope(scope, {
 		range: rangeLabel(s),
 		resolution: resolutionLabel(s.resolution),
 		allEditors: localize('efficiency.scope.allEditors'),
 		allVendors: localize('efficiency.scope.allVendors'),
+		includeVendor: policy.vendor,
 	});
 	return `
 		<div class="scope-toolbar">

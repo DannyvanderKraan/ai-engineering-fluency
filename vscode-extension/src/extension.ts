@@ -208,8 +208,8 @@ import {
 } from '../../src/usageAnalysis';
 import { createEmptyTaskClassificationResult } from '../../src/taskClassification';
 import {
-  accumulateDailyModelTokens as _accumulateDailyModelTokens,
-  accumulateDailyModelCounters as _accumulateDailyModelCounters,
+  accumulateDayAndEditorModelTokens as _accumulateDayAndEditorModelTokens,
+  accumulateDayAndEditorModelCounters as _accumulateDayAndEditorModelCounters,
   buildSessionEfficiencyAttribution as _buildSessionEfficiencyAttribution,
 } from '../../src/modelEfficiency';
 
@@ -4194,6 +4194,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'efficiency.scope.announce': l10n.t('efficiency.scope.announce'),
 			'efficiency.scope.behaviorGap': l10n.t('efficiency.scope.behaviorGap'),
 			'efficiency.scope.editorScoped': l10n.t('efficiency.scope.editorScoped'),
+			'efficiency.scope.noDataFor': l10n.t('efficiency.scope.noDataFor'),
 		};
 	}
 
@@ -4483,22 +4484,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 */
 	private addModelEfficiencyToDailyEntry(entry: DailyTokenStats, sessionData: SessionFileCache, editorType: string): void {
 		if (!sessionData.usageAnalysis?.modelEfficiency && Object.keys(sessionData.modelUsage).length === 0) { return; }
-		if (!entry.modelEfficiency) { entry.modelEfficiency = {}; }
-		const attribution = _buildSessionEfficiencyAttribution(sessionData);
-		_accumulateDailyModelCounters(entry.modelEfficiency, attribution);
-		_accumulateDailyModelCounters(this.getOrCreateEditorEfficiency(entry, editorType), attribution);
-	}
-
-	/**
-	 * The per-editor slice of a day's model-efficiency counters. Written in
-	 * lock-step with `entry.modelEfficiency` from the same session, so the
-	 * editor slices always merge back to the unsplit day — which is the
-	 * invariant the Efficiency view's editor filter rests on.
-	 */
-	private getOrCreateEditorEfficiency(entry: DailyTokenStats, editorType: string): DailyModelEfficiency {
-		if (!entry.editorModelEfficiency) { entry.editorModelEfficiency = {}; }
-		if (!entry.editorModelEfficiency[editorType]) { entry.editorModelEfficiency[editorType] = {}; }
-		return entry.editorModelEfficiency[editorType];
+		_accumulateDayAndEditorModelCounters(entry, editorType, _buildSessionEfficiencyAttribution(sessionData));
 	}
 
 	private getOrCreateDailyEntry(dailyStatsMap: Map<string, DailyTokenStats>, dateKey: string): DailyTokenStats {
@@ -4544,9 +4530,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		for (const model of Object.keys(modelUsage)) {
 			entry.modelUsage[model]!.sessions += 1;
 		}
-		if (!entry.modelEfficiency) { entry.modelEfficiency = {}; }
-		_accumulateDailyModelTokens(entry.modelEfficiency, modelUsage, this.modelPricing);
-		_accumulateDailyModelTokens(this.getOrCreateEditorEfficiency(entry, editorType), modelUsage, this.modelPricing);
+		_accumulateDayAndEditorModelTokens(entry, editorType, modelUsage, this.modelPricing);
 		if (!entry.editorModelUsage) { entry.editorModelUsage = {}; }
 		if (!entry.editorModelUsage[editorType]) { entry.editorModelUsage[editorType] = {}; }
 		addModelUsage(entry.editorModelUsage[editorType], modelUsage);

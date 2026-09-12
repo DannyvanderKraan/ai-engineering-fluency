@@ -40,16 +40,25 @@ only the trailing bucket is clipped, to today:
 
 - Every bucket except the last covers a whole day, week or month.
 - The current (partial) period is deliberately kept, not dropped — you want to
-  see the week you are in, as long as you know it is partial. Each chart's intro
-  line says so.
+  see the week you are in, as long as you know it is partial. The Trends intro
+  says so in words; on every scoped chart the drill-down chip and the range
+  label carry the exact end date, which is today.
 
 `Auto` resolution follows the span: ≤ 31 days → daily, ≤ 200 days → weekly,
 otherwise monthly. An explicit choice the range cannot carry (daily over a year,
 monthly over a month) falls back to auto rather than rendering 365 noisy points.
 
 Drilling into a weekly or monthly point pushes that bucket's day range onto a
-bounded stack and switches to daily; **Back** pops one level, and picking a
-different preset abandons the drill-down rather than nesting inside it.
+bounded stack and switches to daily; **Back** pops one level, restoring both
+the preceding range *and* the resolution that was selected before that level
+was entered, so an explicit Weekly or Monthly choice survives a round trip.
+Picking a different preset abandons the drill-down rather than nesting inside
+it.
+
+A filter value that no longer exists in the data — an editor that has aged out
+of the window, a vendor you no longer use — stays visible in its dropdown
+labelled as having no data, rather than letting the control read "All editors"
+while the charts are still filtered to the missing value.
 
 ## How a bucket's numbers are attributed
 

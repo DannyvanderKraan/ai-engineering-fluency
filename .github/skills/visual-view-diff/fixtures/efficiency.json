@@ -99,17 +99,29 @@
     "modelShifts": [
       {
         "model": "claude-sonnet-4.5",
-        "deltaShare": 0.18
+        "displayName": "Claude Sonnet 4.5",
+        "prevShare": 0.42,
+        "curShare": 0.6,
+        "deltaShare": 0.18,
+        "prevTokens": 1638000,
+        "curTokens": 2670000
       },
       {
         "model": "gpt-4o",
-        "deltaShare": -0.11
+        "displayName": "GPT-4o",
+        "prevShare": 0.31,
+        "curShare": 0.2,
+        "deltaShare": -0.11,
+        "prevTokens": 1209000,
+        "curTokens": 890000
       }
     ]
   },
   "attributionWindows": {
-    "prev": "Jan 12 \u2013 Feb 8",
-    "cur": "Feb 9 \u2013 Mar 8"
+    "prev": "previous 30 days",
+    "cur": "last 30 days",
+    "prevRange": "Jan 12, 2026–Feb 8, 2026",
+    "curRange": "Feb 9, 2026–Mar 8, 2026"
   },
   "deltas": [
     {

@@ -16,6 +16,12 @@ import { getCustomProviderGroup } from './webview/shared/modelUtils';
  * Sessions from these editors should use `copilotPricing` when computing costs.
  * All other editors are billed directly by their own provider (use `provider` pricing).
  */
+export const COPILOT_EDITOR_NAMES = new Set([
+	'VS Code', 'VS Code Insiders', 'VS Code Exploration',
+	'VS Code Server', 'VS Code Server (Insiders)', 'VSCodium',
+	'Visual Studio', 'JetBrains', 'Copilot CLI', 'Copilot CLI (App)', 'MS Scout (Copilot CLI)',
+]);
+
 /**
  * The token count to trust for a session: the exact, API-reported count when
  * there is one, otherwise the character-based estimate.
@@ -28,12 +34,6 @@ import { getCustomProviderGroup } from './webview/shared/modelUtils';
 export function preferActualTokens(actualTokens: number | undefined, estimatedTokens: number): number {
 	return actualTokens !== undefined && actualTokens > 0 ? actualTokens : estimatedTokens;
 }
-
-export const COPILOT_EDITOR_NAMES = new Set([
-	'VS Code', 'VS Code Insiders', 'VS Code Exploration',
-	'VS Code Server', 'VS Code Server (Insiders)', 'VSCodium',
-	'Visual Studio', 'JetBrains', 'Copilot CLI', 'Copilot CLI (App)', 'MS Scout (Copilot CLI)',
-]);
 
 /**
  * Computes a session's total token count from input, output, and thinking tokens.
