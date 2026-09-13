@@ -112,6 +112,7 @@ const TAG_SELECTS = () => {
     selects.push({
       index,
       key: el.id || `select-${index}`,
+      queued: el.hasAttribute('data-smoke-seen'),
       tag: 'select',
       id: el.id || null,
       label: (el.getAttribute('aria-label') || el.id || '').slice(0, 60) || null,
@@ -121,6 +122,13 @@ const TAG_SELECTS = () => {
     index++;
   }
   return selects;
+};
+
+/** Runs inside the page: marks the given tagged elements so they are not queued twice. */
+const MARK_QUEUED = ({ attr, indexes }) => {
+  for (const index of indexes) {
+    document.querySelector(`[${attr}="${index}"]`)?.setAttribute('data-smoke-seen', '1');
+  }
 };
 
 /** Reads the extension-side handled-command set once, for the unhandled check. */
@@ -180,6 +188,10 @@ const TAG_CONTROLS = (selector) => {
     controls.push({
       index,
       key: `${base}|${seen[base]}`,
+      // Identity by element, not by label: a button that swaps its text for a
+      // transient confirmation ("✅ Copied!") is the same control, and queueing
+      // it again would score the inert confirmation state as a dead control.
+      queued: el.hasAttribute('data-smoke-seen'),
       tag,
       id: el.id || null,
       classes: el.className && typeof el.className === 'string' ? el.className.slice(0, 80) : null,
@@ -204,7 +216,7 @@ const TAG_CONTROLS = (selector) => {
  */
 const DOM_SIGNATURE = () => {
   const clone = document.body.cloneNode(true);
-  const FOCUS_ATTRS = ['focused', 'autofocus', 'aria-activedescendant', 'data-smoke-id', 'data-smoke-select-id'];
+  const FOCUS_ATTRS = ['focused', 'autofocus', 'aria-activedescendant', 'data-smoke-id', 'data-smoke-select-id', 'data-smoke-seen'];
   const FOCUS_CLASSES = ['focused', 'focus-visible', 'focus', 'hover', 'hovered'];
   for (const el of Array.from(clone.querySelectorAll('*'))) {
     for (const attr of FOCUS_ATTRS) {
@@ -247,6 +259,10 @@ async function openPage(browser, pageFile, view, defaults) {
     timezoneId: 'UTC',
     colorScheme: 'dark',
     reducedMotion: 'reduce',
+    // A real VS Code webview can write to the clipboard; a bare headless page
+    // cannot, so "copy" controls would reject with NotAllowedError and be scored
+    // as broken. Grant it so the harness matches the environment under test.
+    permissions: ['clipboard-read', 'clipboard-write'],
   });
   // A control that opens a real URL or a dialog must not hang or navigate the
   // harness away from the page under test.
@@ -391,23 +407,47 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
   // re-enumerate after each interaction and append any dropdown not yet seen.
   const queue = controls.map((control) => ({ control, run: () => clickControl(page, control) }));
   const seenSelects = new Set();
+  const seenControls = new Set(controls.map((c) => c.key));
+  await page.evaluate(MARK_QUEUED, { attr: 'data-smoke-id', indexes: controls.map((c) => c.index) });
 
   // Newly-found dropdowns go in *directly after* the interaction that revealed
   // them, not at the end of the queue: appending would only get to a tab's
   // dropdowns after every remaining tab click had already navigated away from it.
-  const enqueueNewSelects = async (at) => {
+  const enqueueNewControls = async (at) => {
     const fresh = [];
+    const newClickIndexes = [];
+    const newSelectIndexes = [];
+    // Buttons first: a tab click is what reveals this view's contextual-navigation
+    // actions (the Month vs Month "Show weekly trend" and Cost Attribution
+    // "Inspect this model" buttons live only on their own tabs), so enumerating
+    // clickables once at the start would never reach them and the crawl could
+    // pass with either handler dead.
+    for (const control of await page.evaluate(TAG_CONTROLS, INTERACTIVE_SELECTOR)) {
+      if (control.queued || seenControls.has(control.key)) {
+        continue;
+      }
+      seenControls.add(control.key);
+      newClickIndexes.push(control.index);
+      fresh.push({ control, run: () => clickControl(page, control) });
+    }
     for (const control of await page.evaluate(TAG_SELECTS)) {
-      if (seenSelects.has(control.key)) {
+      if (control.queued || seenSelects.has(control.key)) {
         continue;
       }
       seenSelects.add(control.key);
+      newSelectIndexes.push(control.index);
       fresh.push({ control, run: () => changeSelect(page, control) });
+    }
+    if (newClickIndexes.length > 0) {
+      await page.evaluate(MARK_QUEUED, { attr: 'data-smoke-id', indexes: newClickIndexes });
+    }
+    if (newSelectIndexes.length > 0) {
+      await page.evaluate(MARK_QUEUED, { attr: 'data-smoke-select-id', indexes: newSelectIndexes });
     }
     queue.splice(at, 0, ...fresh);
   };
 
-  await enqueueNewSelects(0);
+  await enqueueNewControls(0);
 
   for (let cursor = 0; cursor < queue.length; cursor++) {
     const { control, run } = queue[cursor];
@@ -424,8 +464,8 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
 
     const outcome = await run();
     results.push({ ...control, ...outcome });
-    // This interaction may have revealed a tab's dropdowns for the first time.
-    await enqueueNewSelects(cursor + 1);
+    // This interaction may have revealed a tab's own controls for the first time.
+    await enqueueNewControls(cursor + 1);
 
     const where = `${control.tag}${control.id ? `#${control.id}` : ''}${control.label ? ` "${control.label}"` : ''}`;
 

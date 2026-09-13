@@ -239,8 +239,8 @@ function renderTrendsTab(d: EfficiencyViewData): string {
 	return `
 		<p class="eff-section-note">Weekly ratios over the last ${d.weekly.length} weeks. Badges compare the recent half of the window against the earlier half; green means the ratio moved in the efficient direction. The current week is partial.</p>
 		${zoomControls(d)}
-		${renderWeekDetail(selectedWeekDetail(d))}
-		<div class="trend-grid">${cards}</div>`;
+		<div class="trend-grid">${cards}</div>
+		${renderWeekDetail(selectedWeekDetail(d))}`;
 }
 
 function renderDeltasTab(d: EfficiencyViewData): string {
@@ -288,6 +288,11 @@ function attrBar(label: string, detail: string, value: number, maxAbs: number, e
 }
 
 function renderAttributionTab(d: EfficiencyViewData): string {
+	// The shifts come from daily `modelUsage`; the Models tab can only select a
+	// model that also has structured per-model efficiency data. Offering the jump
+	// for the rest would navigate away and silently leave the previous model
+	// selected, presenting the wrong profile as this row's context.
+	const comparable = new Set(listComparableModels(d.modelDaily).map(m => m.model));
 	const a: CostAttribution | null = d.attribution;
 	if (!a) {
 		return `<p class="eff-section-note">Not enough data to decompose the cost change — both compared windows need at least one session with token data.</p>`;
@@ -300,7 +305,7 @@ function renderAttributionTab(d: EfficiencyViewData): string {
 			<tbody>
 				${a.modelShifts.map(s => `
 					<tr>
-						<td>${escapeHtml(s.displayName)}<button type="button" class="eff-link-btn" data-focus-model="${escapeHtml(s.model)}">${escapeHtml(localize('efficiency.attribution.showModel'))}</button></td>
+						<td>${escapeHtml(s.displayName)}${comparable.has(s.model) ? `<button type="button" class="eff-link-btn" data-focus-model="${escapeHtml(s.model)}">${escapeHtml(localize('efficiency.attribution.showModel'))}</button>` : ''}</td>
 						<td class="num">${(s.prevShare * 100).toFixed(1)}%</td>
 						<td class="num">${(s.curShare * 100).toFixed(1)}%</td>
 						<td class="num ${s.deltaShare > 0 ? 'share-up' : 'share-down'}">${s.deltaShare > 0 ? '+' : ''}${(s.deltaShare * 100).toFixed(1)} pt</td>
@@ -1384,7 +1389,9 @@ function wireEvents(): void {
 			// Report the subview so the what's-new announcer can skip tabs the user
 			// already found for themselves. Fire-and-forget.
 			vscode.postMessage({ command: 'viewTabOpened', view: 'efficiency', tab: activeTab });
-			render();
+			// Keep focus on the tab the user just activated; `render()` replaces the
+			// whole subtree, which would otherwise drop them back to the document.
+			renderAndRestoreFocus(`.eff-tab[data-tab="${activeTab}"]`);
 		});
 	});
 	wireModelControls();

@@ -734,6 +734,20 @@ class CopilotTokenTracker implements vscode.Disposable {
 	private readonly lastEfficiencySessionInputs = new Map<number, EfficiencySessionInput[]>();
 	/** Horizon the Efficiency panel is currently showing; survives a Refresh. */
 	private efficiencyTrendRange: EfficiencyTrendRangeId = DEFAULT_EFFICIENCY_TREND_RANGE;
+	/**
+	 * Monotonic ticket for Efficiency payload rebuilds. The initial build, a
+	 * Refresh and a horizon change all run unserialized, so comparing the panel
+	 * and the range is not enough — two rebuilds for the *same* range can finish
+	 * out of order and the older one would publish over the newer. Every build
+	 * takes a ticket and only publishes while it is still the latest.
+	 */
+	private efficiencyBuildGeneration = 0;
+	/**
+	 * Bumped whenever the memoized session inputs are dropped. A collection that
+	 * started before a refresh must not write its pre-refresh result back into
+	 * the cache afterwards.
+	 */
+	private efficiencySessionInputsEpoch = 0;
 	private outputChannel!: vscode.OutputChannel;
 	private lastDetailedStats: DetailedStats | undefined;
 	private lastDailyStats: DailyTokenStats[] | undefined;
@@ -1347,7 +1361,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		this.localRegressionSampleDataDir = '';
 		this.sessionDiscovery.clearCache();
 		this.lastDetailedStats = this.lastDailyStats = this.lastFullDailyStats = this.lastUsageAnalysisStats = undefined;
-		this.lastEfficiencySessionInputs.clear();
+		this.clearEfficiencySessionInputs();
 		const results: LocalViewRegressionResult[] = [];
 		let dataSourceLabel = 'local session data';
 		try {
@@ -1365,7 +1379,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			this.localRegressionSampleDataDir = previousSampleDir;
 			this.sessionDiscovery.clearCache();
 			this.lastDetailedStats = this.lastDailyStats = this.lastFullDailyStats = this.lastUsageAnalysisStats = this.lastDashboardData = undefined;
-			this.lastEfficiencySessionInputs.clear();
+			this.clearEfficiencySessionInputs();
 		}
 		await this.reportLocalViewRegressionResults(results, dataSourceLabel);
 	}
@@ -1507,7 +1521,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			this.lastFullDailyStats = undefined;
 			this.lastUsageAnalysisStats = undefined;
 			this.lastDashboardData = undefined;
-			this.lastEfficiencySessionInputs.clear();
+			this.clearEfficiencySessionInputs();
 
 			this.log(`Cache cleared successfully. Removed ${cacheSize} entries.`);
 			vscode.window.showInformationMessage('Cache cleared successfully. Reloading statistics...');
@@ -4274,19 +4288,20 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'logviewer.summary.started': l10n.t('logviewer.summary.started'),
 			'logviewer.summary.lastActivity': l10n.t('logviewer.summary.lastActivity'),
 			...this.getEfficiencyWebviewLocalization(),
-			// HydraFusion Routing section (log viewer) and its Session Steps Overview integration.
 			// Templates with {0} are resolved webview-side by localizeFormat(), so they are passed
 			// through unformatted here.
-			'hydrafusion.table.cost': l10n.t('hydrafusion.table.cost'),
-			'hydrafusion.turn.costTooltip': l10n.t('hydrafusion.turn.costTooltip'),
-			'hydrafusion.turn.jumpToStepTooltip': l10n.t('hydrafusion.turn.jumpToStepTooltip'),
-			'hydrafusion.turn.jumpToStepLabel': l10n.t('hydrafusion.turn.jumpToStepLabel'),
-			'hydrafusion.turnsPanel.subtitle': l10n.t('hydrafusion.turnsPanel.subtitle'),
-			'hydrafusion.overview.toggleLegsAriaLabel': l10n.t('hydrafusion.overview.toggleLegsAriaLabel'),
-			'hydrafusion.overview.showLegsTooltip': l10n.t('hydrafusion.overview.showLegsTooltip'),
-			'hydrafusion.overview.legsCaption': l10n.t('hydrafusion.overview.legsCaption'),
-			'hydrafusion.overview.modelChangedTooltip': l10n.t('hydrafusion.overview.modelChangedTooltip'),
-			'hydrafusion.overview.expandHint': l10n.t('hydrafusion.overview.expandHint'),
+			// HydraFusion Routing section + Session Steps Overview leg toggle. Templates
+			// with {0} are resolved webview-side by localizeFormat().
+			'logviewer.hydrafusion.cost': l10n.t('logviewer.hydrafusion.cost'),
+			'logviewer.hydrafusion.costForTurn': l10n.t('logviewer.hydrafusion.costForTurn'),
+			'logviewer.hydrafusion.jumpToStepTitle': l10n.t('logviewer.hydrafusion.jumpToStepTitle'),
+			'logviewer.hydrafusion.jumpToStepLabel': l10n.t('logviewer.hydrafusion.jumpToStepLabel'),
+			'logviewer.hydrafusion.turnDetailIntro': l10n.t('logviewer.hydrafusion.turnDetailIntro'),
+			'logviewer.hydrafusion.toggleLegsAriaLabel': l10n.t('logviewer.hydrafusion.toggleLegsAriaLabel'),
+			'logviewer.hydrafusion.showLegsTitle': l10n.t('logviewer.hydrafusion.showLegsTitle'),
+			'logviewer.hydrafusion.legsCaptionTotal': l10n.t('logviewer.hydrafusion.legsCaptionTotal'),
+			'logviewer.hydrafusion.modelChangedTitle': l10n.t('logviewer.hydrafusion.modelChangedTitle'),
+			'logviewer.hydrafusion.expandStepNote': l10n.t('logviewer.hydrafusion.expandStepNote'),
 			// Current language for reference
 			'__language__': language
 		};
@@ -9589,10 +9604,12 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 		// once this function returns. Awaiting the (potentially long) data build would keep that
 		// key locked — if the user closes the panel and reopens it before the build finishes, the
 		// reopen would be silently dropped as "already in flight" (same fix as showChart above).
+		const generation = ++this.efficiencyBuildGeneration;
 		void (async () => {
 			const data = await this.buildEfficiencyViewData(false, this.efficiencyTrendRange);
-			// The user may have closed the panel while the data was being computed.
-			if (this.efficiencyPanel !== panel) { return; }
+			// The panel may have been closed, or a Refresh/horizon rebuild may have
+			// started and already published, while this build was computing.
+			if (this.efficiencyPanel !== panel || this.efficiencyBuildGeneration !== generation) { return; }
 			panel.webview.html = this.getEfficiencyHtml(panel.webview, data);
 			this.log('⚡ Efficiency view rendered');
 		})();
@@ -9603,12 +9620,12 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 		if (!panel) { return; }
 		this.log('🔄 Refreshing Efficiency view');
 		const range = this.efficiencyTrendRange;
+		const generation = ++this.efficiencyBuildGeneration;
 		const data = await this.buildEfficiencyViewData(true, range);
-		// Same guard as the horizon path: the panel may have been closed, or a new
-		// horizon requested, while this rebuild was running. Re-setting the HTML
-		// then would resurrect a disposed panel or stamp a stale horizon over a
-		// newer one.
-		if (this.efficiencyPanel !== panel || this.efficiencyTrendRange !== range) { return; }
+		// The panel may have been closed, or a later rebuild started, while this
+		// one was running. The generation covers the case the range alone cannot:
+		// two rebuilds for the *same* horizon finishing out of order.
+		if (this.efficiencyPanel !== panel || this.efficiencyBuildGeneration !== generation) { return; }
 		panel.webview.html = this.getEfficiencyHtml(panel.webview, data);
 	}
 
@@ -9628,11 +9645,19 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 		const panel = this.efficiencyPanel;
 		if (!panel) { return; }
 		this.log(`⚡ Efficiency horizon set to ${range.label}`);
+		const generation = ++this.efficiencyBuildGeneration;
 		const data = await this.buildEfficiencyViewData(false, range.id);
-		// The panel may have been closed, or a later horizon requested, while this
-		// build was running — neither result should overwrite what is on screen.
-		if (this.efficiencyPanel !== panel || this.efficiencyTrendRange !== range.id) { return; }
+		// The panel may have been closed, or any later rebuild (another horizon, or
+		// a Refresh for this same one) started, while this build was running —
+		// neither result should overwrite what is on screen.
+		if (this.efficiencyPanel !== panel || this.efficiencyBuildGeneration !== generation) { return; }
 		void panel.webview.postMessage({ command: 'updateEfficiency', data });
+	}
+
+	/** Drops every memoized horizon and invalidates collections already in flight. */
+	private clearEfficiencySessionInputs(): void {
+		this.lastEfficiencySessionInputs.clear();
+		this.efficiencySessionInputsEpoch += 1;
 	}
 
 	/** Maps one cached session to the pure-module input shape for efficiency trends. */
@@ -9665,13 +9690,13 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 	 * building the Efficiency view, so the result is memoized alongside the other
 	 * `last*` stat caches and invalidated by the same paths.
 	 */
-	private async collectEfficiencySessionInputs(weeksBack: number, useCache = true): Promise<EfficiencySessionInput[]> {
+	private async collectEfficiencySessionInputs(weeksBack: number, useCache = true, now = new Date()): Promise<EfficiencySessionInput[]> {
 		const cached = useCache ? this.lastEfficiencySessionInputs.get(weeksBack) : undefined;
 		if (cached) {
 			this.log(`⚡ [Efficiency] Using cached session inputs for ${weeksBack} weeks`);
 			return cached;
 		}
-		const now = new Date();
+		const epoch = this.efficiencySessionInputsEpoch;
 		const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - weeksBack * 7);
 		const inputs: EfficiencySessionInput[] = [];
 		try {
@@ -9680,7 +9705,11 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 				if (!r || r.sessionData.interactions === 0) { continue; }
 				inputs.push(this.toEfficiencySessionInput(r.sessionData, r.mtime));
 			}
-			this.lastEfficiencySessionInputs.set(weeksBack, inputs);
+			// A refresh may have cleared the cache while this walk was running;
+			// writing now would re-seed it with pre-refresh data.
+			if (epoch === this.efficiencySessionInputsEpoch) {
+				this.lastEfficiencySessionInputs.set(weeksBack, inputs);
+			}
 		} catch (error) {
 			this.error('Error collecting efficiency session inputs:', error);
 		}
@@ -9752,11 +9781,11 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 			// otherwise switching back to a narrower horizon after a refresh would
 			// serve session inputs collected before it, missing the new sessions the
 			// refresh was asked to pick up.
-			this.lastEfficiencySessionInputs.clear();
+			this.clearEfficiencySessionInputs();
 		}
 		const dailyStats = (!forceRecalc && this.lastFullDailyStats) ? this.lastFullDailyStats : await this.calculateDailyStats();
 		const usage = await this.calculateUsageAnalysisStats(!forceRecalc);
-		const sessionInputs = await this.collectEfficiencySessionInputs(range.weeks, !forceRecalc);
+		const sessionInputs = await this.collectEfficiencySessionInputs(range.weeks, !forceRecalc, now);
 		const deps = {
 			calculateEstimatedCost: (mu: ModelUsage, src: 'provider' | 'copilot') => this.calculateEstimatedCost(mu, src),
 			now,
