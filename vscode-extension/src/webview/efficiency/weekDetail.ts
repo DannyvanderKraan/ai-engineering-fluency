@@ -12,7 +12,7 @@
 // "unavailable, not zero" contract are unit-testable without a DOM.
 import { escapeHtml, formatCompact } from '../shared/formatUtils';
 import { localize, localizeFormat } from '../shared/localization';
-import { getWeekBounds } from '../../../../src/efficiencyAnalysis';
+import { crossModelWeekCaveats, getWeekBounds } from '../../../../src/efficiencyAnalysis';
 import type {
 	DeltaUnit,
 	EfficiencyTrendRange,
@@ -136,12 +136,21 @@ export function renderWeekPicker(
 
 // ── Detail region ──────────────────────────────────────────────────────
 
-/** The change cell. The arrow and the colour are backed by a word, so direction never depends on colour alone. */
+/**
+ * The change cell. The arrow and the colour are backed by a word, so direction
+ * never depends on colour alone. A movement too small to round to a percent is
+ * called "steady" rather than drawn as an arrow against a printed 0%, and a
+ * metric with no good direction (a raw count) gets no better/worse claim — that
+ * absence is the honest reading, not a missing label.
+ */
 function changeCell(m: WeekDetailMetric): string {
 	if (m.deltaPct === null) { return `<span class="delta-na">${NO_VALUE}</span>`; }
-	const cls = m.improved === null ? 'flat' : m.improved ? 'good' : 'bad';
-	const arrow = m.deltaPct > 0 ? '↑' : m.deltaPct < 0 ? '↓' : '→';
-	const word = m.improved === null ? '' : ` ${localize(m.improved ? 'efficiency.week.better' : 'efficiency.week.worse')}`;
+	const steady = Math.abs(m.deltaPct) < 0.5;
+	const cls = steady || m.improved === null ? 'flat' : m.improved ? 'good' : 'bad';
+	const arrow = steady ? '→' : m.deltaPct > 0 ? '↑' : '↓';
+	const word = steady
+		? ` ${localize('efficiency.week.steady')}`
+		: m.improved === null ? '' : ` ${localize(m.improved ? 'efficiency.week.better' : 'efficiency.week.worse')}`;
 	return `<span class="delta-change ${cls}">${escapeHtml(`${arrow} ${Math.abs(m.deltaPct).toFixed(0)}%${word}`)}</span>`;
 }
 
@@ -300,11 +309,16 @@ function modelWeekBody(detail: ModelWeekDetail): string {
 		{ label: localize('efficiency.week.loc'), value: formatCompact(detail.metrics.loc) },
 		{ label: localize('efficiency.week.cost'), value: `$${detail.metrics.cost.toFixed(2)}` },
 	]);
+	// "No prior week inside the selected horizon" would be false for a week that
+	// is in the series but carries no usage of this model: say which it is.
+	const prior = detail.priorUnusedLabel === null
+		? priorLine(detail.priorLabel)
+		: `<p class="week-detail-prior">${escapeHtml(localizeFormat('efficiency.week.priorUnused', detail.displayName, detail.priorUnusedLabel))}</p>`;
 	return `
 		${detailHead(`${detail.displayName} · ${detail.label}`, detail.rangeLabel, detail.isPartial)}
 		${unused}
 		${volume}
-		${priorLine(detail.priorLabel)}
+		${prior}
 		${metricTable(detail.rows, detail.metrics !== null)}
 		${coverageList(localize('efficiency.week.caveatsHeading'), detail.caveats)}`;
 }
@@ -323,5 +337,9 @@ function modelWeekBody(detail: ModelWeekDetail): string {
 export function renderModelWeekDetail(details: readonly (ModelWeekDetail | null)[]): string {
 	const present = details.filter((d): d is ModelWeekDetail => d !== null);
 	if (present.length === 0) { return detailRegion(emptyDetailBody()); }
-	return detailRegion(present.map(d => `<div class="week-model-block">${modelWeekBody(d)}</div>`).join(''));
+	// Each profile's own caveats compare that model with its own previous week.
+	// Showing two of them side by side invites a head-to-head read as well, so
+	// the confounder that applies to *that* comparison is stated once, up front.
+	const shared = coverageList(localize('efficiency.week.bothModelsHeading'), crossModelWeekCaveats(present));
+	return detailRegion(shared + present.map(d => `<div class="week-model-block">${modelWeekBody(d)}</div>`).join(''));
 }

@@ -413,7 +413,10 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
   // Newly-found dropdowns go in *directly after* the interaction that revealed
   // them, not at the end of the queue: appending would only get to a tab's
   // dropdowns after every remaining tab click had already navigated away from it.
-  const enqueueNewControls = async (at) => {
+  // Controls discovered by a later pass are *contextual*: they exist only because
+  // an earlier interaction navigated to them, so `--isolate`'s reload would put
+  // them out of reach (see the reload guard below).
+  const enqueueNewControls = async (at, contextual) => {
     const fresh = [];
     const newClickIndexes = [];
     const newSelectIndexes = [];
@@ -428,7 +431,7 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
       }
       seenControls.add(control.key);
       newClickIndexes.push(control.index);
-      fresh.push({ control, run: () => clickControl(page, control) });
+      fresh.push({ control: { ...control, contextual }, run: () => clickControl(page, control) });
     }
     for (const control of await page.evaluate(TAG_SELECTS)) {
       if (control.queued || seenSelects.has(control.key)) {
@@ -436,7 +439,7 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
       }
       seenSelects.add(control.key);
       newSelectIndexes.push(control.index);
-      fresh.push({ control, run: () => changeSelect(page, control) });
+      fresh.push({ control: { ...control, contextual }, run: () => changeSelect(page, control) });
     }
     if (newClickIndexes.length > 0) {
       await page.evaluate(MARK_QUEUED, { attr: 'data-smoke-id', indexes: newClickIndexes });
@@ -447,16 +450,18 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
     queue.splice(at, 0, ...fresh);
   };
 
-  await enqueueNewControls(0);
+  await enqueueNewControls(0, false);
 
   for (let cursor = 0; cursor < queue.length; cursor++) {
     const { control, run } = queue[cursor];
-    // `--isolate` reloads between *clicks* to stop one click polluting the next.
-    // A queued dropdown is different: it was only reachable because an earlier
+    // `--isolate` reloads between interactions to stop one polluting the next.
+    // A contextual control is different: it was only reachable because an earlier
     // click navigated there, so reloading first would drop it back to the
     // fixture's default tab and record it as skipped — silently un-testing the
-    // controls this mode is meant to exercise most thoroughly.
-    if (isolate && results.length > 0 && control.tag !== 'select') {
+    // controls this mode is meant to exercise most thoroughly. That covers a tab's
+    // own buttons ("Show weekly trend", "Inspect this model") as much as its
+    // dropdowns; only the controls the default view renders are reload-safe.
+    if (isolate && results.length > 0 && !control.contextual) {
       await page.close();
       page = await openPage(browser, pageFile, view, defaults);
       await page.evaluate(TAG_CONTROLS, INTERACTIVE_SELECTOR);
@@ -465,7 +470,7 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
     const outcome = await run();
     results.push({ ...control, ...outcome });
     // This interaction may have revealed a tab's own controls for the first time.
-    await enqueueNewControls(cursor + 1);
+    await enqueueNewControls(cursor + 1, true);
 
     const where = `${control.tag}${control.id ? `#${control.id}` : ''}${control.label ? ` "${control.label}"` : ''}`;
 

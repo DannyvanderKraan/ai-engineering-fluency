@@ -1664,8 +1664,15 @@ export interface ModelWeekDetail extends WeekBounds {
 	metrics: ModelPeriodMetrics | null;
 	/** The previous week's profile for the same model, when there is one. */
 	prior: ModelPeriodMetrics | null;
+	/** The compared week — null unless {@link prior} carries a profile to compare against. */
 	priorWeekKey: string | null;
 	priorLabel: string | null;
+	/**
+	 * Label of the preceding week when it exists in the series but the model was
+	 * not used in it. A gap is not "no prior week inside the horizon", and it is
+	 * not a zero either: the view says which of the two the reader is looking at.
+	 */
+	priorUnusedLabel: string | null;
 	rows: WeekDetailMetric[];
 	/** Sample-floor, task-mix and mixed-model-session caveats for this week. */
 	caveats: string[];
@@ -1757,11 +1764,37 @@ export function buildModelWeekDetail(
 		displayName,
 		metrics,
 		prior,
-		priorWeekKey: priorPoint?.weekKey ?? null,
-		priorLabel: priorPoint?.label ?? null,
+		// A prior week carrying no profile for this model is not a comparison:
+		// reporting it as one renders "Prior week: …" above a column of dashes.
+		priorWeekKey: priorPoint && prior ? priorPoint.weekKey : null,
+		priorLabel: priorPoint && prior ? priorPoint.label : null,
+		priorUnusedLabel: priorPoint && !prior ? priorPoint.label : null,
 		rows,
 		caveats: modelWeekCaveats(metrics, prior, bounds, priorPoint?.label ?? null),
 	};
+}
+
+/**
+ * Caveats that exist only because two model profiles are shown side by side for
+ * the same week. Each profile's own caveats explain that model against its own
+ * previous week; putting the two next to each other invites a head-to-head read
+ * the week's sample may not support, so the same task-mix confounder
+ * {@link compareModels} reports over its 30-day window is repeated here for the
+ * selected week. Empty unless at least two of the models were used in the week.
+ */
+export function crossModelWeekCaveats(details: readonly (ModelWeekDetail | null)[]): string[] {
+	const used = details.filter((d): d is ModelWeekDetail & { metrics: ModelPeriodMetrics } =>
+		d !== null && d.metrics !== null);
+	const caveats: string[] = [];
+	for (let i = 0; i < used.length; i++) {
+		for (let j = i + 1; j < used.length; j++) {
+			const divergence = taskMixDivergence(used[i].metrics.taskMix, used[j].metrics.taskMix);
+			if (divergence >= TASK_MIX_DIVERGENCE_THRESHOLD) {
+				caveats.push(`${used[i].displayName} and ${used[j].displayName} did different kinds of work in this week (${Math.round(divergence * 100)}% task-mix difference), so part of any gap between them reflects the tasks rather than the models.`);
+			}
+		}
+	}
+	return caveats;
 }
 
 // ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ import {
 	buildModelWeeklySeries,
 	buildEfficiencyWeekDetail,
 	buildModelWeekDetail,
+	crossModelWeekCaveats,
 	buildSkillWeekDetail,
 	getWeekBounds,
 	resolveTrendRange,
@@ -26,6 +27,7 @@ import {
 	windowHasModelData,
 	type EfficiencyDeps,
 	type EfficiencySessionInput,
+	type ModelWeekDetail,
 } from '../../../src/efficiencyAnalysis';
 import { createEmptyDailyModelEfficiencyEntry } from '../../../src/modelEfficiency';
 import type { DailyModelEfficiency, DailyModelEfficiencyEntry, DailyTokenStats, ModelUsage, UsageAnalysisPeriod } from '../../../src/types';
@@ -1095,6 +1097,69 @@ test('buildModelWeekDetail: raises a task-mix caveat when the week did different
 	const series = buildModelWeeklySeries(days, 'kimi', NOW, 12);
 	const detail = buildModelWeekDetail(series, 'kimi', '2026-07-13', NOW)!;
 	assert.ok(detail.caveats.some(c => c.includes('task mix differs')), detail.caveats.join(' | '));
+});
+
+test('buildModelWeekDetail: a prior week the model never touched is not reported as a comparison', () => {
+	// The week before exists in the series, but this model has no profile in it.
+	// Naming it as the prior week would head a column of dashes with a date range
+	// the reader would take for a real comparison.
+	const days = [
+		modelDay('2026-07-07', { other: solidModel({}) }),
+		modelDay('2026-07-14', { kimi: solidModel({}) }),
+	];
+	const series = buildModelWeeklySeries(days, 'kimi', NOW, 12);
+	const detail = buildModelWeekDetail(series, 'kimi', '2026-07-13', NOW)!;
+	assert.equal(detail.prior, null);
+	assert.equal(detail.priorWeekKey, null);
+	assert.equal(detail.priorLabel, null);
+	assert.equal(detail.priorUnusedLabel, series[series.length - 2].label);
+	for (const row of detail.rows) {
+		assert.equal(row.prior, null, `${row.id} prior`);
+		assert.equal(row.deltaPct, null, `${row.id} change`);
+	}
+});
+
+test('buildModelWeekDetail: a real prior week keeps its label and leaves the gap label unset', () => {
+	const days = [
+		modelDay('2026-07-07', { kimi: solidModel({ cost: 20 }) }),
+		modelDay('2026-07-14', { kimi: solidModel({ cost: 10 }) }),
+	];
+	const series = buildModelWeeklySeries(days, 'kimi', NOW, 12);
+	const detail = buildModelWeekDetail(series, 'kimi', '2026-07-13', NOW)!;
+	assert.equal(detail.priorWeekKey, '2026-07-06');
+	assert.ok(detail.priorLabel);
+	assert.equal(detail.priorUnusedLabel, null);
+});
+
+// ── crossModelWeekCaveats ────────────────────────────────────────────────────
+
+function weekDetailFor(model: string, days: DailyTokenStats[]): ModelWeekDetail {
+	return buildModelWeekDetail(buildModelWeeklySeries(days, model, NOW, 12), model, '2026-07-13', NOW)!;
+}
+
+test('crossModelWeekCaveats: warns when the two models did different work in the selected week', () => {
+	// Each profile's own caveats only compare it with its own previous week; the
+	// side-by-side read needs the confounder the head-to-head table would state.
+	const a = weekDetailFor('a', [modelDay('2026-07-14', { a: solidModel({}) }, { refactor: { tokens: 1000, sessions: 1 } })]);
+	const b = weekDetailFor('b', [modelDay('2026-07-14', { b: solidModel({}) }, { debugging: { tokens: 1000, sessions: 1 } })]);
+	const caveats = crossModelWeekCaveats([a, b]);
+	assert.equal(caveats.length, 1);
+	assert.match(caveats[0], /did different kinds of work in this week/);
+});
+
+test('crossModelWeekCaveats: silent when both models did the same kind of work', () => {
+	const days = [modelDay('2026-07-14', { a: solidModel({}), b: solidModel({}) }, { refactor: { tokens: 1000, sessions: 1 } })];
+	assert.deepEqual(crossModelWeekCaveats([weekDetailFor('a', days), weekDetailFor('b', days)]), []);
+});
+
+test('crossModelWeekCaveats: a week with fewer than two used models has nothing to compare', () => {
+	const days = [modelDay('2026-07-14', { a: solidModel({}) }, { refactor: { tokens: 1000, sessions: 1 } })];
+	const used = weekDetailFor('a', days);
+	const unused = buildModelWeekDetail(buildModelWeeklySeries(days, 'b', NOW, 12), 'b', '2026-07-13', NOW)!;
+	assert.equal(unused.metrics, null);
+	assert.deepEqual(crossModelWeekCaveats([used, unused, null]), []);
+	assert.deepEqual(crossModelWeekCaveats([used]), []);
+	assert.deepEqual(crossModelWeekCaveats([]), []);
 });
 
 test('compareModels: still produces every catalogued metric row after the spec refactor', () => {

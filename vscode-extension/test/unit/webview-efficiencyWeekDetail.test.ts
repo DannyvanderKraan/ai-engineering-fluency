@@ -58,12 +58,20 @@ function series(): ReturnType<typeof buildEfficiencyTrends> {
 	return buildEfficiencyTrends(days, sessions, deps, 12);
 }
 
-function modelDay(date: string, models: { [model: string]: Partial<DailyModelEfficiencyEntry> }): DailyTokenStats {
+function modelDay(
+	date: string,
+	models: { [model: string]: Partial<DailyModelEfficiencyEntry> },
+	taskCategoryUsage?: DailyTokenStats['taskCategoryUsage'],
+): DailyTokenStats {
 	const modelEfficiency: DailyModelEfficiency = {};
 	for (const [model, overrides] of Object.entries(models)) {
 		modelEfficiency[model] = { ...createEmptyDailyModelEfficiencyEntry(), ...overrides };
 	}
-	return { date, tokens: 0, sessions: 0, interactions: 0, modelUsage: {}, editorUsage: {}, repositoryUsage: {}, modelEfficiency };
+	return {
+		date, tokens: 0, sessions: 0, interactions: 0,
+		modelUsage: {}, editorUsage: {}, repositoryUsage: {}, modelEfficiency,
+		...(taskCategoryUsage ? { taskCategoryUsage } : {}),
+	};
 }
 
 // ── Selection rules ──────────────────────────────────────────────────────────
@@ -208,6 +216,20 @@ test('renderWeekDetail: the change cell states the direction in words, not only 
 	assert.ok(html.includes('Prior week: '));
 });
 
+test('renderWeekDetail: a ratio that did not move is called steady rather than drawn as an arrow at 0%', () => {
+	// Same tokens per session in both weeks. Rounding the change to "0%" and still
+	// pointing an arrow at it reads as a movement; "steady" is what happened.
+	const days = [
+		day('2026-07-07', { tokens: 40_000, sessions: 4, interactions: 20, modelUsage: { kimi: { inputTokens: 30_000, outputTokens: 10_000, sessions: 4 } } }),
+		day('2026-07-14', { tokens: 50_000, sessions: 5, interactions: 25, modelUsage: { kimi: { inputTokens: 40_000, outputTokens: 10_000, sessions: 5 } } }),
+	];
+	const weeks = buildEfficiencyTrends(days, [], deps, 12);
+	const html = renderWeekDetail(buildEfficiencyWeekDetail(weeks, '2026-07-13', NOW));
+	assert.ok(html.includes('→ 0% steady'), html);
+	assert.ok(!html.includes('↑ 0%'), html);
+	assert.ok(!html.includes('↓ 0%'), html);
+});
+
 test('renderWeekDetail: the first week of the horizon says it has nothing to compare against', () => {
 	const weeks = series();
 	const html = renderWeekDetail(buildEfficiencyWeekDetail(weeks, weeks[0].weekKey, NOW));
@@ -287,6 +309,50 @@ test('renderModelWeekDetail: discloses how much of the sample carried duration d
 	// Otherwise a missing active-minutes value is indistinguishable from a
 	// suppressed one.
 	assert.ok(html.includes('2.0 of 6.0 session equivalents carried net active-duration data.'), html);
+});
+
+test('renderModelWeekDetail: a prior week the model never touched is not headed as a comparison', () => {
+	const days = [
+		modelDay('2026-07-07', { qwen: { sessions: 4, sessionShare: 4, inputTokens: 1000, outputTokens: 200, cost: 1 } }),
+		modelDay('2026-07-14', { kimi: { sessions: 6, sessionShare: 6, editTurns: 20, inputTokens: 90_000, outputTokens: 10_000, cost: 4 } }),
+	];
+	const html = renderModelWeekDetail([
+		buildModelWeekDetail(buildModelWeeklySeries(days, 'kimi', NOW, 12), 'kimi', '2026-07-13', NOW),
+	]);
+	// Neither "Prior week: <range>" (there is no comparison) nor "no prior week
+	// inside the horizon" (there is one — the model simply was not used in it).
+	assert.ok(!html.includes('Prior week: '), html);
+	assert.ok(!html.includes('No prior week inside the selected horizon.'), html);
+	assert.ok(/kimi was not used in [^<]+, so there is no previous week to compare this one against\./.test(html), html);
+});
+
+function modelWeekHtml(days: DailyTokenStats[]): string {
+	return renderModelWeekDetail(['kimi', 'qwen'].map(model =>
+		buildModelWeekDetail(buildModelWeeklySeries(days, model, NOW, 12), model, '2026-07-13', NOW)));
+}
+
+test('renderModelWeekDetail: warns once when the two models did different work in the week', () => {
+	// The per-model blocks each compare a model with its own previous week; the
+	// side-by-side layout also invites a head-to-head read, and that read carries
+	// the same task-mix confounder the comparison table states.
+	const html = modelWeekHtml([
+		modelDay('2026-07-14', { kimi: { sessions: 6, sessionShare: 6, editTurns: 20, inputTokens: 90_000, outputTokens: 10_000, cost: 4 } },
+			{ refactor: { tokens: 1000, sessions: 1 } }),
+		modelDay('2026-07-15', { qwen: { sessions: 3, sessionShare: 3, editTurns: 12, inputTokens: 40_000, outputTokens: 5_000, cost: 1 } },
+			{ debugging: { tokens: 1000, sessions: 1 } }),
+	]);
+	assert.ok(html.includes('Comparing these models'), html);
+	assert.equal(html.match(/did different kinds of work in this week/g)?.length, 1, html);
+	// Stated once, above the profiles — not repeated inside each model's block.
+	assert.ok(html.indexOf('Comparing these models') < html.indexOf('week-model-block'), html);
+});
+
+test('renderModelWeekDetail: silent when both models worked on the same kind of task', () => {
+	const html = modelWeekHtml([modelDay('2026-07-14', {
+		kimi: { sessions: 6, sessionShare: 6, editTurns: 20, inputTokens: 90_000, outputTokens: 10_000, cost: 4 },
+		qwen: { sessions: 3, sessionShare: 3, editTurns: 12, inputTokens: 40_000, outputTokens: 5_000, cost: 1 },
+	}, { refactor: { tokens: 1000, sessions: 1 } })]);
+	assert.ok(!html.includes('Comparing these models'), html);
 });
 
 test('renderModelWeekDetail: no models selected falls back to the empty region', () => {

@@ -1268,6 +1268,29 @@ function focusTrendCard(metricId: string): void {
  * whole population, because volume, efficiency and mix only add up when they
  * are measured over the same sessions.
  */
+/**
+ * The first comparison window, in the picker's own order, that carries a profile
+ * for *both* slots.
+ *
+ * Cost Attribution decomposes the last 30 days against the 30 before them, so a
+ * model whose cost shifted can have all of its usage on the far side of the
+ * Models tab's own window. Landing there on "no data for one of the two sides"
+ * would make the row look like it pointed at nothing, so widen to a window that
+ * actually holds the comparison it promised. Returns null when none does — the
+ * empty state is then the honest answer and the selection is left alone.
+ */
+function windowCarrying(d: EfficiencyViewData, modelA: string, modelB: string): ModelCompareWindowId | null {
+	const now = payloadNow(d);
+	for (const id of availableWindowIds(d, now)) {
+		const w = resolveModelCompareWindow(id, now);
+		const days = selectDaysInWindow(d.modelDaily, w);
+		if (computeModelPeriodMetrics(days, modelA, w.label) && computeModelPeriodMetrics(days, modelB, w.label)) {
+			return id;
+		}
+	}
+	return null;
+}
+
 function focusModelContext(model: string): void {
 	if (data) {
 		initModelState(data);
@@ -1276,6 +1299,12 @@ function focusModelContext(model: string): void {
 			// would open the tab comparing it with itself.
 			if (modelState.modelB === model) { modelState.modelB = modelState.modelA; }
 			modelState.modelA = model;
+			// Only the single-window mode is ours to move: in periods mode the two
+			// windows are the comparison the user themselves configured.
+			if (modelState.mode === 'models') {
+				const window = windowCarrying(data, modelState.modelA, modelState.modelB);
+				if (window) { modelState.window = window; }
+			}
 		}
 	}
 	activeTab = 'models';

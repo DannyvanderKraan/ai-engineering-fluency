@@ -101,6 +101,9 @@ export interface WebviewLocalization {
 	'efficiency.attribution.showModel': string;
 	'efficiency.week.better': string;
 	'efficiency.week.worse': string;
+	'efficiency.week.steady': string;
+	'efficiency.week.priorUnused': string;
+	'efficiency.week.bothModelsHeading': string;
 	'efficiency.week.partialChip': string;
 	'efficiency.horizon.range12w': string;
 	'efficiency.horizon.range26w': string;
@@ -209,6 +212,9 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'efficiency.attribution.showModel': 'Inspect this model',
 	'efficiency.week.better': 'better',
 	'efficiency.week.worse': 'worse',
+	'efficiency.week.steady': 'steady',
+	'efficiency.week.priorUnused': '{0} was not used in {1}, so there is no previous week to compare this one against.',
+	'efficiency.week.bothModelsHeading': 'Comparing these models',
 	'efficiency.week.partialChip': 'Partial week',
 	'efficiency.horizon.range12w': '12 weeks',
 	'efficiency.horizon.range26w': '26 weeks',
