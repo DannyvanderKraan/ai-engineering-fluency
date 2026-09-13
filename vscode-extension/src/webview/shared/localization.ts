@@ -46,6 +46,8 @@ export interface WebviewLocalization {
 	'usage.githubActivity.retryHint': string;
 	'usage.githubActivity.partialRepoPrs': string;
 	'usage.githubActivity.partialAgentTasks': string;
+	'usage.githubActivity.tasksScannedTooltip': string;
+	'usage.githubActivity.tasksScannedLabel': string;
 
 	// Details view — collapsible "Usage by Editor" section heading tooltips
 	'details.editorSection.show': string;
@@ -130,6 +132,8 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'usage.githubActivity.retryHint': 'Use Refresh now above to retry — details are in the extension Output channel.',
 	'usage.githubActivity.partialRepoPrs': 'At least one repository listing did not complete (an error, a timeout, or the page cap), so some pull requests in the window are not counted.',
 	'usage.githubActivity.partialAgentTasks': 'Some tasks were not detailed this pass — the task-detail budget was exhausted, or a task listing did not complete.',
+	'usage.githubActivity.tasksScannedTooltip': 'Showing {0} of {1} tasks — the rest could not be counted this pass, so these figures are a lower bound',
+	'usage.githubActivity.tasksScannedLabel': '({0}/{1} tasks scanned)',
 	'details.editorSection.show': 'Show Usage by Editor',
 	'details.editorSection.hide': 'Hide Usage by Editor',
 	'logviewer.summary.interactions': 'Interactions',

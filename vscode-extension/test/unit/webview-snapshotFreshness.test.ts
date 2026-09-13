@@ -66,10 +66,13 @@ test('a snapshot with no known refresh interval never claims to be stale', () =>
 	assert.match(snapshotFreshnessHtml(noInterval, NOTE, NOW), /next refresh after unknown/);
 });
 
-test('an unparseable fetchedAt degrades to an unknown next refresh rather than throwing', () => {
+test('an unparseable fetchedAt reads as stale, not fresh, and does not throw', () => {
+	// The host's own predicates refuse to trust a timestamp they cannot parse and refresh the
+	// snapshot on every open. Calling it fresh here would suppress the revalidating state while
+	// exactly that happened behind the banner, every single time.
 	const broken = { fetchedAt: 'not-a-date', refreshIntervalMs: HOUR };
-	assert.equal(snapshotFreshnessState(broken, NOW), 'fresh');
-	assert.match(snapshotFreshnessHtml(broken, NOTE, NOW), /next refresh after unknown/);
+	assert.equal(snapshotFreshnessState(broken, NOW), 'stale');
+	assert.match(snapshotFreshnessHtml(broken, NOTE, NOW), /Revalidating/);
 });
 
 test('partial data is called out as a lower bound, with the panel-specific reason', () => {
@@ -184,4 +187,12 @@ test('a row only hides its counts when the listing collected nothing at all', ()
 	assert.equal(shouldRenderErrorOnlyRow('HTTP 500', 7), false, 'seven PRs survived the failure; show them');
 	assert.equal(shouldRenderErrorOnlyRow(undefined, 0), false, 'an empty repo is not an error');
 	assert.equal(shouldRenderErrorOnlyRow('', 0), false, 'an empty error string is not an error');
+});
+
+test('a malformed timestamp with no known interval is still not called stale', () => {
+	// With no refresh policy to measure against there is nothing to be late for, so the banner says
+	// what it does know — that the next refresh time is unknown — rather than inventing staleness.
+	const noInterval = { fetchedAt: 'not-a-date' };
+	assert.equal(snapshotFreshnessState(noInterval, NOW), 'fresh');
+	assert.match(snapshotFreshnessHtml(noInterval, NOTE, NOW), /next refresh after unknown/);
 });

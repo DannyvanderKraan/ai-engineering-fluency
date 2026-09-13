@@ -12,6 +12,8 @@ import {
 	requestGitHubJson,
 	requestGitHubJsonTransport,
 	resolveTaskRepo,
+	toTaskDetailResult,
+	toTaskPageResult,
 	type AgentRepoSummary,
 	type AgentTaskRecord,
 	type FetchAccountTaskPageFn,
@@ -901,6 +903,43 @@ test('collectAgentSessions: an unparseable updated_at falls back to created_at f
 	const older = makeAccountTask('older', 'octo/remote-repo', '2026-08-01T00:00:00Z');
 	const { detailed } = await collectWithCache([older, broken], [], { maxTaskDetails: 1 });
 	assert.deepEqual(detailed, ['broken'], 'the recently created task wins the budget');
+});
+
+test('toTaskPageResult: a body with no tasks array is an error, not an empty page', () => {
+	// A 200 whose body carries no task array must not look like "this repo has no tasks". The
+	// short-page check would call the listing complete and reconciliation — which may delete only
+	// after a full enumeration — would drop every cached task and publish a confident zero.
+	for (const body of [{ unexpected: true }, {}, null, 'nonsense', 42]) {
+		const page = toTaskPageResult({ body, statusCode: 200 });
+		assert.equal(page.error, 'Unexpected response format', `${JSON.stringify(body)} must be an error`);
+		assert.deepEqual(page.tasks, []);
+	}
+});
+
+test('toTaskPageResult: an explicitly empty listing is still authoritative', () => {
+	// The guard above has to distinguish "no tasks" from "no task array" — `{ tasks: [] }` and a
+	// bare `[]` are real answers, and erroring on them would stop reconciliation ever converging.
+	for (const body of [{ tasks: [] }, []]) {
+		const page = toTaskPageResult({ body, statusCode: 200 });
+		assert.equal(page.error, undefined, `${JSON.stringify(body)} is a valid empty listing`);
+		assert.deepEqual(page.tasks, []);
+	}
+	assert.deepEqual(toTaskPageResult({ body: { tasks: [{ id: 't1' }] }, statusCode: 200 }).tasks, [{ id: 't1' }]);
+});
+
+test('toTaskDetailResult: a body with no sessions array is an error, never zero usage', () => {
+	// The caller caches a successful detail as this task's aggregate, so a malformed response read
+	// as zero sessions would remember a failure as zero usage — and reuse it for as long as the
+	// task's updated_at holds still.
+	for (const body of [{ unexpected: true }, {}, null]) {
+		const detail = toTaskDetailResult({ body, statusCode: 200 });
+		assert.equal(detail.error, 'Unexpected response format', `${JSON.stringify(body)} must be an error`);
+		assert.equal(detail.sessions, undefined);
+	}
+	// A task genuinely without cloud sessions says so, and that *is* a real zero.
+	const empty = toTaskDetailResult({ body: { sessions: [] }, statusCode: 200 });
+	assert.equal(empty.error, undefined);
+	assert.deepEqual(empty.sessions, []);
 });
 
 test('collectAgentSessions: a task the two listings timestamp differently is refetched, not reused', async () => {

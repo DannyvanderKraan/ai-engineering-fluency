@@ -2691,8 +2691,11 @@ function buildAgentSessionRows(data: AgentSessionsResult, cell: string, cellCent
     const errorNote = r.error
       ? `<div style="margin-top:2px; color:var(--text-secondary); font-style:italic; font-size:11px;">${r.error}</div>`
       : '';
+    // `partial` covers three different shortfalls — the detail budget, a detail call that failed,
+    // and a listing that did not enumerate fully — so the tooltip states the shortfall rather than
+    // naming the budget, which was only ever one of the three and became the least likely.
     const partialNote = r.partial
-      ? ` <span title="Showing ${r.tasksScanned} of ${r.tasksTotal} tasks — capped to limit API usage" style="color:var(--text-muted); font-size:10px;">(${r.tasksScanned}/${r.tasksTotal} tasks scanned)</span>`
+      ? ` <span title="${escapeHtml(localizeFormat('usage.githubActivity.tasksScannedTooltip', String(r.tasksScanned), String(r.tasksTotal)))}" style="color:var(--text-muted); font-size:10px;">${escapeHtml(localizeFormat('usage.githubActivity.tasksScannedLabel', String(r.tasksScanned), String(r.tasksTotal)))}</span>`
       : '';
     const credits = r.totalCredits > 0
       ? r.totalCredits.toFixed(1)

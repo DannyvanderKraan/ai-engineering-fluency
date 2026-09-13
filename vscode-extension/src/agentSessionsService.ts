@@ -161,18 +161,39 @@ function buildTaskListQuery(page: number, archived: boolean, since?: string): st
 	return query;
 }
 
-/** Pull the `tasks` array out of a task-listing response, tolerating a bare array body. */
-function toTaskPageResult(result: { body?: any; statusCode?: number; error?: string }): TaskPageResult {
+/**
+ * Pull the `tasks` array out of a task-listing response, tolerating a bare array body.
+ *
+ * A body that carries no task array at all is an **error**, not an empty page. Returning `tasks: []`
+ * for it would make a truncated or unexpected 200 indistinguishable from "this repo has no tasks":
+ * the short-page check would call the listing complete, and reconciliation — which is allowed to
+ * delete only after a listing known to have enumerated fully — would drop every cached task and
+ * publish a confident zero. An empty listing says so explicitly, as `{ tasks: [] }` or `[]`.
+ *
+ * Exported (like `requestGitHubJsonTransport`) so that distinction can be asserted directly: the
+ * injectable fetchers tests use return a `TaskPageResult` already, so they bypass this normalizer.
+ */
+export function toTaskPageResult(result: { body?: any; statusCode?: number; error?: string }): TaskPageResult {
 	if (result.error) { return { tasks: [], statusCode: result.statusCode, error: result.error }; }
 	const parsed = result.body;
-	const tasks = Array.isArray(parsed?.tasks) ? parsed.tasks : (Array.isArray(parsed) ? parsed : []);
+	const tasks = Array.isArray(parsed?.tasks) ? parsed.tasks : (Array.isArray(parsed) ? parsed : undefined);
+	if (!tasks) { return { tasks: [], statusCode: result.statusCode, error: 'Unexpected response format' }; }
 	return { tasks, statusCode: result.statusCode };
 }
 
-/** Pull the `sessions` array out of a task-detail response. */
-function toTaskDetailResult(result: { body?: any; statusCode?: number; error?: string }): TaskDetailResult {
+/**
+ * Pull the `sessions` array out of a task-detail response.
+ *
+ * As with the listing, a body with no `sessions` array is an error rather than an empty result. The
+ * caller caches a successful detail as this task's aggregate, so treating a malformed response as
+ * zero sessions would remember a failure as zero usage — and then reuse it, without another detail
+ * call, for as long as the task's `updated_at` holds still. A task genuinely without cloud sessions
+ * comes back as `{ sessions: [] }`.
+ */
+export function toTaskDetailResult(result: { body?: any; statusCode?: number; error?: string }): TaskDetailResult {
 	if (result.error) { return { statusCode: result.statusCode, error: result.error }; }
-	return { sessions: Array.isArray(result.body?.sessions) ? result.body.sessions : [], statusCode: result.statusCode };
+	if (!Array.isArray(result.body?.sessions)) { return { statusCode: result.statusCode, error: 'Unexpected response format' }; }
+	return { sessions: result.body.sessions, statusCode: result.statusCode };
 }
 
 /** Fetch one page of agent tasks for a single repository. */

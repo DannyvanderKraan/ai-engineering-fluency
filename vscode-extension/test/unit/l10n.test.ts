@@ -360,6 +360,8 @@ test('l10n: GitHub activity freshness banner labels resolve in English', () => {
 		'usage.githubActivity.retryHint': 'Use Refresh now above to retry — details are in the extension Output channel.',
 		'usage.githubActivity.partialRepoPrs': 'At least one repository listing did not complete (an error, a timeout, or the page cap), so some pull requests in the window are not counted.',
 		'usage.githubActivity.partialAgentTasks': 'Some tasks were not detailed this pass — the task-detail budget was exhausted, or a task listing did not complete.',
+		'usage.githubActivity.tasksScannedTooltip': 'Showing {0} of {1} tasks — the rest could not be counted this pass, so these figures are a lower bound',
+		'usage.githubActivity.tasksScannedLabel': '({0}/{1} tasks scanned)',
 	};
 	for (const [key, english] of Object.entries(expected)) {
 		assert.equal(t(key), english, `English value for ${key}`);
@@ -383,6 +385,8 @@ test('l10n: GitHub activity freshness banner labels resolve in zh-cn', () => {
 			'usage.githubActivity.retryHint': '使用上方的「立即刷新」重试 — 详细信息见扩展的输出通道。',
 			'usage.githubActivity.partialRepoPrs': '至少有一个仓库的列表未能完整枚举（出错、超时或达到分页上限），因此时间窗口内的部分拉取请求未被计入。',
 			'usage.githubActivity.partialAgentTasks': '本次未获取全部任务的明细 — 任务明细预算已用尽，或任务列表未能完整枚举。',
+			'usage.githubActivity.tasksScannedTooltip': '显示 {1} 个任务中的 {0} 个 — 其余任务本次无法统计，因此以下数字为下限',
+			'usage.githubActivity.tasksScannedLabel': '(已扫描 {0}/{1} 个任务)',
 		};
 		for (const [key, chinese] of Object.entries(expected)) {
 			assert.equal(t(key), chinese, `zh-cn value for ${key}`);
@@ -395,16 +399,20 @@ test('l10n: GitHub activity freshness banner labels resolve in zh-cn', () => {
 test('l10n: the banner\'s placeholder templates keep their {0}/{1} slots in both languages', () => {
 	// localizeFormat() fills these webview-side; a translation that drops a slot would silently
 	// swallow the snapshot age or the next-refresh time.
-	for (const key of ['usage.githubActivity.revalidatingBody', 'usage.githubActivity.updated']) {
+	for (const key of ['usage.githubActivity.revalidatingBody', 'usage.githubActivity.updated', 'usage.githubActivity.tasksScannedTooltip', 'usage.githubActivity.tasksScannedLabel']) {
 		assert.match(t(key), /\{0\}/, `English ${key} keeps its {0} slot`);
 	}
-	assert.match(t('usage.githubActivity.updated'), /\{1\}/, 'English updated keeps its {1} slot');
+	for (const key of ['usage.githubActivity.updated', 'usage.githubActivity.tasksScannedTooltip', 'usage.githubActivity.tasksScannedLabel']) {
+		assert.match(t(key), /\{1\}/, `English ${key} keeps its {1} slot`);
+	}
 	mock.setLanguage('zh-cn');
 	try {
-		for (const key of ['usage.githubActivity.revalidatingBody', 'usage.githubActivity.updated']) {
+		for (const key of ['usage.githubActivity.revalidatingBody', 'usage.githubActivity.updated', 'usage.githubActivity.tasksScannedTooltip', 'usage.githubActivity.tasksScannedLabel']) {
 			assert.match(t(key), /\{0\}/, `zh-cn ${key} keeps its {0} slot`);
 		}
-		assert.match(t('usage.githubActivity.updated'), /\{1\}/, 'zh-cn updated keeps its {1} slot');
+		for (const key of ['usage.githubActivity.updated', 'usage.githubActivity.tasksScannedTooltip', 'usage.githubActivity.tasksScannedLabel']) {
+			assert.match(t(key), /\{1\}/, `zh-cn ${key} keeps its {1} slot`);
+		}
 	} finally {
 		mock.setLanguage('en');
 	}

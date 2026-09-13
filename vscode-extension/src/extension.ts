@@ -1952,10 +1952,16 @@ class CopilotTokenTracker implements vscode.Disposable {
 					this._syncGitHubActivityScope(this.githubActivityScope(session.account.label));
 					void this.loadAndLogCopilotPlanInfo();
 				} else {
+					// Capture the scope before clearing the session — it is the only way back to the
+					// removed account's cache filenames. A session revoked outside the extension is
+					// the same event as an explicit sign-out from the user's side, so it purges that
+					// identity's files too; clearing only memory would leave them to be served again
+					// the moment anyone signs into that account.
+					const removedScope = this.githubActivityScope();
 					this.githubSession = undefined;
 					await this.context.globalState.update('github.authenticated', false);
 					await this.context.globalState.update('github.username', undefined);
-					void this._discardInMemoryGitHubActivity('the GitHub session was removed')
+					void this._purgeGitHubActivityScope(removedScope, 'the GitHub session was removed')
 						.catch((err) => this.warn(`Failed to clear GitHub activity after the session was removed: ${err}`));
 					this.log('GitHub session removed externally — clearing auth state');
 				}
@@ -2342,16 +2348,10 @@ class CopilotTokenTracker implements vscode.Disposable {
 			await this.context.globalState.update('github.signedOutByUser', true);
 			// Purge the signed-out identity's cached GitHub activity: it is that account's private
 			// data, and nothing should be able to serve it back after they signed out. The scope is
-			// computed from the session captured above, before it was cleared.
-			try {
-				const removed = await deleteGitHubActivityCacheFiles(this.context.globalStorageUri.fsPath, signedOutScope);
-				this.log(`Removed ${removed} cached GitHub activity file(s) for the signed-out account`);
-			} catch (err) {
-				this.warn(`Failed to remove cached GitHub activity on sign-out: ${err}`);
-			}
-			// This also pushes the empty, unauthenticated snapshot to the analysis panel, so the
-			// Repository PRs and Cloud Agent tabs stop showing the signed-out account's rows.
-			await this._discardInMemoryGitHubActivity('the user signed out of GitHub');
+			// computed from the session captured above, before it was cleared. This also pushes the
+			// empty, unauthenticated snapshot to the analysis panel, so the Repository PRs and Cloud
+			// Agent tabs stop showing the signed-out account's rows.
+			await this._purgeGitHubActivityScope(signedOutScope, 'the user signed out of GitHub');
 			this.log('✅ Successfully signed out from GitHub');
 			vscode.window.showInformationMessage('Signed out from GitHub successfully.');
 
@@ -2448,7 +2448,12 @@ class CopilotTokenTracker implements vscode.Disposable {
 	private _isGitHubActivityScopeCurrent(scope: string, generation: number): boolean {
 		if (this._githubSignedOutByUser) { return false; }
 		if (this._githubActivityGeneration !== generation) { return false; }
-		return this.githubActivityScope() === scope;
+		// Compare against the scope actually in effect, not a freshly recomputed one. Recomputing
+		// goes through `this.githubSession`, which lags an account switch until the auth event
+		// lands — so the new account's own, perfectly valid pass would fail this check and be
+		// thrown away, leaving that account stuck on the empty state. `_syncGitHubActivityScope()`
+		// records the resolved identity at the start of every pass, which is the right answer here.
+		return (this._githubActivityScopeInMemory ?? this.githubActivityScope()) === scope;
 	}
 
 	/** Forget the in-memory GitHub-activity snapshots (and their replay copies) for this window. */
@@ -2473,6 +2478,24 @@ class CopilotTokenTracker implements vscode.Disposable {
 		const authenticated = Boolean(this.githubSession) && !this._githubSignedOutByUser;
 		await this.publishRepoPrStats(this.buildEmptyRepoPrStatsResult(since, authenticated));
 		await this.publishAgentSessions(this.buildEmptyAgentSessionsResult(since, authenticated));
+	}
+
+	/**
+	 * Forget one identity's GitHub activity completely: its cache files, this window's in-memory
+	 * snapshots, the retained replay messages and the open panel's rows.
+	 *
+	 * Shared by the explicit sign-out and the externally-revoked-session path so the two cannot
+	 * drift — leaving the files behind in either case means that account's private activity is
+	 * served straight back the next time anyone signs into it.
+	 */
+	private async _purgeGitHubActivityScope(scope: string, reason: string): Promise<void> {
+		try {
+			const removed = await deleteGitHubActivityCacheFiles(this.context.globalStorageUri.fsPath, scope);
+			this.log(`Removed ${removed} cached GitHub activity file(s) for the signed-out account`);
+		} catch (err) {
+			this.warn(`Failed to remove cached GitHub activity on sign-out: ${err}`);
+		}
+		await this._discardInMemoryGitHubActivity(reason);
 	}
 
 	/**
@@ -4459,6 +4482,8 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'usage.githubActivity.retryHint': l10n.t('usage.githubActivity.retryHint'),
 			'usage.githubActivity.partialRepoPrs': l10n.t('usage.githubActivity.partialRepoPrs'),
 			'usage.githubActivity.partialAgentTasks': l10n.t('usage.githubActivity.partialAgentTasks'),
+			'usage.githubActivity.tasksScannedTooltip': l10n.t('usage.githubActivity.tasksScannedTooltip'),
+			'usage.githubActivity.tasksScannedLabel': l10n.t('usage.githubActivity.tasksScannedLabel'),
 			// Details view — collapsible "Usage by Editor" section heading tooltips
 			'details.editorSection.show': l10n.t('details.editorSection.show'),
 			'details.editorSection.hide': l10n.t('details.editorSection.hide'),

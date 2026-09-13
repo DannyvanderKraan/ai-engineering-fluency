@@ -54,15 +54,24 @@ export type SnapshotFreshnessState = 'never-fetched' | 'fresh' | 'stale';
  * Classify a snapshot for the banner. A snapshot with no known interval never reads as stale.
  *
  * This deliberately mirrors the host's own `isRepoPrSnapshotFresh()` / `isAgentTasksSnapshotFresh()`,
- * including the clock-skew rule: a `fetchedAt` more than one interval in the *future* counts as
- * stale. The host revalidates such a snapshot on every open, so a banner that called it fresh would
- * report a next-refresh time in the future while a refresh ran behind it every single time.
+ * so the banner never contradicts what the host is actually doing behind it. Both of the host's
+ * "this can't be trusted" cases count as stale here too:
+ *
+ * - a **`fetchedAt` that cannot be parsed** — the host refreshes such a snapshot on every open, so
+ *   calling it fresh would suppress the revalidating state while a refresh ran every single time;
+ * - a **`fetchedAt` more than one interval in the future** — a clock change, which the host refuses
+ *   to let pin the cache open. The banner would otherwise advertise a next-refresh time that has
+ *   not happened yet.
+ *
+ * An interval of zero is the one genuine unknown: with no policy to measure against, the banner
+ * says "next refresh after unknown" rather than guessing at staleness.
  */
 export function snapshotFreshnessState(data: SnapshotFreshness, now: number): SnapshotFreshnessState {
 	if (!data.fetchedAt) { return 'never-fetched'; }
 	const fetchedMs = Date.parse(data.fetchedAt);
 	const intervalMs = data.refreshIntervalMs ?? 0;
-	if (!Number.isFinite(fetchedMs) || intervalMs <= 0) { return 'fresh'; }
+	if (intervalMs <= 0) { return 'fresh'; }
+	if (!Number.isFinite(fetchedMs)) { return 'stale'; }
 	const age = now - fetchedMs;
 	return age >= intervalMs || age < -intervalMs ? 'stale' : 'fresh';
 }

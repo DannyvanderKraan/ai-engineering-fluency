@@ -79,6 +79,12 @@ eviction.
 
 ## Refresh: hourly TTL, one window, plus a manual refresh
 
+A served snapshot describes the 30-day window as it stood when the snapshot was taken, so at the
+window's trailing edge it can still count an entity that has since aged out — by at most the age of
+the snapshot, which the banner states. Invalidating on window drift instead is not an option: the
+window start moves forward continuously, so any tolerance shorter than the TTL would throw the cache
+away on almost every read.
+
 - Each cache is revalidated **at most once an hour**
   (`REPO_PRS_REFRESH_INTERVAL_MS` / `AGENT_TASKS_REFRESH_INTERVAL_MS`), by whichever VS Code window
   wins that cache's file lock. Other windows read the snapshot that window wrote. A heartbeat keeps
@@ -111,6 +117,7 @@ result is marked partial.
 | Listing errored or timed out | Pages collected before the failure are still counted; records retained; per-repo error shown; tab marked partial |
 | Cloud-agent detail budget exhausted | Undetailed tasks stay "owed"; tab marked partial |
 | Cloud-agent detail call failed | No aggregate stored for that task — a failure is never remembered as zero usage; the task's row and the tab are marked partial; retried next pass, with its consecutive-failure count |
+| A listing or detail response arrived without its array | Treated as an error, not as an empty result. A 200 carrying no `tasks` array would otherwise read as an authoritative empty page — enough for reconciliation to delete every cached task and publish a confident zero — and one carrying no `sessions` array would be cached as a successful zero-usage aggregate. An empty answer says so explicitly, as `{ tasks: [] }` or `{ sessions: [] }` |
 | Both listings disagree about a task's repository or its `updated_at` | The repo-scoped listing wins the row attribution, but the task is treated as uncacheable for that pass. A repository disagreement would let a stale aggregate land on the wrong row; a timestamp disagreement means the other listing has already seen the task change, so reusing the cached state would break the `updated_at` contract |
 | A repo's listing errored after collecting some pages | The counts it did collect are shown, with the error noted beside them. A row is blanked to an error-only line only when the listing produced nothing — the banner already calls the figures a lower bound, so hiding them would contradict it |
 
@@ -129,7 +136,9 @@ figures below are a lower bound** line with the reason.
 - **Clear Cache** (`aiEngineeringFluency.clearCache`) removes every scope's Repository PRs and Cloud
   Agent cache files, the in-memory snapshots and the freshness state. It never signs the user out.
 - **Sign out from GitHub** additionally purges the signing-out identity's scope specifically, so
-  nothing can serve that account's data afterwards.
+  nothing can serve that account's data afterwards. A session revoked *outside* the extension goes
+  through the same purge — it is the same event from the user's side, and clearing only memory
+  would leave that account's files to be served again the moment anyone signs back into it.
 
 Both also drop this window's in-memory snapshots *and* the retained webview-replay messages, so
 recreating the Usage Analysis panel cannot repopulate it from data that was just discarded. The
@@ -143,14 +152,21 @@ leak the scoping exists to prevent, one layer up. Every discard therefore pushes
 never-fetched snapshot to the panel; because it carries no `fetchedAt`, the panel also re-arms its
 lazy loader so the tab asks for the new identity's data instead of considering itself loaded.
 
-Neither touches the session-parsing caches' lock files or another window's coordination state. One
-known limit: a *different* VS Code window that already holds an in-memory snapshot keeps showing it
-until its next revalidation notices the file is gone — the stale display is transient, but it is not
-invalidated across windows synchronously.
+Neither touches the session-parsing caches' lock files or another window's coordination state.
 
-A refresh that is *mid-write* when a discard lands is caught on the other side too: the scope and
-generation are re-checked **after** the awaited write, and the file the atomic rename just
-recreated is removed rather than published. Checking only before the write would let the rename put
+One known limit, and it is a real one: **invalidation is window-local.** The generation counter that
+makes a discard stick lives in the window that ran it. Another window that already holds an
+in-memory snapshot keeps showing it until its next revalidation notices the file is gone; and a
+window that is *mid-collection* when the discard happens still considers its own scope and
+generation valid, so its atomic write can recreate a file that Clear Cache or a sign-out just
+removed. Closing that properly needs a shared on-disk tombstone (or equivalent cross-window
+coordination) that a writer checks immediately before its rename — a design addition with its own
+races, deliberately left out of the change that introduced per-entity caching. Until then, a second
+Clear Cache removes anything a racing window resurrected.
+
+Within a single window, a refresh that is *mid-write* when a discard lands is caught on the other
+side too: the scope and generation are re-checked **after** the awaited write, and the file the
+atomic rename just recreated is removed rather than published. Checking only before the write would let the rename put
 back a file that Clear Cache had already deleted.
 
 ### Identity changes mid-flight
@@ -160,7 +176,9 @@ Enterprise host discards them rather than publishing the previous identity's rep
 counts to the new session. The snapshot *read* on each serve path is scoped from the session that
 call just resolved, never from the extension's `githubSession` field — that field lags an account
 switch until the auth listener catches up, and reading through it would serve the previous
-identity's file. A collection pass that spans a sign-out, a switch or a Clear Cache has
+identity's file. The guard that decides whether a pass is still current compares against the
+recorded in-flight scope for the same reason: recomputing it from the lagging field would discard
+the *new* account's own valid work and strand it on the empty state. A collection pass that spans a sign-out, a switch or a Clear Cache has
 its result discarded instead of written — otherwise it would recreate a deliberately deleted file
 under an identity that is no longer signed in.
 
