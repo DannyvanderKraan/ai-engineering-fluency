@@ -8213,6 +8213,12 @@ private computeFallbackDailyRollup(
 			correctionReport: analysisStats.correctionReport ?? null,
 			repeatedTasks: analysisStats.repeatedTasks ?? null,
 			curationAnalysis: analysisStats.curationAnalysis ?? null,
+			// A cold-opened panel gets `window.__INITIAL_USAGE__ = null` when there are no cached
+			// stats yet (_buildUsageAnalysisInitialData returns 'null'), so the webview's
+			// initial-payload localization step is skipped entirely. Without this the whole view —
+			// tab groups, band headings, context-pressure rows — falls back to English on a
+			// non-English VS Code until the panel is reopened with stats already cached.
+			localization: this.getWebviewLocalization(),
 			copilotApiBalance: this._buildCopilotApiBalance(),
 			monthBillingGroupCosts: this.lastDetailedStats?.month.billingGroupCosts ?? null,
 			hideAutomaticToolCalls: this.getHideAutomaticToolCallsSetting(),

@@ -118,9 +118,14 @@ Three mechanisms, in increasing order of cost. Pick the cheapest one that fits.
 
 ### 1. Section-group heading — a band within one tab
 
-`sectionGroupHeadingHtml(icon, label, subtitle)` in `usage/main.ts`. A labelled rule above a run
-of `.section` cards. Use it when a tab has **more than ~4 sections** that fall into obvious
+`sectionGroupHeadingHtml(icon, titleKey, subtitleKey)` in `usage/main.ts`. A labelled rule above a
+run of `.section` cards. Use it when a tab has **more than ~4 sections** that fall into obvious
 groups but do not deserve separate tabs, because a reader wants them on one scroll.
+
+Note the parameter names: the last two are **webview localization keys**, not display text. The
+helper resolves them through `localize()` and escapes the result, so a heading added with literal
+strings would render the key names *and* bypass the localization chain the `lint:hardcoded-strings`
+gate enforces.
 
 Nothing about the sections themselves changes — no markup, no message contract, no telemetry,
 no tab id. That is the point: it is the one regrouping that costs nothing to try.

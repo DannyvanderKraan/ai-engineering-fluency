@@ -715,6 +715,51 @@ function activeTabState(harness: any): { button: string | undefined; panels: str
 	};
 }
 
+test('a periodic refresh does not re-announce the tab or re-request its data', async () => {
+	// Regression: setupTabs() runs after every renderLayout(), including each silent updateStats.
+	// Announcing + replaying unconditionally re-stamped the What's New visit window on every
+	// refresh, and re-posted loadRepoPrStats forever once an unauthenticated response had reset
+	// the loaded flag (refresh -> post -> unauthenticated -> flag reset -> repeat).
+	const harness = await bootWebview(null);
+	harness.post({ command: 'switchTab', tab: 'repos' });
+	harness.post({ command: 'updateStats', data: buildStats() });
+	await harness.settle();
+
+	const countOf = (command: string): number =>
+		harness.posted.filter((m: any) => m.command === command).length;
+	assert.equal(countOf('loadRepoPrStats'), 1, 'the opening render requests the data once');
+	const opensAfterFirstRender = countOf('viewTabOpened');
+
+	// An unauthenticated response resets the loaded flag, then two silent refreshes arrive.
+	harness.post({ command: 'repoPrStatsLoaded', data: null });
+	harness.post({ command: 'updateStats', data: buildStats() });
+	harness.post({ command: 'updateStats', data: buildStats() });
+	await harness.settle();
+
+	assert.equal(countOf('loadRepoPrStats'), 1, 'refreshes must not re-request while the user sits on the tab');
+	assert.equal(countOf('viewTabOpened'), opensAfterFirstRender, 'refreshes must not re-announce the same tab');
+
+	// A real switch away and back is still an explicit retry.
+	harness.window.document.querySelector('.tab-button[data-tab="activity"]').click();
+	harness.window.document.querySelector('.group-tab[data-group="github"]').click();
+	assert.equal(countOf('loadRepoPrStats'), 2, 're-entering the tab retries the load');
+});
+
+test('localization arriving with updateStats is applied when the initial payload was null', async () => {
+	// A panel opened before any stats are cached gets `__INITIAL_USAGE__ = null`, so the initial
+	// localization step never runs. Without the map on updateStats the whole view stays English.
+	const harness = await bootWebview(null);
+	harness.post({
+		command: 'updateStats',
+		data: { ...buildStats(), localization: { 'usage.group.workspace': 'WERKRUIMTE', '__language__': 'nl' } },
+	});
+	await harness.settle();
+
+	const label = [...harness.window.document.querySelectorAll('.group-tab')]
+		.find((b: any) => b.getAttribute('data-group') === 'workspace')?.textContent ?? '';
+	assert.match(label, /WERKRUIMTE/, 'the group tab must use the payload translation, not the English default');
+});
+
 test('a deep link to a lazy-loaded tab still requests its data', async () => {
 	// Regression: activateUsageTab() returns before runTabFirstVisitEffects() when no panel
 	// exists yet, which is the state a `switchTab` message arrives in during loading. Without

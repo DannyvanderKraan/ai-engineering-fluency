@@ -2479,6 +2479,21 @@ function activateUsageTab(tab: string): boolean {
 	return true;
 }
 
+/**
+ * Whether a render has already announced its opening tab and run that tab's first-visit effects.
+ *
+ * setupTabs() runs after *every* renderLayout(), including each periodic silent `updateStats`
+ * refresh — not just the first. Announcing and replaying unconditionally therefore re-stamped the
+ * What's New visit window on every refresh, and worse, re-posted loadRepoPrStats/loadAgentSessions
+ * forever whenever an unauthenticated response had reset their loaded flags: refresh → flag is
+ * false → post → unauthenticated → flag reset → repeat. Only the first render of a panel is a
+ * genuine "the user just arrived here" event; every later one is the same tab still being shown.
+ *
+ * A real tab switch still goes through activateUsageTab(), which announces and re-runs the effects
+ * on every activation — so re-entering a tab after signing in still retries its load.
+ */
+let openingTabAnnounced = false;
+
 function setupTabs(): void {
 	// Seed the remembered-leaf map from whatever tab this render opened on. activateUsageTab()
 	// records it on every later switch, but it bails before recording when no panel exists yet —
@@ -2486,15 +2501,17 @@ function setupTabs(): void {
 	// loading. Without this, opening on a deep-linked tab (the worktree notification's "Show Me",
 	// say), leaving its group and coming back would drop the user on the group's first tab.
 	lastTabPerGroup[groupOfUsageTab(activeTab)] = activeTab;
-	// The tab that is already on screen counts as opened — the user is reading it
-	// right now, whether or not they clicked anything to get here.
-	reportTabOpened(activeTab);
-	// …and it counts as a first visit. activateUsageTab() bails before reaching these effects
-	// when no panel exists yet, so a `switchTab` deep link to Repository PRs or Cloud Agent
-	// would render its panel and then sit on the loading placeholder forever, because nothing
-	// ever posted loadRepoPrStats/loadAgentSessions. Both are guarded by their own loaded
-	// flags, so replaying them here is idempotent.
-	runTabFirstVisitEffects(activeTab);
+	if (!openingTabAnnounced) {
+		openingTabAnnounced = true;
+		// The tab that is already on screen counts as opened — the user is reading it
+		// right now, whether or not they clicked anything to get here.
+		reportTabOpened(activeTab);
+		// …and it counts as a first visit. activateUsageTab() bails before reaching these effects
+		// when no panel exists yet, so a `switchTab` deep link to Repository PRs or Cloud Agent
+		// would render its panel and then sit on the loading placeholder forever, because nothing
+		// ever posted loadRepoPrStats/loadAgentSessions.
+		runTabFirstVisitEffects(activeTab);
+	}
 	document.querySelectorAll<HTMLElement>('.tab-button').forEach(button => {
 		button.addEventListener('click', () => {
 			const tab = button.getAttribute('data-tab');
@@ -5942,6 +5959,13 @@ function wireCopyButtons(): void {
 
 function handleUpdateStats(message: any): void {
 	clearLoadingTimeout();
+	// The initial payload is `null` for a panel opened before any stats were cached, so this is
+	// the first chance to localize. initializeWebviewLocalization ignores unresolved keys, and
+	// re-applying the same map is a no-op, so this is safe to run on every update.
+	if (message.data?.localization) {
+		initializeWebviewLocalization(message.data.localization);
+		setCurrentLanguage(message.data.localization['__language__'] || 'en');
+	}
 	if (message.data?.locale) {
 		setFormatLocale(message.data.locale);
 	}
