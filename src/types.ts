@@ -1,9 +1,10 @@
 /**
- * Shared type definitions for the Copilot Token Tracker extension.
+ * Shared type definitions for the AI Engineering Fluency extension.
  * Extracted from extension.ts to reduce file size and improve reusability.
  */
 import type { TaskCategory, TaskCategoryBreakdown, TaskClassificationResult } from './taskClassification';
 import type { CacheBreakageResult, CacheBreakagePeriodStats } from './cacheBreakage';
+import type { HydraFusionSummary } from './hydrafusion';
 
 /**
  * Character-to-token ratio for a specific AI model.
@@ -39,6 +40,8 @@ export interface ModelUsage {
      */
     cacheCreation1hTokens?: number;
     thinkingTokens?: number;
+    /** Token subset from explicitly Auto-routed Copilot requests (not additional usage). */
+    autoRouting?: Omit<ModelUsage[string], 'sessions' | 'autoRouting'>;
     /** Number of sessions that used this model in the aggregated period. */
     sessions: number;
   };
@@ -1231,6 +1234,8 @@ export interface ChatTurn {
   userMessage: string;
   assistantResponse: string;
   model: string | null;
+  /** Explicit per-request Copilot Auto selection; never inferred from a session's final picker. */
+  autoRouted?: boolean;
   toolCalls: { toolName: string; arguments?: string; result?: string; isSubAgent?: boolean; subAgentModel?: string; subAgentTokens?: { input: number; output: number }; subAgentCost?: number }[];
   contextReferences: ContextReferenceUsage;
   mcpTools: { server: string; tool: string }[];
@@ -1291,6 +1296,12 @@ export interface SessionLogData {
    * listing the items as bullet points alongside the editor name and icon.
    */
   editorNote?: { items: string[] };
+  /**
+   * Per-leg HydraFusion routing detail (Copilot CLI sessions that used the
+   * `hydrafusion` model). Absent for every other session, including CLI sessions
+   * that never routed through it. See `analyzeHydraFusionSession` in `hydrafusion.ts`.
+   */
+  hydraFusion?: HydraFusionSummary;
 }
 
 // ---------------------------------------------------------------------------

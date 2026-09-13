@@ -194,6 +194,8 @@
   "usage.contextPressure.nearLimitLabel": "⚠️ 接近上限的会话",
   "usage.contextPressure.worstFill": "最满的会话达到了其窗口的 {0}%",
   "usage.contextPressure.nearLimitTooltip": "在未压缩的情况下填满了至少 {0}% 上下文窗口的 Copilot CLI 会话——这是上下文开始被丢弃之前的预警区间",
+  "details.editorSection.show": "显示按编辑器划分的用量",
+  "details.editorSection.hide": "隐藏按编辑器划分的用量",
 
   "onboarding.welcome.message": "AI 工程熟练度跟踪您的 GitHub Copilot 使用情况——令牌计数、成本估算以及基于您与 AI 工具交互方式的熟练度评分。",
   "onboarding.welcome.openFluencyScore": "打开熟练度评分",
@@ -233,6 +235,9 @@
   "logviewer.summary.contextRefs": "上下文引用",
   "logviewer.summary.fileName": "文件名",
   "logviewer.summary.editor": "编辑器",
+  "logviewer.summary.editorSource": "来源",
+  "logviewer.summary.mcpAndContextRefs": "MCP 工具与上下文引用",
+  "logviewer.summary.noModeData": "无模式数据",
   "logviewer.summary.fileSize": "文件大小",
   "logviewer.summary.modified": "修改时间",
   "logviewer.summary.timeline": "时间线",
@@ -270,5 +275,15 @@
   "mistral.table.created": "创建时间",
   "mistral.table.updated": "更新时间",
   "mistral.table.description": "描述",
-  "mistral.table.untitled": "(未命名)"
+  "mistral.table.untitled": "(未命名)",
+  "logviewer.hydrafusion.cost": "费用",
+  "logviewer.hydrafusion.costForTurn": "本轮费用",
+  "logviewer.hydrafusion.jumpToStepTitle": "跳转到下方会话步骤概览中的第 {0} 步",
+  "logviewer.hydrafusion.jumpToStepLabel": "第 {0} 步",
+  "logviewer.hydrafusion.turnDetailIntro": "展开一轮以查看每个环节、它做出的决定以及它的花费。● 标记你实际收到输出的环节；✗ 标记被评审拒绝的环节。相同的环节也会出现在下方会话步骤概览中对应的步骤下。",
+  "logviewer.hydrafusion.toggleLegsAriaLabel": "切换第 {0} 步的 HydraFusion 环节",
+  "logviewer.hydrafusion.showLegsTitle": "显示此步骤背后的 HydraFusion 环节",
+  "logviewer.hydrafusion.legsCaptionTotal": "⚡ 第 {0} 步的 HydraFusion 环节 — 总计",
+  "logviewer.hydrafusion.modelChangedTitle": "模型较上一步已更改",
+  "logviewer.hydrafusion.expandStepNote": "⚡ 展开某一步以查看其背后的 HydraFusion 环节"
 }

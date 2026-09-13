@@ -32,6 +32,10 @@ export interface WebviewLocalization {
 	'usage.contextPressure.worstFill': string;
 	'usage.contextPressure.nearLimitTooltip': string;
 
+	// Details view — collapsible "Usage by Editor" section heading tooltips
+	'details.editorSection.show': string;
+	'details.editorSection.hide': string;
+
 	// Log viewer summary card labels
 	'logviewer.summary.interactions': string;
 	'logviewer.summary.editorMode': string;
@@ -51,6 +55,9 @@ export interface WebviewLocalization {
 	'logviewer.summary.contextRefs': string;
 	'logviewer.summary.fileName': string;
 	'logviewer.summary.editor': string;
+	'logviewer.summary.editorSource': string;
+	'logviewer.summary.mcpAndContextRefs': string;
+	'logviewer.summary.noModeData': string;
 	'logviewer.summary.fileSize': string;
 	'logviewer.summary.modified': string;
 	'logviewer.summary.timeline': string;
@@ -85,6 +92,18 @@ export interface WebviewLocalization {
 	'mistral.table.description': string;
 	'mistral.table.untitled': string;
 
+	// HydraFusion Routing section + Session Steps Overview leg toggle
+	'logviewer.hydrafusion.cost': string;
+	'logviewer.hydrafusion.costForTurn': string;
+	'logviewer.hydrafusion.jumpToStepTitle': string;
+	'logviewer.hydrafusion.jumpToStepLabel': string;
+	'logviewer.hydrafusion.turnDetailIntro': string;
+	'logviewer.hydrafusion.toggleLegsAriaLabel': string;
+	'logviewer.hydrafusion.showLegsTitle': string;
+	'logviewer.hydrafusion.legsCaptionTotal': string;
+	'logviewer.hydrafusion.modelChangedTitle': string;
+	'logviewer.hydrafusion.expandStepNote': string;
+
 	// Add other webview-localizable strings here as needed
 	[key: string]: string;
 }
@@ -111,6 +130,8 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'usage.contextPressure.nearLimitLabel': '⚠️ Sessions near the limit',
 	'usage.contextPressure.worstFill': 'Fullest session reached {0}% of its window',
 	'usage.contextPressure.nearLimitTooltip': 'Copilot CLI sessions that filled at least {0}% of their context window without compacting — the early-warning band before context starts getting dropped',
+	'details.editorSection.show': 'Show Usage by Editor',
+	'details.editorSection.hide': 'Hide Usage by Editor',
 	'logviewer.summary.interactions': 'Interactions',
 	'logviewer.summary.editorMode': 'Editor Mode',
 	'logviewer.summary.estimatedTokens': 'Estimated Tokens',
@@ -129,6 +150,9 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'logviewer.summary.contextRefs': 'Context Refs',
 	'logviewer.summary.fileName': 'File Name',
 	'logviewer.summary.editor': 'Editor',
+	'logviewer.summary.editorSource': 'Source',
+	'logviewer.summary.mcpAndContextRefs': 'MCP Tools & Context Refs',
+	'logviewer.summary.noModeData': 'No mode data',
 	'logviewer.summary.fileSize': 'File Size',
 	'logviewer.summary.modified': 'Modified',
 	'logviewer.summary.timeline': 'Timeline',
@@ -159,7 +183,17 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'mistral.table.created': 'Created',
 	'mistral.table.updated': 'Updated',
 	'mistral.table.description': 'Description',
-	'mistral.table.untitled': '(untitled)'
+	'mistral.table.untitled': '(untitled)',
+	'logviewer.hydrafusion.cost': 'Cost',
+	'logviewer.hydrafusion.costForTurn': 'Cost for this turn',
+	'logviewer.hydrafusion.jumpToStepTitle': 'Jump to step #{0} in the Session Steps Overview below',
+	'logviewer.hydrafusion.jumpToStepLabel': 'step #{0}',
+	'logviewer.hydrafusion.turnDetailIntro': 'Expand a turn to see each leg, what it decided, and what it cost. ● marks the leg whose output you actually received; ✗ marks a leg a judge rejected. The same legs also appear under their step in the Session Steps Overview below.',
+	'logviewer.hydrafusion.toggleLegsAriaLabel': 'Toggle HydraFusion legs for step #{0}',
+	'logviewer.hydrafusion.showLegsTitle': 'Show the HydraFusion legs behind this step',
+	'logviewer.hydrafusion.legsCaptionTotal': '⚡ HydraFusion legs for step #{0} — total',
+	'logviewer.hydrafusion.modelChangedTitle': 'Model changed from the previous step',
+	'logviewer.hydrafusion.expandStepNote': '⚡ expand a step to see the HydraFusion legs behind it'
 };
 
 // Current localization strings, initialized with defaults

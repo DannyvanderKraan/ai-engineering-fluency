@@ -155,6 +155,8 @@ import { HermesDataAccess } from '../../src/hermes';
 import { getVSCodeUserPaths } from '../../src/adapters/copilotChatAdapter';
 import { isJetBrainsSessionPath } from '../../src/adapters/adapterPredicates';
 import { detectJetBrainsModelHintFromContent } from '../../src/jetbrains';
+import { analyzeHydraFusionSession } from '../../src/hydrafusion';
+import type { HydraFusionSummary } from '../../src/hydrafusion';
 import { extractCopilotCliSessionId, getCopilotCliExactUsage, getCopilotCliOtelStatus, getCopilotCliOtelUsage, loadCopilotCliOtelIndex } from '../../src/copilotCliOtel';
 import { createWakeupGate, TimeoutError as _TimeoutError, withTimeout as _withTimeout } from './utils/promises';
 import { WebviewMessageReplay } from './webviewMessageReplay';
@@ -165,6 +167,8 @@ import {
   estimateTokensFromJsonlSession as _estimateTokensFromJsonlSession,
   extractPerRequestUsageFromRawLines as _extractPerRequestUsageFromRawLines,
   getModelFromRequest as _getModelFromRequest,
+  isCopilotAutoRequest,
+  attachEstimatedTurnCosts,
   isJsonlContent as _isJsonlContent,
   isUuidPointerFile as _isUuidPointerFile,
   applyDelta as _applyDelta,
@@ -268,7 +272,7 @@ import {
 } from '../../src/workspaceHelpers';
 
 // --- Chart building ---
-import { buildChartData as _buildChartData, getBillingGroup, getPricingSourceForBillingGroup } from '../../src/chartDataBuilder';
+import { buildChartData as _buildChartData, getBillingGroup, getPricingSourceForBillingGroup, getPricingSourceForEditor } from '../../src/chartDataBuilder';
 
 // --- Time-to-first-token analysis ---
 import { buildTtftBuckets as _buildTtftBuckets, buildTtftModelSeries as _buildTtftModelSeries, type TtftGranularity } from '../../src/ttftAnalysis';
@@ -288,6 +292,7 @@ import { classifySessionTask, buildClassificationInputFromUsageAnalysis, countDe
 
 // --- Stats helpers ---
 import { addModelUsage, addEditorUsage, addLanguageUsage, computeUtcDateRanges, aggregatePeriodStats, makePeriodAccumulator, computeSessionTotalTokens, computeSessionDurationMs, reconcileModelUsageToTotal, reconcileModelUsageToActualTokens, distributeModelUsageToDays, computeFallbackDailyRollup as _computeFallbackDailyRollup, type SessionAggregateInput } from '../../src/statsHelpers';
+import { scaleModelUsage, reconcileDebugLogModelUsage } from '../../src/statsHelpers';
 
 // --- GitHub & agent sessions ---
 import {
@@ -419,6 +424,44 @@ export function tooltipSecondaryPeriod(
 ): 'last30days' | 'currentMonth' {
 	const usesLast30 = (s: StatusBarDisplaySetting) => s === 'last30days' || s === 'both';
 	return usesLast30(tokensSetting) || usesLast30(costSetting) ? 'last30days' : 'currentMonth';
+}
+
+/** Sums per-provider costs into a total-across-all-providers figure. */
+export function defaultSumBillingGroupCosts(billingGroupCosts: Record<string, number> | undefined): number {
+	return Object.values(billingGroupCosts ?? {}).reduce((s, v) => s + v, 0);
+}
+
+/**
+ * Formats the main stats table in Markdown for the status bar hover tooltip.
+ * Renders Today, Current Month, and Last 30 Days columns side by side.
+ */
+export function formatTooltipStatsTable(
+	detailedStats: DetailedStats,
+	sumCosts: (costs: Record<string, number> | undefined) => number = defaultSumBillingGroupCosts
+): string {
+	// Trailing &nbsp; padding on "Today" and "Current Month" columns widens them a bit,
+	// giving the value columns visual breathing room without VS Code table cell CSS to lean on.
+	const pad = (cell: string) => `${cell}&nbsp;&nbsp;&nbsp;&nbsp;`;
+	// Hide decimals once the rounded display value reaches 1000+ so large totals stay readable.
+	const formatUsageValue = (n: number, fractionDigits: number, unit: string) => {
+		const rounded = Math.round(n * (10 ** fractionDigits)) / (10 ** fractionDigits);
+		const format = Math.abs(rounded) >= 1000
+			? { minimumFractionDigits: 0, maximumFractionDigits: 0 }
+			: { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits };
+		return `${n.toLocaleString(undefined, format)} ${unit}`;
+	};
+	const grams = (n: number) => formatUsageValue(n, 2, 'grams');
+	const liters = (n: number) => formatUsageValue(n, 3, 'liters');
+
+	return (
+		`|  | 📅 ${l10n.t('tooltip.todayLabel')} | 📊 ${l10n.t('tooltip.currentMonthLabel')} | 📈 ${l10n.t('tooltip.last30DaysLabel')} |\n` +
+		`|:---|:---|:---|:---|\n` +
+		`| ${l10n.t('tooltip.tokensLabel')} : | ${pad(detailedStats.today.tokens.toLocaleString())} | ${pad(detailedStats.month.tokens.toLocaleString())} | ${detailedStats.last30Days.tokens.toLocaleString()} |\n` +
+		`| ${l10n.t('tooltip.copilotCostLabel')} : | ${pad(`$ ${(detailedStats.today.estimatedCostCopilot ?? 0).toFixed(2)}`)} | ${pad(`$ ${(detailedStats.month.estimatedCostCopilot ?? 0).toFixed(2)}`)} | $ ${(detailedStats.last30Days.estimatedCostCopilot ?? 0).toFixed(2)} |\n` +
+		`| ${l10n.t('tooltip.allProvidersCostLabel')} : | ${pad(`$ ${sumCosts(detailedStats.today.billingGroupCosts).toFixed(2)}`)} | ${pad(`$ ${sumCosts(detailedStats.month.billingGroupCosts).toFixed(2)}`)} | $ ${sumCosts(detailedStats.last30Days.billingGroupCosts).toFixed(2)} |\n` +
+		`| ${l10n.t('tooltip.co2Label')} : | ${pad(grams(detailedStats.today.co2))} | ${pad(grams(detailedStats.month.co2))} | ${grams(detailedStats.last30Days.co2)} |\n` +
+		`| ${l10n.t('tooltip.waterLabel')} : | ${pad(liters(detailedStats.today.waterUsage))} | ${pad(liters(detailedStats.month.waterUsage))} | ${liters(detailedStats.last30Days.waterUsage)} |\n`
+	);
 }
 
 // ── extension.ts module-level helpers ────────────────────────────────────────
@@ -560,10 +603,8 @@ function isUsageAnalysisTab(tab: string): tab is UsageAnalysisTab {
 
 class CopilotTokenTracker implements vscode.Disposable {
 	// Cache version - increment this when making changes that require cache invalidation.
-	// Correction detection now requires corroboration for agent-self-correction moments and
-	// adds intensity/escalation fields to user-correction moments — old cached moments were
-	// computed under the previous (uncorroborated) logic and lack these fields.
-	private static readonly CACHE_VERSION = 71;
+	// Rebuild model usage with the per-request Auto-routing subset used by Copilot estimates.
+	private static readonly CACHE_VERSION = 72;
 	/** Initial stats should not wait indefinitely for one inaccessible or stalled session. */
 	private static readonly SESSION_PRELOAD_TIMEOUT_MS = 15_000;
 	// Maximum length for displaying workspace IDs in diagnostics/customization matrix
@@ -1414,7 +1455,9 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 * Sets the cache entry for a session file, including file size.
 	 */
 	private setCachedSessionData(filePath: string, data: SessionFileCache, fileSize?: number): void {
-		return this.cacheManager.setCachedSessionData(filePath, data);
+		const cached = this.getCachedSessionData(filePath);
+		const isNewEntry = cached === undefined || cached.mtime !== data.mtime || cached.size !== data.size;
+		return this.cacheManager.setCachedSessionData(filePath, data, fileSize, isNewEntry);
 	}
 
 
@@ -3118,6 +3161,10 @@ class CopilotTokenTracker implements vscode.Disposable {
 				await this.processPreloadQueueFileWithCrashLog(sessionFile, cutoffMs, preloaded, missBudget);
 				processed++;
 				if (progressCallback) { progressCallback(processed, totalDiscovered); }
+				// Checkpoint cache periodically during long-running preload
+				if (processed % 25 === 0) {
+					this.cacheManager.maybeCheckpointCache();
+				}
 			}
 		};
 
@@ -3321,6 +3368,11 @@ class CopilotTokenTracker implements vscode.Disposable {
 	/** Core discover → parse → compute → render → persist pass for one refresh. */
 	private async _runRefreshCore(silent: boolean, isLeader: boolean): Promise<DetailedStats | undefined> {
 		this.log(isLeader ? 'Updating token stats (leader)...' : 'Updating token stats (follower)...');
+
+		// Reset checkpoint counters at the start of each refresh cycle
+		if (isLeader) {
+			this.cacheManager.resetCheckpointCounters();
+		}
 
 		const { last30DaysStartMs, lastMonthStartMs } = computeUtcDateRanges(new Date());
 		const fileLoadCutoffMs = Math.min(last30DaysStartMs, lastMonthStartMs);
@@ -3648,28 +3700,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		tooltip.supportThemeIcons = false;
 		tooltip.appendMarkdown(`#### ${l10n.t('tooltip.title')}`);
 		tooltip.appendMarkdown('\n---\n');
-		const secondaryPeriod = tooltipSecondaryPeriod(this.getStatusBarShowTokensSetting(), this.getStatusBarShowCostSetting());
-		const secondaryStats = secondaryPeriod === 'currentMonth' ? detailedStats.month : detailedStats.last30Days;
-		const secondaryLabel = secondaryPeriod === 'currentMonth' ? l10n.t('tooltip.currentMonthLabel') : l10n.t('tooltip.last30DaysLabel');
-		// Trailing &nbsp; padding on the "Today" column widens it a bit, giving the two
-		// value columns visual breathing room without VS Code table cell CSS to lean on.
-		const pad = (cell: string) => `${cell}&nbsp;&nbsp;&nbsp;&nbsp;`;
-		// Hide decimals once the rounded display value reaches 1000+ so large totals stay readable.
-		const formatUsageValue = (n: number, fractionDigits: number, unit: string) => {
-			const rounded = Math.round(n * (10 ** fractionDigits)) / (10 ** fractionDigits);
-			const format = Math.abs(rounded) >= 1000
-				? { minimumFractionDigits: 0, maximumFractionDigits: 0 }
-				: { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits };
-			return `${n.toLocaleString(undefined, format)} ${unit}`;
-		};
-		const grams = (n: number) => formatUsageValue(n, 2, 'grams');
-		const liters = (n: number) => formatUsageValue(n, 3, 'liters');
-		tooltip.appendMarkdown(`|  | 📅 ${l10n.t('tooltip.todayLabel')} | 📊 ${secondaryLabel} |\n|:---|:---|:---|\n`);
-		tooltip.appendMarkdown(`| ${l10n.t('tooltip.tokensLabel')} : | ${pad(detailedStats.today.tokens.toLocaleString())} | ${secondaryStats.tokens.toLocaleString()} |\n`);
-		tooltip.appendMarkdown(`| ${l10n.t('tooltip.copilotCostLabel')} : | ${pad(`$ ${(detailedStats.today.estimatedCostCopilot ?? 0).toFixed(2)}`)} | $ ${(secondaryStats.estimatedCostCopilot ?? 0).toFixed(2)} |\n`);
-		tooltip.appendMarkdown(`| ${l10n.t('tooltip.allProvidersCostLabel')} : | ${pad(`$ ${this.sumBillingGroupCosts(detailedStats.today.billingGroupCosts).toFixed(2)}`)} | $ ${this.sumBillingGroupCosts(secondaryStats.billingGroupCosts).toFixed(2)} |\n`);
-		tooltip.appendMarkdown(`| ${l10n.t('tooltip.co2Label')} : | ${pad(grams(detailedStats.today.co2))} | ${grams(secondaryStats.co2)} |\n`);
-		tooltip.appendMarkdown(`| ${l10n.t('tooltip.waterLabel')} : | ${pad(liters(detailedStats.today.waterUsage))} | ${liters(secondaryStats.waterUsage)} |\n`);
+		tooltip.appendMarkdown(formatTooltipStatsTable(detailedStats, (costs) => this.sumBillingGroupCosts(costs)));
 		tooltip.appendMarkdown('\n---\n');
 		this.appendProviderCostSection(tooltip, detailedStats);
 		return tooltip;
@@ -3677,7 +3708,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 
 	/** Sums per-provider costs into a total-across-all-providers figure. */
 	private sumBillingGroupCosts(billingGroupCosts: Record<string, number> | undefined): number {
-		return Object.values(billingGroupCosts ?? {}).reduce((s, v) => s + v, 0);
+		return defaultSumBillingGroupCosts(billingGroupCosts);
 	}
 
 	/** Builds and appends the cost sections: a GitHub Copilot budget gauge on top (spend vs.
@@ -4174,6 +4205,9 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'usage.contextPressure.nearLimitLabel': l10n.t('usage.contextPressure.nearLimitLabel'),
 			'usage.contextPressure.worstFill': l10n.t('usage.contextPressure.worstFill'),
 			'usage.contextPressure.nearLimitTooltip': l10n.t('usage.contextPressure.nearLimitTooltip'),
+			// Details view — collapsible "Usage by Editor" section heading tooltips
+			'details.editorSection.show': l10n.t('details.editorSection.show'),
+			'details.editorSection.hide': l10n.t('details.editorSection.hide'),
 			// Log viewer summary card labels
 			'logviewer.summary.interactions': l10n.t('logviewer.summary.interactions'),
 			'logviewer.summary.editorMode': l10n.t('logviewer.summary.editorMode'),
@@ -4193,12 +4227,27 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'logviewer.summary.contextRefs': l10n.t('logviewer.summary.contextRefs'),
 			'logviewer.summary.fileName': l10n.t('logviewer.summary.fileName'),
 			'logviewer.summary.editor': l10n.t('logviewer.summary.editor'),
+			'logviewer.summary.editorSource': l10n.t('logviewer.summary.editorSource'),
+			'logviewer.summary.mcpAndContextRefs': l10n.t('logviewer.summary.mcpAndContextRefs'),
+			'logviewer.summary.noModeData': l10n.t('logviewer.summary.noModeData'),
 			'logviewer.summary.fileSize': l10n.t('logviewer.summary.fileSize'),
 			'logviewer.summary.modified': l10n.t('logviewer.summary.modified'),
 			'logviewer.summary.timeline': l10n.t('logviewer.summary.timeline'),
 			'logviewer.summary.started': l10n.t('logviewer.summary.started'),
 			'logviewer.summary.lastActivity': l10n.t('logviewer.summary.lastActivity'),
 			...this.getMistralCloudLocalization(),
+			// HydraFusion Routing section + Session Steps Overview leg toggle. Templates
+			// with {0} are resolved webview-side by localizeFormat().
+			'logviewer.hydrafusion.cost': l10n.t('logviewer.hydrafusion.cost'),
+			'logviewer.hydrafusion.costForTurn': l10n.t('logviewer.hydrafusion.costForTurn'),
+			'logviewer.hydrafusion.jumpToStepTitle': l10n.t('logviewer.hydrafusion.jumpToStepTitle'),
+			'logviewer.hydrafusion.jumpToStepLabel': l10n.t('logviewer.hydrafusion.jumpToStepLabel'),
+			'logviewer.hydrafusion.turnDetailIntro': l10n.t('logviewer.hydrafusion.turnDetailIntro'),
+			'logviewer.hydrafusion.toggleLegsAriaLabel': l10n.t('logviewer.hydrafusion.toggleLegsAriaLabel'),
+			'logviewer.hydrafusion.showLegsTitle': l10n.t('logviewer.hydrafusion.showLegsTitle'),
+			'logviewer.hydrafusion.legsCaptionTotal': l10n.t('logviewer.hydrafusion.legsCaptionTotal'),
+			'logviewer.hydrafusion.modelChangedTitle': l10n.t('logviewer.hydrafusion.modelChangedTitle'),
+			'logviewer.hydrafusion.expandStepNote': l10n.t('logviewer.hydrafusion.expandStepNote'),
 			// Current language for reference
 			'__language__': language
 		};
@@ -6266,7 +6315,7 @@ if (session.toolCalls) { usageAnalysis.toolCalls = session.toolCalls; }
 		// Reconcile to the debug log's totals even when the breakdown is missing or
 		// partial (e.g. some requests lack a `model` attribute), so Input+Output
 		// never drifts from Total — see reconcileModelUsageToTotal for why.
-		const supplementModelUsage = reconcileModelUsageToTotal(breakdownUsage, debugLogTokens.inputTokens, debugLogTokens.outputTokens);
+		const supplementModelUsage = reconcileDebugLogModelUsage(cached.modelUsage, breakdownUsage, debugLogTokens.inputTokens, debugLogTokens.outputTokens);
 		// Redistribute to days via the shared helper, which also re-syncs each day's
 		// actualTokens to the debug-log-sized usage — see distributeModelUsageToDays.
 		const supplementDailyRollups = cached.dailyRollups
@@ -6417,11 +6466,7 @@ private computeFallbackDailyRollup(
 	} catch { /* ignore */ }
 }
 	private scaledModelUsage(modelUsage: ModelUsage, fraction: number): ModelUsage {
-		const dayModelUsage: ModelUsage = {};
-		for (const [model, usage] of Object.entries(modelUsage)) {
-			dayModelUsage[model] = { inputTokens: Math.round(usage.inputTokens * fraction), outputTokens: Math.round(usage.outputTokens * fraction), ...(usage.cachedReadTokens !== undefined ? { cachedReadTokens: Math.round(usage.cachedReadTokens * fraction) } : {}), ...(usage.cacheCreationTokens !== undefined ? { cacheCreationTokens: Math.round(usage.cacheCreationTokens * fraction) } : {}), sessions: 0 };
-		}
-		return dayModelUsage;
+		return scaleModelUsage(modelUsage, fraction);
 	}
 
 	private resolveAndApplyDebugLog(
@@ -6471,8 +6516,8 @@ private computeFallbackDailyRollup(
 		// Reconcile against the debug log's own totals even when the breakdown is
 		// missing or partial (e.g. some requests lack a `model` attribute), so
 		// Input+Output never drifts from Total — see reconcileModelUsageToTotal.
-		const resolvedModelUsage = reconcileModelUsageToTotal(
-			Object.keys(breakdownUsage).length > 0 ? breakdownUsage : modelUsage,
+		const resolvedModelUsage = reconcileDebugLogModelUsage(
+			modelUsage, breakdownUsage,
 			debugLogTokens.inputTokens,
 			debugLogTokens.outputTokens,
 		);
@@ -7022,6 +7067,7 @@ private computeFallbackDailyRollup(
 		const cached = this.diagnosticsCachedFiles.find(f => f.file === sessionFile);
 		const details = cached ?? await this.getSessionFileDetails(sessionFile);
 		let subAgentsStarted: number | undefined;
+		let hydraFusion: HydraFusionSummary | undefined;
 		let turns: ChatTurn[] = [];
 
 		try {
@@ -7046,6 +7092,7 @@ private computeFallbackDailyRollup(
 					const cliResult = await this.buildCliJsonlTurns(lines, sessionFile, fileContent);
 					turns = cliResult.turns;
 					subAgentsStarted = cliResult.subAgentsStarted;
+					hydraFusion = analyzeHydraFusionSession(fileContent);
 				}
 			} else {
 				const sessionContent = JSON.parse(fileContent);
@@ -7064,7 +7111,7 @@ private computeFallbackDailyRollup(
 		}
 
 		const sessionCache = this.getCachedSessionData(sessionFile);
-		return this.buildBaseLogData(details, turns, usageAnalysis, sessionCache, undefined, undefined, undefined, subAgentsStarted);
+		return this.buildBaseLogData(details, turns, usageAnalysis, sessionCache, undefined, undefined, undefined, { subAgentsStarted, hydraFusion });
 	}
 
 	private buildBaseLogData(
@@ -7075,7 +7122,8 @@ private computeFallbackDailyRollup(
 		eco?: IEcosystemAdapter | null,
 		sessionFile?: string,
 		ecoActualTokens?: number,
-		subAgentsStarted?: number
+		/** Extras only the CLI JSONL path can supply; every other caller leaves them out. */
+		extras: { subAgentsStarted?: number; hydraFusion?: HydraFusionSummary } = {}
 	): SessionLogData {
 		const editorName = details.editorName || (eco && sessionFile ? getEcosystemDisplayName(eco, sessionFile) : details.editorSource);
 		const actualTokens = ecoActualTokens ?? sessionCache?.actualTokens ?? 0;
@@ -7087,7 +7135,7 @@ private computeFallbackDailyRollup(
 				'For accurate billing data, check the Cursor dashboard at cursor.com/settings.',
 			],
 		} : undefined;
-		this.attachTurnCosts(turns);
+		attachEstimatedTurnCosts(turns, this.modelPricing, getPricingSourceForEditor(editorName));
 		return {
 			file: details.file, title: details.title || null, editorSource: details.editorSource,
 			editorName, size: details.size, modified: details.modified, interactions: details.interactions,
@@ -7096,7 +7144,8 @@ private computeFallbackDailyRollup(
 			...(editorNote ? { editorNote } : {}),
 			...(details.parentInfo ? { parentInfo: details.parentInfo } : {}),
 			...(details.childInfo ? { childInfo: details.childInfo, totalChildCount: details.totalChildCount } : {}),
-			...this.buildLogDataCacheFields(sessionCache, subAgentsStarted ?? ((details.totalChildCount ?? 0) > 0 ? details.totalChildCount : undefined)),
+			...(extras.hydraFusion ? { hydraFusion: extras.hydraFusion } : {}),
+			...this.buildLogDataCacheFields(sessionCache, extras.subAgentsStarted ?? ((details.totalChildCount ?? 0) > 0 ? details.totalChildCount : undefined)),
 		};
 	}
 
@@ -7155,6 +7204,7 @@ private computeFallbackDailyRollup(
 			turnNumber: i + 1,
 			timestamp: request.timestamp ? new Date(request.timestamp).toISOString() : null,
 			mode: sessionMode, userMessage, assistantResponse: responseText, model: requestModel,
+			autoRouted: isCopilotAutoRequest(request),
 			toolCalls, contextReferences: contextRefs, mcpTools,
 			inputTokensEstimate: this.estimateTokensFromText(userMessage, requestModel),
 			outputTokensEstimate: this.estimateTokensFromText(responseText, requestModel),
@@ -7178,15 +7228,7 @@ private computeFallbackDailyRollup(
 	 * mislabel/misprice the turn.
 	 */
 	private resolveDeltaTurnModel(request: any, currentModel: string | null): string {
-		const rawModelId = request.modelId ? String(request.modelId).replace(/^copilot\//, '') : null;
-		if (rawModelId && rawModelId !== 'auto') { return rawModelId; }
-		if (rawModelId === 'auto') {
-			const resolved = this.getModelFromRequest(request);
-			return (resolved && resolved !== 'auto') ? resolved : 'auto';
-		}
-		const resolved = this.getModelFromRequest(request);
-		if (resolved && resolved !== 'auto' && resolved !== 'gpt-4') { return resolved; }
-		return currentModel || resolved || 'gpt-4';
+		return _getModelFromRequest(request, this.modelPricing, currentModel || 'gpt-4');
 	}
 
 	private extractActualUsageFromRequest(request: any, rawUsageFallback: Map<number, { promptTokens: number; outputTokens: number }>, index: number): ActualUsage | undefined {
@@ -7411,6 +7453,8 @@ private computeFallbackDailyRollup(
 		return {
 			turnNumber, timestamp: request.timestamp || request.ts || request.result?.timestamp || null,
 			mode: requestMode, userMessage, assistantResponse, model, toolCalls, contextReferences: contextRefs, mcpTools,
+			autoRouted: isCopilotAutoRequest(request),
+			actualUsage: this.extractActualUsageFromRequest(request, new Map(), turnNumber - 1),
 			inputTokensEstimate: this.estimateTokensFromText(userMessage, model),
 			outputTokensEstimate: this.estimateTokensFromText(assistantResponse, model),
 			thinkingTokensEstimate: this.estimateTokensFromText(thinkingText, model)
@@ -7480,31 +7524,6 @@ private computeFallbackDailyRollup(
 		return _calculateEstimatedCost(modelUsage, this.modelPricing, pricingSource);
 	}
 
-	/**
-	 * Post-processes already-built `turns` with estimated USD costs, for the log viewer's
-	 * Session Steps Overview table: one cost per turn (its own model call — actual usage
-	 * tokens when available, otherwise the text-based estimate) and one per sub-agent/child
-	 * tool call (using its own `subAgentModel` + `subAgentTokens`). Mutates `turns` in place.
-	 * Silently leaves `estimatedCost`/`subAgentCost` unset when the model is unknown or has
-	 * no pricing entry (`calculateEstimatedCost` returns 0 for those, which we treat as "no cost").
-	 */
-	private attachTurnCosts(turns: ChatTurn[]): void {
-		for (const turn of turns) {
-			const input = turn.actualUsage ? turn.actualUsage.promptTokens : turn.inputTokensEstimate;
-			const output = turn.actualUsage ? turn.actualUsage.completionTokens : turn.outputTokensEstimate;
-			if (turn.model && (input > 0 || output > 0)) {
-				const cost = this.calculateEstimatedCost({ [turn.model]: { inputTokens: input, outputTokens: output, sessions: 1 } });
-				if (cost > 0) { turn.estimatedCost = cost; }
-			}
-			for (const tc of turn.toolCalls) {
-				if (!tc.isSubAgent || !tc.subAgentModel || !tc.subAgentTokens) { continue; }
-				const cost = this.calculateEstimatedCost({
-					[tc.subAgentModel]: { inputTokens: tc.subAgentTokens.input, outputTokens: tc.subAgentTokens.output, sessions: 1 },
-				});
-				if (cost > 0) { tc.subAgentCost = cost; }
-			}
-		}
-	}
 
 
 
@@ -10369,6 +10388,9 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     const sortSettings = this.context.globalState.get('details.sortSettings', {
       editor: { key: 'name', dir: 'asc' },
       model: { key: 'name', dir: 'asc' },
+      modelOtherExpanded: false,
+      editorOtherExpanded: false,
+      editorSectionCollapsed: false,
       excludedProviders: [],
     });
     const dataWithBackend = {
@@ -11036,12 +11058,7 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
   /** Merge one file's per-model usage entries into the running aggregate. */
   private static mergeModelUsageEntry(aggregated: ModelUsage, model: string, usage: ModelUsage[ModelId]): void {
     if (!aggregated[model]) { aggregated[model] = { inputTokens: 0, outputTokens: 0, cachedReadTokens: 0, cacheCreationTokens: 0, cacheCreation1hTokens: 0, sessions: 0 }; }
-    const agg = aggregated[model];
-    agg.inputTokens += usage.inputTokens || 0;
-    agg.outputTokens += usage.outputTokens || 0;
-    agg.cachedReadTokens = (agg.cachedReadTokens || 0) + (usage.cachedReadTokens || 0);
-    agg.cacheCreationTokens = (agg.cacheCreationTokens || 0) + (usage.cacheCreationTokens || 0);
-    agg.cacheCreation1hTokens = (agg.cacheCreation1hTokens || 0) + (usage.cacheCreation1hTokens || 0);
+    addModelUsage(aggregated, { [model]: { ...usage, sessions: 0 } });
   }
 
   /** Aggregate per-model usage (and per-model session counts) across a set of session files with modelUsage data. */
