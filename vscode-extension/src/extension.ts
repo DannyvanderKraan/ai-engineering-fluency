@@ -1951,10 +1951,12 @@ class CopilotTokenTracker implements vscode.Disposable {
 					this.githubSession = session;
 					await this.context.globalState.update('github.authenticated', true);
 					await this.context.globalState.update('github.username', session.account.label);
-					// Awaited, not fired and forgotten: this can publish and clear panel state, so a
-					// second auth event interleaving with it would let the older transition finish
-					// last and overwrite the newer identity's scope and replay buffer.
-					await this._syncGitHubActivityScope(this.githubActivityScope(session.account.label));
+					// Queued, not merely awaited: two handler invocations run independently, so an
+					// earlier transition still in flight would otherwise finish last and overwrite
+					// this identity's scope and replay buffer.
+					await this._queueGitHubIdentityTransition(
+						() => this._syncGitHubActivityScope(this.githubActivityScope(session.account.label)),
+					);
 					void this.loadAndLogCopilotPlanInfo();
 				} else {
 					// Capture the scope before clearing the session — it is the only way back to the
@@ -1966,14 +1968,12 @@ class CopilotTokenTracker implements vscode.Disposable {
 					this.githubSession = undefined;
 					await this.context.globalState.update('github.authenticated', false);
 					await this.context.globalState.update('github.username', undefined);
-					// Awaited for the same reason as the sign-in branch above, and one more: a purge
-					// that completed *after* a subsequent sign-in would delete the new account's
-					// in-memory snapshots and replay entries and invalidate its in-flight pass.
-					try {
-						await this._purgeGitHubActivityScope(removedScope, 'the GitHub session was removed');
-					} catch (err) {
-						this.warn(`Failed to clear GitHub activity after the session was removed: ${err}`);
-					}
+					// Queued for the same reason as the sign-in branch, and one more: a purge that
+					// resumed *after* a subsequent sign-in would delete the new account's in-memory
+					// snapshots and replay entries and invalidate its in-flight pass.
+					await this._queueGitHubIdentityTransition(
+						() => this._purgeGitHubActivityScope(removedScope, 'the GitHub session was removed'),
+					);
 					this.log('GitHub session removed externally — clearing auth state');
 				}
 			})
@@ -2001,6 +2001,17 @@ class CopilotTokenTracker implements vscode.Disposable {
 		context.subscriptions.push(
 			vscode.workspace.onDidChangeConfiguration(e => {
 				if (e.affectsConfiguration('aiEngineeringFluency.display')) { this.refreshOpenPanelsForSettingChange(); }
+				// Repointing the Enterprise host changes *which identity's* data the activity caches
+				// describe, exactly as switching accounts does — but it arrives as a setting change,
+				// not an auth event, and the auth listener filters out events from the old provider
+				// once the provider ID changes. Without this, an open Usage Analysis panel keeps
+				// showing the previous host's private repository and task rows until it is reloaded:
+				// the scope helper only redirects later *reads*.
+				if (e.affectsConfiguration('github-enterprise.uri')) {
+					void this._queueGitHubIdentityTransition(
+						() => this._discardInMemoryGitHubActivity('the GitHub Enterprise host changed'),
+					);
+				}
 				if (e.affectsConfiguration('aiEngineeringFluency.backend')) {
 					this.startBackendSyncAfterInitialAnalysis();
 					const backend = this.backend;
@@ -2440,6 +2451,25 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 * publishing the previous identity's repository names, PR titles and counts to the panel until
 	 * a revalidation happened to finish.
 	 */
+	/**
+	 * Run one GitHub identity transition at a time.
+	 *
+	 * `onDidChangeSessions` fires independently per event: VS Code does not serialize two handler
+	 * invocations just because each awaits its own work. Without this chain, an external sign-out
+	 * and a following sign-in interleave, and whichever finishes last wins — so a purge resuming
+	 * after the new account has signed in clears *its* snapshots, replay entries and in-flight
+	 * generation. Queueing them keeps "last event wins" true in event order, not completion order.
+	 */
+	private _githubIdentityTransition: Promise<void> = Promise.resolve();
+
+	private _queueGitHubIdentityTransition(work: () => Promise<void>): Promise<void> {
+		this._githubIdentityTransition = this._githubIdentityTransition
+			.catch(() => undefined)
+			.then(work)
+			.catch((err) => this.warn(`GitHub identity transition failed: ${err}`));
+		return this._githubIdentityTransition;
+	}
+
 	private async _syncGitHubActivityScope(scope: string): Promise<void> {
 		if (this._githubActivityScopeInMemory === scope) { return; }
 		if (this._githubActivityScopeInMemory !== undefined) {
@@ -2500,13 +2530,18 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 * served straight back the next time anyone signs into it.
 	 */
 	private async _purgeGitHubActivityScope(scope: string, reason: string): Promise<void> {
+		// Invalidate *before* unlinking. A refresh that has already passed its pre-write guard can
+		// otherwise rename its snapshot back into place between the unlink and the generation bump,
+		// and then pass its post-write guard too — leaving the signed-out account's cache on disk
+		// after a purge that reported success. Bumping first means no in-flight pass can survive,
+		// so the only file left to remove is one that was already there.
+		await this._discardInMemoryGitHubActivity(reason);
 		try {
 			const removed = await deleteGitHubActivityCacheFiles(this.context.globalStorageUri.fsPath, scope);
 			this.log(`Removed ${removed} cached GitHub activity file(s) for the signed-out account`);
 		} catch (err) {
 			this.warn(`Failed to remove cached GitHub activity on sign-out: ${err}`);
 		}
-		await this._discardInMemoryGitHubActivity(reason);
 	}
 
 	/**
@@ -2710,6 +2745,12 @@ class CopilotTokenTracker implements vscode.Disposable {
 			this.log('⏭️ Repository PRs refresh skipped — another window refreshed the shared snapshot while this one waited for the lock');
 			try { await this.cacheManager.releaseRepoPrLock(scope); }
 			catch (err) { this.warn(`Failed to release repo-PRs lock: ${err}`); }
+			// Standing down is not a reason to keep showing the old numbers. The leader's snapshot
+			// is already in hand, so publish it rather than leaving this window on the stale one
+			// until its tab is loaded again. Guarded like every other publish.
+			if (underLock && this._isGitHubActivityScopeCurrent(scope, generation)) {
+				await this.publishRepoPrStats(underLock.data);
+			}
 			return false;
 		}
 
@@ -2970,6 +3011,11 @@ class CopilotTokenTracker implements vscode.Disposable {
 			this.log('⏭️ Cloud agent refresh skipped — another window refreshed the shared snapshot while this one waited for the lock');
 			try { await this.cacheManager.releaseAgentTasksLock(scope); }
 			catch (err) { this.warn(`Failed to release agent tasks lock: ${err}`); }
+			// Publish the leader's snapshot rather than staying on this window's stale one — see the
+			// matching branch in maybeRefreshRepoPrStats().
+			if (underLock && this._isGitHubActivityScopeCurrent(scope, generation)) {
+				await this.publishAgentSessions(underLock.data);
+			}
 			return false;
 		}
 
@@ -3075,13 +3121,16 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 * the user out — these files are caches, so the next refresh simply refetches them.
 	 */
 	private async clearGitHubActivityCaches(): Promise<void> {
-		const removed = await deleteGitHubActivityCacheFiles(this.context.globalStorageUri.fsPath);
 		this._lastManualGitHubActivityRefreshAt = undefined;
-		// Also forgets the replay buffer's retained messages — it re-posts the last message per
-		// feature whenever the webview announces readiness, so without this, recreating the Usage
-		// Analysis document would repopulate both tabs from snapshots that were just deleted — and
-		// bumps the generation so a refresh already in flight cannot write its result back.
+		// Invalidate first, delete second — see `_purgeGitHubActivityScope()`. A refresh already
+		// past its pre-write guard could otherwise recreate a file between the unlink and the
+		// generation bump, so Clear Cache would report success over a snapshot that survived.
+		//
+		// This also forgets the replay buffer's retained messages: it re-posts the last message per
+		// feature whenever the webview announces readiness, so without it, recreating the Usage
+		// Analysis document would repopulate both tabs from snapshots that were just deleted.
 		await this._discardInMemoryGitHubActivity('Clear Cache was run');
+		const removed = await deleteGitHubActivityCacheFiles(this.context.globalStorageUri.fsPath);
 		this.log(`Cleared ${removed} GitHub activity cache file(s)`);
 	}
 

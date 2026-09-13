@@ -704,16 +704,18 @@ async function listAllTasks(
  *
  * The repo-scoped listing keeps the row — it is the more specific source — but whichever sighting
  * is stale, its cached aggregate must not be folded in without a fresh detail call. A disagreement
- * is either the repository (a move, or a late `repository.id` resolution) or the `updated_at`: the
- * listings are fetched moments apart, so a task changed in between reports two values, and the
- * other listing has already said the cached state is superseded.
+ * is the repository (a move, or a late `repository.id` resolution), the `updated_at` — the listings
+ * are fetched moments apart, so a task changed in between reports two values and the other listing
+ * has already said the cached state is superseded — or a conflict this listing's own slices already
+ * reported, which `contested` carries in. That last one matters because the timestamp *this* call
+ * sees may be the one that happens to match: only the caller knows the other slice disagreed.
  *
  * The sort key takes the newer sighting's value too. An uncacheable task always needs a detail
  * call, so leaving it on the older listing's position would make it lose the newest-first budget
  * to work that is genuinely older.
  */
-function contestCandidate(candidate: AgentTaskCandidate, task: any, contestedRepo: boolean): void {
-	if (!contestedRepo && taskUpdatedAt(task) === candidate.updatedAt) { return; }
+function contestCandidate(candidate: AgentTaskCandidate, task: any, contested: boolean): void {
+	if (!contested && taskUpdatedAt(task) === candidate.updatedAt) { return; }
 	candidate.updatedAt = '';
 	candidate.sortAt = Math.max(candidate.sortAt, taskSortAt(task));
 }
@@ -758,7 +760,7 @@ async function collectWorkspaceTasks(
 				// listing. The first repo keeps the row (deduplicating by task ID is what stops one
 				// task being counted twice), but a disagreement about the repo or the timestamp
 				// makes the candidate uncacheable, exactly as a workspace-vs-account one does.
-				contestCandidate(existing, task, existing.key !== key);
+				contestCandidate(existing, task, existing.key !== key || conflicting.has(task.id));
 				continue;
 			}
 			candidates.set(task.id, {
@@ -883,7 +885,8 @@ function absorbAccountTask(
 		//   superseded state — because the newer listing has already said it changed. An
 		//   account timestamp that is itself uncacheable ('' here) counts as a disagreement
 		//   too: it cannot confirm the repo-scoped one.
-		contestCandidate(existingCandidate, task, Boolean(resolved) && repoKey(resolved!.owner, resolved!.repo) !== existingCandidate.key);
+		const contestedRepo = Boolean(resolved) && repoKey(resolved!.owner, resolved!.repo) !== existingCandidate.key;
+		contestCandidate(existingCandidate, task, contestedRepo || conflicting.has(task.id));
 		return;
 	}
 	candidates.set(task.id, {

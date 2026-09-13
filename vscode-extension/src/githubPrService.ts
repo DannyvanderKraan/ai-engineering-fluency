@@ -717,7 +717,10 @@ function projectRepoPr(pr: any): RepoPrRecord | undefined {
  */
 export function isCacheableRepoPrRecord(record: RepoPrRecord | undefined): record is RepoPrRecord {
 	return Boolean(record)
-		&& typeof record!.number === 'number' && Number.isFinite(record!.number) && record!.number > 0
+		// Integer, not merely finite: GitHub's PR numbers are whole and 1-based, so `1.5` is
+		// malformed — it could never be matched by a listing, and would surface in the AI-detail
+		// rows as a `#1.5` link that goes nowhere.
+		&& typeof record!.number === 'number' && Number.isInteger(record!.number) && record!.number > 0
 		&& parseEntityTimestamp(record!.updatedAt) !== undefined
 		&& parseEntityTimestamp(record!.createdAt) !== undefined
 		// The projection has to be whole, not just correctly keyed. `summarizeRepoPrRecords()`

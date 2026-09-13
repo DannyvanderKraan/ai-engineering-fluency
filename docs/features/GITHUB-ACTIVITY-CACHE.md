@@ -102,6 +102,9 @@ away on almost every read.
   refresh it was about to duplicate. That re-check requires the snapshot to be *usable*, not just
   recent — a v2 cloud-agent envelope has a perfectly fresh `fetchedAt` and no task records, and
   standing down on it would make **Refresh now** refuse the very v3 rebuild the migration needs.
+  A window that stands down this way **publishes the leader's snapshot** before returning: it is
+  already holding the fresh data, so staying on its own older copy until the tab is loaded again
+  would be a self-inflicted staleness.
 - Opening a tab serves the cached snapshot immediately (stale-while-revalidate) and then asks for a
   refresh, which only happens if the snapshot is actually due.
 - The freshness banner on both tabs offers **Refresh now** — including on the error state, which is
@@ -169,12 +172,15 @@ lazy loader so the tab asks for the new identity's data instead of considering i
 
 Neither touches the session-parsing caches' lock files or another window's coordination state.
 
+Both invalidate **before** deleting. A refresh already past its pre-write guard could otherwise
+rename its snapshot back into place between the unlink and the generation bump — and then pass its
+post-write guard too — so a clear that reported success would leave the file on disk.
+
 One known limit, and it is a real one: **invalidation is window-local.** The generation counter that
 makes a discard stick lives in the window that ran it. Another window that already holds an
-in-memory snapshot keeps showing it until its next revalidation notices the file is gone; and a
-window that is *mid-collection* when the discard happens still considers its own scope and
-generation valid, so its atomic write can recreate a file that Clear Cache or a sign-out just
-removed. Closing that properly needs a shared on-disk tombstone (or equivalent cross-window
+in-memory snapshot keeps showing it until its next revalidation; and a window that is
+*mid-collection* when the discard happens still considers its own scope and generation valid, so
+its atomic write can recreate a file that Clear Cache or a sign-out just removed. Closing that properly needs a shared on-disk tombstone (or equivalent cross-window
 coordination) that a writer checks immediately before its rename — a design addition with its own
 races, deliberately left out of the change that introduced per-entity caching. Until then, a second
 Clear Cache removes anything a racing window resurrected.
@@ -188,7 +194,13 @@ back a file that Clear Cache had already deleted.
 
 The in-memory snapshots are tagged with the scope they were collected under. Switching account or
 Enterprise host discards them rather than publishing the previous identity's repository names and
-counts to the new session. The snapshot *read* on each serve path is scoped from the session that
+counts to the new session. Repointing `github-enterprise.uri` discards them too: it changes which
+identity's data the caches describe exactly as an account switch does, but it arrives as a setting
+change rather than an auth event, so the configuration listener has to catch it. Identity
+transitions are queued, because VS Code fires each session-change handler independently — without a
+queue, a purge resuming after a later sign-in would clear the *new* account's state.
+
+The snapshot *read* on each serve path is scoped from the session that
 call just resolved, never from the extension's `githubSession` field — that field lags an account
 switch until the auth listener catches up, and reading through it would serve the previous
 identity's file. The guard that decides whether a pass is still current compares against the

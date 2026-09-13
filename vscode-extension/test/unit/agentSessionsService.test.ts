@@ -994,6 +994,32 @@ test('collectAgentSessions: the same task in both slices with one timestamp stil
 	assert.equal(result.totalCredits, 7);
 });
 
+test('collectAgentSessions: an account slice conflict invalidates a task the workspace already claimed', async () => {
+	// The conflicting set was only consulted when *creating* a candidate. A task the workspace
+	// listing already claimed reached contestCandidate with no repo disagreement, and when the
+	// account timestamp it happened to compare against matched, the conflict was lost — so the
+	// cached aggregate was reused even though the other account slice reported a change.
+	const detailed: string[] = [];
+	const cached = [cachedRecordFor('t1', 'octo/local-repo', '2026-08-01T00:00:00Z')];
+	const base = { id: 't1', name: 'Task t1', state: 'completed', created_at: '2026-08-01T00:00:00Z', repository: { full_name: 'octo/local-repo' } };
+	const result = await collectAgentSessions({
+		token: 'token',
+		since: SINCE,
+		workspaceRepos: [{ owner: 'octo', repo: 'local-repo' }],
+		cachedTasks: cached,
+		fetchTaskPage: async ({ page, archived }) => (!archived && page === 1 ? { tasks: [{ ...base, updated_at: '2026-08-01T00:00:00Z' }] } : { tasks: [] }),
+		// The account listing agrees on the active slice but its archived slice does not: the task
+		// was archived between the two requests.
+		fetchAccountTaskPage: async ({ page, archived }) => (
+			page === 1 ? { tasks: [{ ...base, updated_at: archived ? '2026-08-02T00:00:00Z' : '2026-08-01T00:00:00Z' }] } : { tasks: [] }
+		),
+		fetchTaskDetail: async (_owner, _repo, taskId) => { detailed.push(taskId); return { sessions: [makeSession('cloud-model', 4)] }; },
+		fetchAccountTaskDetail: async (taskId) => { detailed.push(taskId); return { sessions: [] }; },
+	});
+	assert.deepEqual(detailed, ['t1'], 'the conflict must reach the existing candidate, not only a new one');
+	assert.equal(result.totalCredits, 4, 'the fresh detail is what counts, not the stale 7 credits');
+});
+
 test('collectAgentSessions: two workspace repos listing the same task make it uncacheable', async () => {
 	// Deduplicating by task ID is what stops one task being counted twice, but it silently threw
 	// away the second repo's attribution and timestamp. Whichever of the two is stale, its cached

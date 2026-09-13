@@ -248,6 +248,15 @@ test('readRepoPrRecords drops a record whose counted fields have the wrong type'
 	assert.deepEqual(readRepoPrRecords(valid, 'rajbos/repo').map((r) => r.number), [5, 6]);
 });
 
+test('readRepoPrRecords drops a fractional PR number', () => {
+	// GitHub's PR numbers are whole and 1-based. A fractional one could never be matched by a
+	// listing, and would surface in the AI-detail rows as a `#1.5` link that goes nowhere.
+	const envelope = makeEnvelope({
+		prs: { 'rajbos/repo': [makePrRecord({ number: 1 }), makePrRecord({ number: 1.5 })] },
+	});
+	assert.deepEqual(readRepoPrRecords(envelope, 'rajbos/repo').map((r) => r.number), [1]);
+});
+
 test('readRepoPrRecords canonicalizes timestamps so an alternate ISO spelling still hits', () => {
 	// Reuse is exact string equality against a canonical listing timestamp. A record written with a
 	// valid-but-different spelling (no millis, or an offset instead of Z) would pass validation and
