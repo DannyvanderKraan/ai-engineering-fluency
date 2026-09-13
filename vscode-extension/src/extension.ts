@@ -4272,6 +4272,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'logviewer.summary.timeline': l10n.t('logviewer.summary.timeline'),
 			'logviewer.summary.started': l10n.t('logviewer.summary.started'),
 			'logviewer.summary.lastActivity': l10n.t('logviewer.summary.lastActivity'),
+			...this.getEfficiencyAttributionLocalization(),
 			// HydraFusion Routing section + Session Steps Overview leg toggle. Templates
 			// with {0} are resolved webview-side by localizeFormat().
 			'logviewer.hydrafusion.cost': l10n.t('logviewer.hydrafusion.cost'),
@@ -4286,6 +4287,25 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'logviewer.hydrafusion.expandStepNote': l10n.t('logviewer.hydrafusion.expandStepNote'),
 			// Current language for reference
 			'__language__': language
+		};
+	}
+
+	/**
+	 * Cost Attribution labels for the Efficiency webview, kept out of the
+	 * {@link getWebviewLocalization} literal to hold that method under the
+	 * `max-lines-per-function` ceiling. Templates with {0}/{1}/{2} are resolved
+	 * webview-side by `localizeFormat()`, so they are passed through unformatted.
+	 */
+	private getEfficiencyAttributionLocalization(): Record<string, string> {
+		return {
+			'efficiency.attribution.costEffect': l10n.t('efficiency.attribution.costEffect'),
+			'efficiency.attribution.costEffectLine': l10n.t('efficiency.attribution.costEffectLine'),
+			'efficiency.attribution.change': l10n.t('efficiency.attribution.change'),
+			'efficiency.attribution.periodSub': l10n.t('efficiency.attribution.periodSub'),
+			'efficiency.attribution.blendedRate': l10n.t('efficiency.attribution.blendedRate'),
+			'efficiency.attribution.tooltip.volume': l10n.t('efficiency.attribution.tooltip.volume'),
+			'efficiency.attribution.tooltip.size': l10n.t('efficiency.attribution.tooltip.size'),
+			'efficiency.attribution.tooltip.mix': l10n.t('efficiency.attribution.tooltip.mix'),
 		};
 	}
 
@@ -9757,6 +9777,9 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 			lastUpdated: now.toISOString(),
 			backendConfigured: this.isBackendConfigured(),
 			compactNumbers: this.getCompactNumbersSetting(),
+			// Same detected locale the Usage Analysis view formats with, so both
+			// views group numbers and place currency symbols identically.
+			locale: usage.locale,
 			isDebugMode: this.context.extensionMode === vscode.ExtensionMode.Development,
 		};
 	}
