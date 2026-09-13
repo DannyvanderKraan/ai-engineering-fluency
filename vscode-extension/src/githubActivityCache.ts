@@ -161,7 +161,13 @@ export function applyRecordBudget<T>(
 	budget: RecordBudget,
 	rank: (record: T) => number,
 ): { kept: T[]; evicted: number } {
-	const ordered = [...records].sort((a, b) => rank(b) - rank(a));
+	// Normalize the rank: this helper is generic, and a caller whose `rank()` returns NaN would
+	// otherwise make the comparator non-transitive and eviction order non-deterministic.
+	const rankOf = (record: T): number => {
+		const value = rank(record);
+		return Number.isFinite(value) ? value : 0;
+	};
+	const ordered = [...records].sort((a, b) => rankOf(b) - rankOf(a));
 	const withinCount = ordered.slice(0, Math.max(0, budget.maxRecords));
 	const kept: T[] = [];
 	let bytes = 0;

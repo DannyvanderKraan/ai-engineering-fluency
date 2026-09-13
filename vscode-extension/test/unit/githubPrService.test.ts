@@ -793,3 +793,43 @@ test('fetchRepoPrs returns the pages it collected before an error, not nothing',
 		assert.ok(result.error);
 	});
 });
+
+test('toRepoPrRecord refuses a PR with a malformed created_at', () => {
+	// `createdAt` is what decides whether a retained record has aged out. Caching a record without
+	// one would let a single bad timestamp pin it in the cache forever.
+	assert.equal(toRepoPrRecord(rawPr({ created_at: undefined })), undefined);
+	assert.equal(toRepoPrRecord(rawPr({ created_at: 'yesterday' })), undefined);
+});
+
+test('toRepoPrRecord refuses PR numbers GitHub cannot produce', () => {
+	// GitHub's PR numbers are 1-based; 0, negatives and non-finite values are malformed.
+	for (const number of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+		assert.equal(toRepoPrRecord(rawPr({ number })), undefined, `expected ${number} to be uncacheable`);
+	}
+	assert.ok(toRepoPrRecord(rawPr({ number: 1 })));
+});
+
+test('reconcileRepoPrRecords never emits an AI detail row for a numberless PR', () => {
+	// The uncacheable branch used to push a `number: -1` sentinel straight into aiDetails.
+	const listed = [rawPr({ number: undefined, updated_at: 'nope', user: { login: 'Copilot', type: 'Bot' } })];
+	const result = reconcileRepoPrRecords([], listed, { listingComplete: true });
+	assert.deepEqual(result.listed, []);
+	assert.deepEqual(summarizeRepoPrRecords(result.listed).aiDetails, []);
+});
+
+test('reconcileRepoPrRecords still counts a real PR whose timestamp is malformed', () => {
+	const result = reconcileRepoPrRecords([], [rawPr({ number: 7, updated_at: 'nope' })], { listingComplete: true });
+	assert.deepEqual(result.listed.map((r) => r.number), [7]);
+	assert.deepEqual(toCacheableRepoPrRecords(result.records), []);
+});
+
+test('indexCachedPrRecords ignores malformed cached numbers', () => {
+	const malformed = [
+		{ ...toRepoPrRecord(rawPr({ number: 1 }))!, number: Number.NaN },
+		{ ...toRepoPrRecord(rawPr({ number: 1 }))!, number: 0 },
+	];
+	// None of these can be matched by a listing, so none may be retained on an incomplete pass.
+	const result = reconcileRepoPrRecords(malformed, [], { listingComplete: false });
+	assert.deepEqual(result.records, []);
+	assert.equal(result.retainedUnverified, 0);
+});

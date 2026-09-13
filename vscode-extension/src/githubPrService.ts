@@ -705,13 +705,31 @@ function projectRepoPr(pr: any): RepoPrRecord | undefined {
 }
 
 /**
- * Project one raw PR into its **cacheable** record, or undefined when it cannot be cached safely:
- * no usable number, or a missing/unparseable `updated_at`. An uncacheable PR is still counted in
- * the current pass — it is in the listing — it simply never enters the cache.
+ * Whether a record carries everything the cache needs to use it safely later:
+ *
+ * - a **real PR number** — GitHub's are 1-based, so 0, a negative, `NaN` and `Infinity` are all
+ *   malformed. A number no listing can ever produce would never be matched and, on an incomplete
+ *   listing, would be retained pass after pass;
+ * - a parseable **`updated_at`**, the reuse contract;
+ * - a parseable **`created_at`**, because that is what decides whether a retained record has aged
+ *   out of the window. Without it `isOutsideWindow()` cannot evict the record by age, so a single
+ *   malformed timestamp would pin it in the cache indefinitely.
+ */
+export function isCacheableRepoPrRecord(record: RepoPrRecord | undefined): record is RepoPrRecord {
+	return Boolean(record)
+		&& typeof record!.number === 'number' && Number.isFinite(record!.number) && record!.number > 0
+		&& parseEntityTimestamp(record!.updatedAt) !== undefined
+		&& parseEntityTimestamp(record!.createdAt) !== undefined;
+}
+
+/**
+ * Project one raw PR into its **cacheable** record, or undefined when it cannot be cached safely —
+ * see {@link isCacheableRepoPrRecord}. An uncacheable PR is still counted in the current pass (it
+ * is in the listing); it simply never enters the cache.
  */
 export function toRepoPrRecord(pr: any): RepoPrRecord | undefined {
 	const record = projectRepoPr(pr);
-	return record && record.number >= 0 && record.updatedAt !== '' ? record : undefined;
+	return isCacheableRepoPrRecord(record) ? record : undefined;
 }
 
 /** The counters the Repository PRs table renders for one repo, derived purely from its records. */
@@ -806,11 +824,18 @@ export function reconcileRepoPrRecords(
 	return { records, listed: listed.records, reused: listed.reused, recomputed: listed.recomputed, removed, retainedUnverified };
 }
 
-/** Whether a cached record's PR was created before the window currently being counted. */
+/**
+ * Whether a cached record's PR was created before the window currently being counted.
+ *
+ * An unparseable `createdAt` counts as outside: a record that cannot be dated cannot be shown to
+ * still belong to the window, and treating it as inside would let one bad timestamp keep it in the
+ * cache forever. `isCacheableRepoPrRecord()` already refuses to store such a record, so this is the
+ * second line of defence, for anything that predates that rule on disk.
+ */
 function isOutsideWindow(record: RepoPrRecord, since: Date | undefined): boolean {
 	if (!since) { return false; }
 	const created = Date.parse(record.createdAt);
-	return Number.isFinite(created) && created < since.getTime();
+	return !Number.isFinite(created) || created < since.getTime();
 }
 
 /** Walk the fresh listing, reusing each cached record whose timestamp still matches exactly. */
@@ -825,12 +850,14 @@ function projectListedPrs(
 	for (const pr of listedPrs) {
 		const fresh = toRepoPrRecord(pr);
 		if (!fresh) {
-			// Uncacheable (no number or no valid timestamp): count it this pass without caching it.
+			// Uncacheable (a bad timestamp) but still a real PR: count it this pass without caching
+			// it. A payload with no usable number is dropped outright — it cannot be linked, and a
+			// sentinel like `#-1` leaking into the AI-detail rows would be worse than omitting it.
 			const uncacheable = projectRepoPr(pr);
-			if (!uncacheable) { continue; }
-			// Still mark a real PR number as seen. The listing has spoken for this PR, so its stale
-			// cached record must not *also* be retained — that would count the same PR twice.
-			if (uncacheable.number >= 0) { seen.add(uncacheable.number); }
+			if (!uncacheable || uncacheable.number < 1) { continue; }
+			// Mark the number seen. The listing has spoken for this PR, so its stale cached record
+			// must not *also* be retained — that would count the same PR twice.
+			seen.add(uncacheable.number);
 			records.push(uncacheable);
 			recomputed++;
 			continue;
@@ -848,16 +875,14 @@ function projectListedPrs(
 function indexCachedPrRecords(cached: readonly RepoPrRecord[] | undefined): Map<number, RepoPrRecord> {
 	const byNumber = new Map<number, RepoPrRecord>();
 	for (const record of cached ?? []) {
-		if (typeof record?.number === 'number' && parseEntityTimestamp(record.updatedAt)) {
-			byNumber.set(record.number, record);
-		}
+		if (isCacheableRepoPrRecord(record)) { byNumber.set(record.number, record); }
 	}
 	return byNumber;
 }
 
-/** Records that may be persisted: the uncacheable ones (empty `updatedAt`) are dropped. */
+/** Records that may be persisted — see {@link isCacheableRepoPrRecord} for what disqualifies one. */
 export function toCacheableRepoPrRecords(records: readonly RepoPrRecord[]): RepoPrRecord[] {
-	return records.filter((record) => record.number >= 0 && parseEntityTimestamp(record.updatedAt) !== undefined);
+	return records.filter(isCacheableRepoPrRecord);
 }
 
 /** Maximum number of concurrent `git remote` probes during repo discovery. */

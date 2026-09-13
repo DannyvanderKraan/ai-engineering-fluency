@@ -643,7 +643,12 @@ async function listAllTasks(
 	const active = await listTaskSlice(fetchPage, false, tasks, seen);
 	if (active.error && tasks.length === 0) { return { tasks: [], ...active }; }
 	const archived = await listTaskSlice(fetchPage, true, tasks, seen);
-	return { tasks, complete: active.complete && archived.complete };
+	// Report the first error from either slice even when some pages did come back. Dropping it
+	// would hide a failed archived pass, or a failure partway through the active one, behind a
+	// result that looks whole — the caller still gets the tasks it did collect, plus the reason
+	// the pass is short and `complete: false` to stop anything reconciling on it.
+	const failure = active.error ? active : (archived.error ? archived : undefined);
+	return { tasks, statusCode: failure?.statusCode, error: failure?.error, complete: active.complete && archived.complete };
 }
 
 /** Ensure a row exists for this repo key, widening its discovery when seen from both sources. */
@@ -760,7 +765,11 @@ async function collectAccountTasks(
 	const { tasks, statusCode, error, complete } = await listAllTasks(
 		(page, archived) => fetchAccountPage({ token: options.token, page, archived, since: sinceStr }),
 	);
-	if (error) { return { available: false, error: describeTaskFetchError(statusCode), complete: false }; }
+	// Only a listing that produced nothing is "unavailable". One that failed partway still has real
+	// tasks in hand, and throwing them away would understate the account for no gain — they are
+	// folded in, with the error surfaced and `complete: false` marking the pass as short.
+	if (error && tasks.length === 0) { return { available: false, error: describeTaskFetchError(statusCode), complete: false }; }
+	const listingError = error ? describeTaskFetchError(statusCode) : undefined;
 
 	const idCache = await resolveRepositoryIds(tasks, options);
 
@@ -788,7 +797,7 @@ async function collectAccountTasks(
 			cacheKey: agentTaskCacheKey(key, task.id), discovery: 'account',
 		});
 	}
-	return { available: true, complete };
+	return { available: true, error: listingError, complete: complete && !error };
 }
 
 /** Add one task's cloud-session totals to its repository row. */

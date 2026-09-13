@@ -275,3 +275,15 @@ test('a temp file is attributed to its own scope, not to a scope named after the
 		assert.equal(file.scope, SCOPE_A);
 	});
 });
+
+test('applyRecordBudget stays deterministic when rank() returns a non-finite value', () => {
+	// The helper is generic; a caller returning NaN would otherwise make the comparator
+	// non-transitive and the eviction order non-deterministic.
+	const records = [{ id: 'nan' }, { id: 'two' }, { id: 'one' }];
+	const ranks: Record<string, number> = { nan: Number.NaN, two: 2, one: 1 };
+	const { kept, evicted } = applyRecordBudget(records, { maxRecords: 2, maxBytes: 1_000_000 }, (r) => ranks[r.id]);
+	assert.equal(kept.length, 2);
+	assert.equal(evicted, 1);
+	// NaN normalizes to 0, so it ranks below both real values and is the one evicted.
+	assert.deepEqual(kept.map((r) => r.id), ['two', 'one']);
+});

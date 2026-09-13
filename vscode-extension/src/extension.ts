@@ -2578,27 +2578,27 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 * Runs on extension start and on every cache refresh cycle (both leader-gated), plus whenever
 	 * the Repository PRs tab is opened.
 	 */
-	private async maybeRefreshRepoPrStats(force = false): Promise<void> {
-		if (this._repoPrRefreshInFlight || this._githubSignedOutByUser) { return; }
+	private async maybeRefreshRepoPrStats(force = false): Promise<boolean> {
+		if (this._repoPrRefreshInFlight || this._githubSignedOutByUser) { return false; }
 		const since = this.repoPrStatsSince();
 		// The cache file is scoped to the signed-in account, so the session has to be resolved
 		// before a path is picked — otherwise the very first pass after startup would read and
 		// write the "not signed in yet" scope instead of this account's.
 		const session = await vscode.authentication.getSession(getGitHubAuthProviderId(), ['read:user'], { silent: true });
-		if (!session) { return; }
+		if (!session) { return false; }
 		const scope = this.githubActivityScope(session.account.label);
 		const generation = this._githubActivityGeneration;
 		const cachePath = getRepoPrCachePath(this.context.globalStorageUri.fsPath, scope);
 		// A forced (user-triggered) refresh skips the TTL check only — it still respects the
 		// cross-window lock below, so two windows can never collect the same data at once.
-		if (!force && canServeRepoPrSnapshot(await readRepoPrSnapshot(cachePath), since, Date.now())) { return; }
+		if (!force && canServeRepoPrSnapshot(await readRepoPrSnapshot(cachePath), since, Date.now())) { return false; }
 
 		let acquired = false;
 		try { acquired = await this.cacheManager.acquireRepoPrLock(scope); }
 		catch (err) { this.warn(`Failed to acquire repo-PRs lock: ${err}`); }
 		if (!acquired) {
 			this.log('⏭️ Repository PRs refresh skipped — another window is refreshing the shared snapshot');
-			return;
+			return false;
 		}
 
 		// The per-window cooldown above cannot see another window's clicks, but the snapshot on disk
@@ -2608,7 +2608,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			this.log('⏭️ Repository PRs manual refresh skipped — another window refreshed it moments ago');
 			try { await this.cacheManager.releaseRepoPrLock(scope); }
 			catch (err) { this.warn(`Failed to release repo-PRs lock: ${err}`); }
-			return;
+			return false;
 		}
 
 		this._repoPrRefreshInFlight = true;
@@ -2625,6 +2625,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			try { await this.cacheManager.releaseRepoPrLock(scope); }
 			catch (err) { this.warn(`Failed to release repo-PRs lock: ${err}`); }
 		}
+		return true;
 	}
 
 	/**
@@ -2818,25 +2819,25 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 * global storage instead of repeating the calls. Runs on extension start and on every cache
 	 * refresh cycle (both leader-gated), plus whenever the Cloud Agent tab is opened.
 	 */
-	private async maybeRefreshAgentSessions(force = false): Promise<void> {
-		if (this._agentSessionsRefreshInFlight || this._githubSignedOutByUser) { return; }
+	private async maybeRefreshAgentSessions(force = false): Promise<boolean> {
+		if (this._agentSessionsRefreshInFlight || this._githubSignedOutByUser) { return false; }
 		const since = this.agentSessionsSince();
 		// Resolve the session before picking a cache path — see maybeRefreshRepoPrStats().
 		const session = await vscode.authentication.getSession(getGitHubAuthProviderId(), ['read:user'], { silent: true });
-		if (!session) { return; }
+		if (!session) { return false; }
 		const scope = this.githubActivityScope(session.account.label);
 		const generation = this._githubActivityGeneration;
 		const cachePath = getAgentTasksCachePath(this.context.globalStorageUri.fsPath, scope);
 		// A forced (user-triggered) refresh skips the TTL check only — the cross-window lock below
 		// still applies, so a manual refresh can never duplicate another window's in-flight pass.
-		if (!force && canServeAgentTasksSnapshot(await readAgentTasksSnapshot(cachePath), since, Date.now())) { return; }
+		if (!force && canServeAgentTasksSnapshot(await readAgentTasksSnapshot(cachePath), since, Date.now())) { return false; }
 
 		let acquired = false;
 		try { acquired = await this.cacheManager.acquireAgentTasksLock(scope); }
 		catch (err) { this.warn(`Failed to acquire agent tasks lock: ${err}`); }
 		if (!acquired) {
 			this.log('⏭️ Cloud agent refresh skipped — another window is refreshing the shared snapshot');
-			return;
+			return false;
 		}
 
 		// See maybeRefreshRepoPrStats(): the on-disk snapshot is how the manual-refresh cooldown
@@ -2845,7 +2846,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			this.log('⏭️ Cloud agent manual refresh skipped — another window refreshed it moments ago');
 			try { await this.cacheManager.releaseAgentTasksLock(scope); }
 			catch (err) { this.warn(`Failed to release agent tasks lock: ${err}`); }
-			return;
+			return false;
 		}
 
 		this._agentSessionsRefreshInFlight = true;
@@ -2862,6 +2863,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			try { await this.cacheManager.releaseAgentTasksLock(scope); }
 			catch (err) { this.warn(`Failed to release agent tasks lock: ${err}`); }
 		}
+		return true;
 	}
 
 	/**
@@ -2927,12 +2929,15 @@ class CopilotTokenTracker implements vscode.Disposable {
 			this.log('⏭️ GitHub activity refresh skipped — still within the manual-refresh cooldown');
 			return;
 		}
-		this._lastManualGitHubActivityRefreshAt = now;
 		this.log('🔄 Manual GitHub activity refresh requested');
-		await Promise.all([
-			this.maybeRefreshRepoPrStats(true).catch((err) => this.warn(`Manual repository PRs refresh failed: ${err}`)),
-			this.maybeRefreshAgentSessions(true).catch((err) => this.warn(`Manual cloud agent refresh failed: ${err}`)),
+		const started = await Promise.all([
+			this.maybeRefreshRepoPrStats(true).catch((err) => { this.warn(`Manual repository PRs refresh failed: ${err}`); return false; }),
+			this.maybeRefreshAgentSessions(true).catch((err) => { this.warn(`Manual cloud agent refresh failed: ${err}`); return false; }),
 		]);
+		// Spend the cooldown only on a refresh that actually ran. Stamping it up front meant a click
+		// while signed out — where both passes return immediately — locked out the real refresh the
+		// user makes after signing in.
+		if (started.some(Boolean)) { this._lastManualGitHubActivityRefreshAt = now; }
 	}
 
 	/**

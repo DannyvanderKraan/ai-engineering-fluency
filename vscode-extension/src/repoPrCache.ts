@@ -14,7 +14,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { RepoPrRecord, RepoPrStatsResult } from './githubPrService';
-import { applyRecordBudget, parseEntityTimestamp, type RecordBudget } from './githubActivityCache';
+import { isCacheableRepoPrRecord } from './githubPrService';
+import { applyRecordBudget, type RecordBudget } from './githubActivityCache';
 
 /** How often the repository-PRs snapshot may be refreshed from the GitHub API: once an hour. */
 export const REPO_PRS_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
@@ -55,18 +56,14 @@ export interface RepoPrCacheEnvelope {
 }
 
 /**
- * The cached records for one repository, filtered to the ones that are actually reusable: a record
- * needs a real PR number and a parseable `updated_at`, since those two are what a later listing
- * matches against. Anything else is treated as absent and recomputed.
+ * The cached records for one repository, filtered to the ones that are actually reusable — the same
+ * predicate the writer uses, so a record can never be stored under a rule the reader disagrees with.
+ * Anything that fails it is treated as absent and recomputed.
  */
 export function readRepoPrRecords(envelope: RepoPrCacheEnvelope | undefined, repoKey: string): RepoPrRecord[] {
 	const records = envelope?.prs?.[repoKey];
 	if (!Array.isArray(records)) { return []; }
-	return records.filter((record): record is RepoPrRecord => (
-		Boolean(record)
-		&& typeof record.number === 'number' && Number.isFinite(record.number) && record.number >= 0
-		&& parseEntityTimestamp(record.updatedAt) !== undefined
-	));
+	return records.filter(isCacheableRepoPrRecord);
 }
 
 /**
