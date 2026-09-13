@@ -40,6 +40,16 @@ export interface WebviewLocalization {
 	'usage.sessions.contextFill.usedNearLimit': string;
 	'usage.sessions.contextFill.noData': string;
 
+	// Efficiency view — Cost Attribution model-mix table
+	'efficiency.modelMix.heading': string;
+	'efficiency.modelMix.caption': string;
+	'efficiency.modelMix.model': string;
+	'efficiency.modelMix.previous': string;
+	'efficiency.modelMix.current': string;
+	'efficiency.modelMix.shift': string;
+	'efficiency.modelMix.shiftPoints': string;
+	'efficiency.modelMix.canonicalId': string;
+
 	// Details view — collapsible "Usage by Editor" section heading tooltips
 	'details.editorSection.show': string;
 	'details.editorSection.hide': string;
@@ -141,6 +151,14 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'usage.sessions.contextFill.used': '{0} of {1} context tokens used',
 	'usage.sessions.contextFill.usedNearLimit': '{0} of {1} context tokens used — at or past {2}% of the window',
 	'usage.sessions.contextFill.noData': 'No context-window fill recorded for this session (only GitHub Copilot CLI sessions report one)',
+	'efficiency.modelMix.heading': 'Model mix movement',
+	'efficiency.modelMix.caption': 'Token share per model, {0} compared with {1}',
+	'efficiency.modelMix.model': 'Model',
+	'efficiency.modelMix.previous': 'Previous',
+	'efficiency.modelMix.current': 'Current',
+	'efficiency.modelMix.shift': 'Shift',
+	'efficiency.modelMix.shiftPoints': '{0} pt',
+	'efficiency.modelMix.canonicalId': 'Model ID: {0}',
 	'details.editorSection.show': 'Show Usage by Editor',
 	'details.editorSection.hide': 'Hide Usage by Editor',
 	'logviewer.summary.interactions': 'Interactions',
