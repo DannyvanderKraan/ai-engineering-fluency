@@ -31,6 +31,7 @@ interface FlatDepsOverrides {
 	getCrushSessionData?: (sessionFile: string) => Promise<any>;
 	isVSSessionFile?: (sessionFile: string) => boolean;
 	getGithubToken?: () => string | undefined;
+	getEditorLabel?: (sessionFile: string) => string;
 }
 
 function makeDeps(overrides?: FlatDepsOverrides): SyncServiceDeps {
@@ -56,6 +57,7 @@ function makeDeps(overrides?: FlatDepsOverrides): SyncServiceDeps {
 		},
 		updateTokenStats: overrides?.updateTokenStats,
 		getGithubToken: overrides?.getGithubToken,
+		getEditorLabel: overrides?.getEditorLabel,
 	};
 }
 
@@ -86,7 +88,7 @@ function makeServiceWithServices(
  * Returns { filePath, cleanup }.
  */
 function createTempFile(content: string, ext = '.json'): { filePath: string; cleanup: () => void } {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-test-'));
+	const dir = fs.mkdtempSync(path.join(process.cwd(), 'sync-test-'));
 	// Mimics a workspaceStorage path so extractWorkspaceIdFromSessionPath returns a proper ID
 	const wsDir = path.join(dir, 'workspaceStorage', 'test-ws-id', 'chatSessions');
 	fs.mkdirSync(wsDir, { recursive: true });
@@ -127,6 +129,29 @@ test('startTimerIfEnabled starts timer when configured and cloud sync is allowed
 	);
 	// Timer was started; stopping should not error
 	svc.stopTimer();
+	svc.dispose();
+});
+
+test('startTimerIfEnabled logs the cloud-sync-disabled reason when the profile forbids cloud sync', () => {
+	const logs: string[] = [];
+	const svc = makeService({ log: (m) => logs.push(m) });
+	svc.startTimerIfEnabled(
+		{ enabled: true, sharingProfile: 'off', shareWorkspaceMachineNames: false } as any,
+		true
+	);
+	assert.ok(logs.some(m => m.includes('cloud sync disabled') && m.includes('off')));
+	svc.dispose();
+});
+
+test('startTimerIfEnabled logs the not-configured reason when cloud sync is allowed but backend is unconfigured', () => {
+	const logs: string[] = [];
+	const svc = makeService({ log: (m) => logs.push(m) });
+	svc.startTimerIfEnabled(
+		{ enabled: true, sharingProfile: 'soloFull', shareWorkspaceMachineNames: false } as any,
+		false
+	);
+	assert.ok(logs.some(m => m.includes('backend not configured')));
+	assert.ok(!logs.some(m => m.includes('cloud sync disabled')));
 	svc.dispose();
 });
 
@@ -679,6 +704,52 @@ test('computeDailyRollupsFromLocalSessions processes JSONL files in fallback pat
 	}
 });
 
+test('syncToSharingServer preserves the Copilot App editor label in uploaded rollups', async () => {
+	const dayKey = new Date().toISOString().slice(0, 10);
+	const sessionFile = '/home/user/.copilot/session-state/app-session/events.jsonl';
+	const uploadedEntries: Array<{ editor?: string }> = [];
+	const svc = new SyncService(
+		makeDeps({
+			getGithubToken: () => 'github-token',
+			getCopilotSessionFiles: async () => [sessionFile],
+			getEditorLabel: () => 'Copilot CLI (App)',
+			statSessionFile: async () => ({ mtimeMs: Date.now(), size: 100 } as any),
+			getSessionFileDataCached: async () => ({
+				tokens: 300,
+				mtime: Date.now(),
+				interactions: 1,
+				modelUsage: { 'gpt-4o': { inputTokens: 100, outputTokens: 200 } },
+				dailyRollups: {
+					[dayKey]: {
+						tokens: 300,
+						actualTokens: 300,
+						thinkingTokens: 0,
+						interactions: 1,
+						modelUsage: { 'gpt-4o': { inputTokens: 100, outputTokens: 200 } },
+					},
+				},
+			}),
+		}),
+		{} as any,
+		{} as any,
+		undefined,
+		BackendUtility,
+		{
+			uploadRollups: async (_endpoint: string, _token: string, entries: Array<{ editor?: string }>) => {
+				uploadedEntries.push(...entries);
+				return { success: true, entriesUploaded: entries.length, message: 'Uploaded' };
+			},
+		} as any,
+	);
+
+	await (svc as any).syncToSharingServer(
+		{ lookbackDays: 7, datasetId: 'default', sharingServerEndpointUrl: 'https://sharing.example.com' },
+		{ allowCloudSync: true, includeUserDimension: false, includeNames: false },
+	);
+
+	assert.deepEqual(uploadedEntries.map(entry => entry.editor), ['Copilot CLI (App)']);
+});
+
 test('computeDailyRollupsFromLocalSessions skips files older than lookback', async () => {
 	const now = new Date();
 	const oldTimestamp = now.getTime() - 30 * 24 * 60 * 60 * 1000; // 30 days ago
@@ -927,6 +998,8 @@ test('syncToBackendStore skips when credentials are not available', async () => 
 		enabled: true,
 		sharingProfile: 'soloFull',
 		shareWorkspaceMachineNames: false,
+		subscriptionId: 'sub1',
+		resourceGroup: 'rg1',
 		storageAccount: 'sa1',
 		aggTable: 'usageAgg',
 		datasetId: 'ds1',
@@ -984,6 +1057,8 @@ test('syncToBackendStore completes full sync flow with mocked services', async (
 			enabled: true,
 			sharingProfile: 'soloFull',
 			shareWorkspaceMachineNames: false,
+			subscriptionId: 'sub1',
+			resourceGroup: 'rg1',
 			storageAccount: 'sa1',
 			aggTable: 'usageAgg',
 			datasetId: 'ds1',
@@ -1041,6 +1116,8 @@ test('syncToBackendStore logs warning when upsertEntitiesBatch has errors', asyn
 			enabled: true,
 			sharingProfile: 'soloFull',
 			shareWorkspaceMachineNames: false,
+			subscriptionId: 'sub1',
+			resourceGroup: 'rg1',
 			storageAccount: 'sa1',
 			aggTable: 'usageAgg',
 			datasetId: 'ds1',
@@ -1079,6 +1156,8 @@ test('syncToBackendStore handles ensureTableExists or validateAccess failure gra
 		enabled: true,
 		sharingProfile: 'soloFull',
 		shareWorkspaceMachineNames: false,
+		subscriptionId: 'sub1',
+		resourceGroup: 'rg1',
 		storageAccount: 'sa1',
 		aggTable: 'usageAgg',
 		datasetId: 'ds1',
@@ -1150,6 +1229,102 @@ test('syncToBackendStore still attempts sharing server sync when Azure sync fail
 	);
 });
 
+test('syncToBackendStore tracks Azure and Team Server "last sync" independently — a successful sharing-server sync updates only its own timestamp when Azure fails', async () => {
+	const globalState = new Map<string, unknown>();
+	const lockDir = fs.mkdtempSync(path.join(process.cwd(), 'sync-lock-test-'));
+	const mockContext = {
+		globalState: {
+			get: (key: string) => globalState.get(key),
+			update: async (key: string, value: unknown) => { globalState.set(key, value); },
+		},
+		globalStorageUri: { fsPath: lockDir },
+	} as unknown as vscode.ExtensionContext;
+	const sharingServerSvc = { uploadRollups: async () => {}, uploadFluencyScore: async () => {} };
+	const svc = new SyncService(
+		makeDeps({
+			context: mockContext,
+			getGithubToken: () => 'fake-token',
+			getCopilotSessionFiles: async () => [],
+		}),
+		{
+			getBackendDataPlaneCredentials: async () => ({
+				tableCredential: {},
+				blobCredential: {},
+				secretsToRedact: [],
+			}),
+			getBackendSecretsToRedactForError: async () => [],
+		} as any,
+		{
+			ensureTableExists: async () => { throw new Error('Azure connection failed'); },
+			validateAccess: async () => {},
+			createTableClient: () => ({}),
+			upsertEntitiesBatch: async () => ({ successCount: 0, errors: [] }),
+		} as any,
+		undefined,
+		BackendUtility,
+		sharingServerSvc as any,
+	);
+	await svc.syncToBackendStore(true, {
+		enabled: true,
+		backend: 'storageTables',
+		sharingProfile: 'teamAnonymized',
+		shareWorkspaceMachineNames: false,
+		storageAccount: 'sa1',
+		subscriptionId: 'sub1',
+		resourceGroup: 'rg1',
+		aggTable: 'usageAgg',
+		eventsTable: 'usageEvents',
+		lookbackDays: 7,
+		sharingServerEnabled: true,
+		sharingServerEndpointUrl: 'https://test-sharing-server/',
+		shareWithTeam: false,
+		userIdentityMode: 'pseudonymous',
+		userId: '',
+		userIdMode: 'alias',
+		datasetId: 'default',
+		shareConsentAt: '',
+		includeMachineBreakdown: false,
+		blobUploadEnabled: false,
+		blobContainerName: '',
+		blobUploadFrequencyHours: 24,
+		blobCompressFiles: true,
+		authMode: 'entraId',
+	} as any, true);
+	assert.ok(globalState.get('backend.sharingServerLastSyncAt'), 'Team Server sync succeeded and should update its own lastSync marker');
+	assert.equal(globalState.get('backend.azureLastSyncAt'), undefined, 'Azure sync failed and must NOT update the Azure-specific lastSync marker');
+	fs.rmSync(lockDir, { recursive: true, force: true });
+});
+
+test('uploadFluencyScoreToSharingServer updates the Team Server lastSync marker on success', async () => {
+	const globalState = new Map<string, unknown>();
+	const mockContext = {
+		globalState: {
+			get: (key: string) => globalState.get(key),
+			update: async (key: string, value: unknown) => { globalState.set(key, value); },
+		},
+	} as unknown as vscode.ExtensionContext;
+	const sharingServerSvc = { uploadRollups: async () => {}, uploadFluencyScore: async () => {} };
+	const svc = new SyncService(
+		makeDeps({
+			context: mockContext,
+			getGithubToken: () => 'fake-token',
+		}),
+		{} as any,
+		{} as any,
+		undefined,
+		BackendUtility,
+		sharingServerSvc as any,
+	);
+	await svc.uploadFluencyScoreToSharingServer({
+		sharingServerEnabled: true,
+		sharingServerEndpointUrl: 'https://test-sharing-server/',
+	} as any, { overallStage: 'exploring' });
+	assert.ok(
+		globalState.get('backend.sharingServerLastSyncAt'),
+		'A successful fluency-score upload is a real Team Server sync and must update its own lastSync marker'
+	);
+});
+
 // ── Sync lock management ─────────────────────────────────────────────────
 
 test('acquireSyncLock succeeds when no context is provided', async () => {
@@ -1160,7 +1335,7 @@ test('acquireSyncLock succeeds when no context is provided', async () => {
 });
 
 test('acquireSyncLock creates lock file and releaseSyncLock removes it', async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lock-test-'));
+	const dir = fs.mkdtempSync(path.join(process.cwd(), 'lock-test-'));
 	try {
 		const mockContext = {
 			globalStorageUri: { fsPath: dir },
@@ -1181,7 +1356,7 @@ test('acquireSyncLock creates lock file and releaseSyncLock removes it', async (
 });
 
 test('acquireSyncLock returns false when lock is held by another session', async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lock-test-'));
+	const dir = fs.mkdtempSync(path.join(process.cwd(), 'lock-test-'));
 	try {
 		const lockPath = path.join(dir, 'backend_sync.lock');
 		// Write a lock file from a different session that is recent
@@ -1203,7 +1378,7 @@ test('acquireSyncLock returns false when lock is held by another session', async
 });
 
 test('acquireSyncLock breaks stale lock', async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lock-test-'));
+	const dir = fs.mkdtempSync(path.join(process.cwd(), 'lock-test-'));
 	try {
 		const lockPath = path.join(dir, 'backend_sync.lock');
 		// Write a lock file that is stale (older than SYNC_LOCK_STALE_MS)
@@ -1228,8 +1403,32 @@ test('acquireSyncLock breaks stale lock', async () => {
 	}
 });
 
+test('acquireSyncLock breaks corrupt (empty) lock file', async () => {
+	const dir = fs.mkdtempSync(path.join(process.cwd(), 'lock-test-'));
+	try {
+		const lockPath = path.join(dir, 'backend_sync.lock');
+		// A writer killed between atomic create and content write leaves a
+		// 0-byte lock; unparseable content must be treated as stale or the
+		// lock blocks every sync attempt forever.
+		fs.writeFileSync(lockPath, '');
+
+		const mockContext = {
+			globalStorageUri: { fsPath: dir },
+		};
+		const svc = makeService({ context: mockContext as any });
+
+		const acquired = await (svc as any).acquireSyncLock();
+		assert.equal(acquired, true, 'empty lock must be treated as stale');
+
+		const content = JSON.parse(fs.readFileSync(lockPath, 'utf-8'));
+		assert.equal(content.sessionId, vscode.env.sessionId);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('acquireSyncLock returns false when same server URL is locked by another session', async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lock-test-'));
+	const dir = fs.mkdtempSync(path.join(process.cwd(), 'lock-test-'));
 	try {
 		const lockPath = path.join(dir, 'backend_sync.lock');
 		fs.writeFileSync(lockPath, JSON.stringify({
@@ -1249,7 +1448,7 @@ test('acquireSyncLock returns false when same server URL is locked by another se
 });
 
 test('acquireSyncLock returns true when lock is held for a different server URL', async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lock-test-'));
+	const dir = fs.mkdtempSync(path.join(process.cwd(), 'lock-test-'));
 	try {
 		const lockPath = path.join(dir, 'backend_sync.lock');
 		// Simulate VS Code stable holding the lock for server A

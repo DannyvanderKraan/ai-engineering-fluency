@@ -6,15 +6,18 @@
  */
 import type {
 	UsageAnalysisPeriod,
+	AutomaticCompactionStats,
 	MissedPotentialWorkspace,
 	WorkspaceCustomizationMatrix,
 	TodaySessionSummary,
 	ToolCurationAnalysis,
+	RepeatedTaskReport,
 } from '../../src/types';
 import toolNamesData from '../../src/toolNames.json';
 import modelPricingData from '../../src/modelPricing.json';
-import { resolveGuidMcpToolName } from '../../src/utils/toolUtils';
+import { resolveGuidMcpToolName, resolveMcpFamilyToolName, lookupKnownToolName } from '../../src/utils/toolUtils';
 import { getLongContextInfo, type LongContextInfo } from '../../src/tokenEstimation';
+import { CONTEXT_NEAR_LIMIT_RATIO } from '../../src/types';
 import type { ModelPricing } from '../../src/types';
 
 // ---------------------------------------------------------------------------
@@ -25,15 +28,20 @@ const TOOL_NAME_MAP: Record<string, string> = toolNamesData as Record<string, st
 
 /**
  * Returns a human-friendly display name for an MCP tool ID.
- * 1. Exact match in toolNames.json
+ * 1. Exact, case-insensitive, or canonicalized (camelCase/separator) match in toolNames.json
  * 2. GUID-keyed MCP pattern (e.g. M365 Connector)
- * 3. Parse mcp__<server>__<tool> → "Server: Tool Name"
- * 4. Fall back to the raw ID
+ * 3. Known MCP family (GitHub/Playwright/Context7/Tavily/Claude Browser) + known action,
+ *    regardless of server-registration prefix (see issue #1760)
+ * 4. Parse mcp__<server>__<tool> → "Server: Tool Name"
+ * 5. Fall back to the raw ID
  */
 function friendlyToolName(id: string): string {
-	if (TOOL_NAME_MAP[id]) { return TOOL_NAME_MAP[id]; }
+	const known = lookupKnownToolName(id, TOOL_NAME_MAP);
+	if (known) { return known; }
 	const guid = resolveGuidMcpToolName(id);
 	if (guid) { return guid; }
+	const family = resolveMcpFamilyToolName(id);
+	if (family) { return family; }
 	// Parse mcp__ServerName__tool_name → "Server Name: Tool Name"
 	const mcpMatch = /^mcp__([^_][^_]*)__(.+)$/.exec(id);
 	if (mcpMatch) {
@@ -87,6 +95,71 @@ function manualCompactCount(p: UsageAnalysisPeriod): number {
 
 // ── Long-context pricing tier helpers ──────────────────────────────────────
 const MODEL_PRICING = modelPricingData.pricing as { [key: string]: ModelPricing };
+
+/** Human-friendly model name from the pricing catalog, falling back to the raw id. */
+function modelDisplayName(id: string): string {
+	const names = MODEL_PRICING[id]?.displayNames;
+	return names && names.length > 0 ? names[0] : id;
+}
+
+// ── Model efficiency (edit retries) helpers ────────────────────────────────
+
+/** Minimum edit turns before a model's retry rate is considered meaningful. */
+const RETRY_INSIGHT_MIN_EDIT_TURNS = 10;
+
+/** Models with enough edit turns to compare, ranked worst (highest retry rate) first. */
+function rankModelsByEditRetries(p: UsageAnalysisPeriod): { model: string; retries: number; editTurns: number; retryRate: number }[] {
+	return Object.entries(p.modelEfficiency ?? {})
+		.filter(([, c]) => c.editTurns >= RETRY_INSIGHT_MIN_EDIT_TURNS)
+		.map(([model, c]) => ({ model, retries: c.retries, editTurns: c.editTurns, retryRate: c.retries / c.editTurns }))
+		.sort((a, b) => b.retryRate - a.retryRate);
+}
+
+// ── Month-over-month trend helpers ─────────────────────────────────────────
+
+/** Minimum sessions in a period before its per-session ratios are trusted for trend insights. */
+const TREND_MIN_SESSIONS = 10;
+
+/** Average turns per session for a period, or null when the sample is too small. */
+function trendTurnsPerSession(p: UsageAnalysisPeriod | undefined): number | null {
+	if (!p || p.sessions < TREND_MIN_SESSIONS || !p.conversationPatterns) { return null; }
+	return p.conversationPatterns.avgTurnsPerSession;
+}
+
+/** Aggregate edit-retry rate for a period, or null when there are too few edit turns. */
+function trendRetryRate(p: UsageAnalysisPeriod | undefined): number | null {
+	if (!p) { return null; }
+	let retries = 0;
+	let editTurns = 0;
+	for (const c of Object.values(p.modelEfficiency ?? {})) {
+		retries += c.retries;
+		editTurns += c.editTurns;
+	}
+	return editTurns >= RETRY_INSIGHT_MIN_EDIT_TURNS ? retries / editTurns : null;
+}
+
+/** Output price per million tokens from the pricing catalog, or null when unknown. */
+function modelOutputPricePerMillion(id: string): number | null {
+	return MODEL_PRICING[id]?.outputCostPerMillion ?? null;
+}
+
+/**
+ * Best/worst retry-rate models with a price mismatch: the worst-retrying model
+ * both retries ≥2× as often and costs ≥1.5× as much per output token as the best.
+ */
+function findRetryPriceMismatch(p: UsageAnalysisPeriod): { worst: { model: string; retryRate: number }; best: { model: string; retryRate: number }; priceRatio: number } | null {
+	const ranked = rankModelsByEditRetries(p);
+	if (ranked.length < 2) { return null; }
+	const worst = ranked[0];
+	const best = ranked[ranked.length - 1];
+	if (best.retryRate <= 0 ? worst.retryRate < 0.25 : worst.retryRate < best.retryRate * 2) { return null; }
+	const worstPrice = modelOutputPricePerMillion(worst.model);
+	const bestPrice = modelOutputPricePerMillion(best.model);
+	if (worstPrice === null || bestPrice === null || bestPrice <= 0) { return null; }
+	const priceRatio = worstPrice / bestPrice;
+	if (priceRatio < 1.5) { return null; }
+	return { worst, best, priceRatio };
+}
 
 /** A today-session paired with the long-context tier info of its cheapest-threshold model. */
 interface SessionLongContextStatus {
@@ -204,11 +277,19 @@ export type InsightStatus = 'new' | 'seen' | 'dismissed' | 'snoozed' | 'done';
 export interface InsightContext {
 	today: UsageAnalysisPeriod;
 	last30Days: UsageAnalysisPeriod;
+	/** Current calendar month-to-date — enables month-over-month trend insights. */
+	month?: UsageAnalysisPeriod;
+	/** Previous full calendar month — enables month-over-month trend insights. */
+	lastMonth?: UsageAnalysisPeriod;
+	/** Automatic context compactions recorded during the trailing seven days. */
+	autoCompactionsLast7Days?: AutomaticCompactionStats;
 	missedPotential: MissedPotentialWorkspace[];
 	customizationMatrix?: WorkspaceCustomizationMatrix | null;
 	todaySessions?: TodaySessionSummary[];
 	/** Optional — populated when tool-curation analysis has run. */
 	curationAnalysis?: ToolCurationAnalysis | null;
+	/** Optional — populated when repeated-task detection found candidates. */
+	repeatedTasks?: RepeatedTaskReport | null;
 }
 
 export interface InsightState {
@@ -230,6 +311,9 @@ export interface EvaluatedInsight {
 	body: string;
 	actionLabel?: string;
 	actionCommand?: string;
+	/** Optional second action, rendered alongside the primary one (e.g. an alternate next step). */
+	secondaryActionLabel?: string;
+	secondaryActionCommand?: string;
 	status: InsightStatus;
 	/** When true, this insight may also be surfaced as a VS Code toast notification. */
 	allowToast?: boolean;
@@ -247,6 +331,8 @@ interface InsightDefinition {
 	buildBody: (ctx: InsightContext) => string;
 	actionLabel?: string | ((ctx: InsightContext) => string);
 	actionCommand?: string | ((ctx: InsightContext) => string);
+	secondaryActionLabel?: string | ((ctx: InsightContext) => string);
+	secondaryActionCommand?: string | ((ctx: InsightContext) => string);
 	/** Returns true when this insight is applicable given the current context. */
 	appliesTo: (ctx: InsightContext) => boolean;
 	/** Higher weight → surfaced earlier when multiple insights apply. */
@@ -255,9 +341,40 @@ interface InsightDefinition {
 }
 
 // ---------------------------------------------------------------------------
-/** Count of auto-compaction events in a period (Claude Code / Desktop only). */
-function autoCompactCount(p: UsageAnalysisPeriod): number {
-	return p.toolCalls.byTool['__auto_compact__'] ?? 0;
+/** Count of automatic compactions across all supported session formats in the trailing week. */
+function autoCompactCount(ctx: InsightContext): number {
+	return ctx.autoCompactionsLast7Days?.total ?? 0;
+}
+
+function autoCompactBreakdown(stats: AutomaticCompactionStats): string {
+	const sources: Array<[string, number]> = [
+		['GitHub Copilot CLI', stats.bySource.copilotCli],
+		['Claude', stats.bySource.claude],
+	];
+	return sources.filter(([, count]) => count > 0)
+		.map(([source, count]) => `${source}: ${count}`)
+		.join('; ');
+}
+
+/** Sessions in the last 30 days whose history was automatically compacted. */
+function compactedSessionCount(ctx: InsightContext): number {
+	return ctx.last30Days.contextPressure?.sessionsCompacted ?? 0;
+}
+
+/** Sessions in the last 30 days that almost filled their window without compacting. */
+function nearLimitSessionCount(ctx: InsightContext): number {
+	return ctx.last30Days.contextPressure?.sessionsNearLimit ?? 0;
+}
+
+/**
+ * "N of your M sessions" phrasing for the last 30 days, or an empty string when
+ * per-session context data was unavailable (e.g. no Copilot CLI / Claude sessions).
+ */
+function compactedSessionPhrase(ctx: InsightContext): string {
+	const cp = ctx.last30Days.contextPressure;
+	if (!cp || cp.sessionsConsidered === 0 || cp.sessionsCompacted === 0) { return ''; }
+	const pct = Math.round((cp.sessionsCompacted / cp.sessionsConsidered) * 100);
+	return ` That's ${cp.sessionsCompacted} of the ${cp.sessionsConsidered} sessions with context data over the last 30 days (${pct}%).`;
 }
 
 // Starter catalog
@@ -283,7 +400,7 @@ export const INSIGHT_CATALOG: InsightDefinition[] = [
 				`Adding one gives Copilot project-specific context, reducing back-and-forth and improving response quality.`;
 		},
 		actionLabel: 'View Workspace Health',
-		actionCommand: 'aiEngineeringFluency.showUsageAnalysis',
+		actionCommand: 'aiEngineeringFluency.openHealthTab',
 		appliesTo: (ctx) => ctx.missedPotential.length > 0,
 		weight: 90,
 		allowToast: true,
@@ -505,21 +622,31 @@ export const INSIGHT_CATALOG: InsightDefinition[] = [
 		severity: 'tip',
 		title: '🔀 Explore more Copilot modes',
 		buildBody: (ctx) => {
-			const sessions = ctx.last30Days.sessions;
 			const m = ctx.last30Days.modeUsage;
-			if ((m.ask ?? 0) > 0.85 * sessions) {
+			const ask = m.ask ?? 0;
+			const agentic = (m.agent ?? 0) + (m.plan ?? 0) + (m.customAgent ?? 0) + (m.cli ?? 0) + (m.cliApp ?? 0);
+			const total = ask + (m.edit ?? 0) + agentic;
+			if (total > 0 && ask > 0.85 * total) {
 				return 'You mostly use Ask mode. Try Agent mode for making code changes directly — it can edit files, run terminal commands, and iterate across your whole codebase autonomously.';
 			}
 			return 'You haven\'t tried Agent mode yet. It handles multi-step tasks autonomously — great for refactoring, adding tests, or implementing features.';
 		},
 		appliesTo: (ctx) => {
-			const sessions = ctx.last30Days.sessions;
-			if (sessions < 10) { return false; }
+			if (ctx.last30Days.sessions < 10) { return false; }
 			const m = ctx.last30Days.modeUsage;
-			if ((m.agent ?? 0) > 0.85 * sessions) { return false; }
-			return (m.ask ?? 0) > 0.85 * sessions
-				|| ((m.agent ?? 0) === 0 && sessions >= 15);
+			const ask = m.ask ?? 0;
+			// Agent, Plan and Custom Agent modes and CLI interactions (terminal or
+			// Copilot desktop app) are autonomous agent-mode-style usage — count them
+			// as agentic, not as "ask-only".
+			const agentic = (m.agent ?? 0) + (m.plan ?? 0) + (m.customAgent ?? 0) + (m.cli ?? 0) + (m.cliApp ?? 0);
+			const total = ask + (m.edit ?? 0) + agentic;
+			if (total < 10) { return false; }
+			if (agentic > 0.15 * total) { return false; }
+			return ask > 0.85 * total
+				|| (agentic === 0 && total >= 15);
 		},
+		actionLabel: 'View Interaction Modes',
+		actionCommand: 'aiEngineeringFluency.openActivityTab',
 		weight: 50,
 	},
 
@@ -819,16 +946,67 @@ export const INSIGHT_CATALOG: InsightDefinition[] = [
 		id: 'auto-compaction-pattern',
 		category: 'consistency',
 		severity: 'opportunity',
-		title: '⚠️ Claude Code is auto-compacting your sessions',
+		title: '⚠️ Your sessions are auto-compacting frequently',
 		buildBody: (ctx) => {
-			const n = autoCompactCount(ctx.last30Days);
-			return `Claude Code hit the context window limit and auto-compacted ${n} session${n !== 1 ? 's' : ''} in the last 30 days. ` +
+			const stats = ctx.autoCompactionsLast7Days!;
+			const n = autoCompactCount(ctx);
+			return `Your sessions automatically compacted ${n} time${n !== 1 ? 's' : ''} in the last 7 days (${autoCompactBreakdown(stats)}).${compactedSessionPhrase(ctx)} ` +
 				`Auto-compaction means earlier context was lost without your control — you may have noticed replies suddenly lacking earlier detail. ` +
-				`To avoid this: start a fresh chat (\`/new\`) when switching tasks, and use \`/compact\` yourself before the window fills.`;
+				`To avoid this: start a fresh chat (\`/new\`) when switching tasks, and use \`/compact\` yourself in Claude before the window fills.`;
 		},
-		appliesTo: (ctx) => autoCompactCount(ctx.last30Days) >= 2,
+		appliesTo: (ctx) => autoCompactCount(ctx) > 5,
 		weight: 65,
 		allowToast: true,
+	},
+	{
+		id: 'context-window-near-limit',
+		category: 'context',
+		severity: 'tip',
+		title: '🧠 Some sessions nearly ran out of context window',
+		buildBody: (ctx) => {
+			const cp = ctx.last30Days.contextPressure!;
+			const n = cp.sessionsNearLimit;
+			const worst = cp.worstFillPercent;
+			const worstNote = worst ? ` The fullest one reached ${worst}% of its window.` : '';
+			const compacted = cp.sessionsCompacted;
+			const compactedNote = compacted > 0
+				? ` Separately, ${compacted} session${compacted !== 1 ? 's' : ''} compacted automatically, losing earlier context.`
+				: '';
+			return `${n} of your ${cp.sessionsWithFillData} sessions with measured context fill reached at least ${Math.round(CONTEXT_NEAR_LIMIT_RATIO * 100)}% of their context window in the last 30 days.${worstNote}${compactedNote} ` +
+				`Once a window fills, the client silently drops or summarizes earlier turns — answers start losing detail you already gave. ` +
+				`Head it off by starting a fresh chat (\`/new\`) per task with a short handoff summary, running \`/compact\` yourself while you still control what's kept, and narrowing context to the files that matter instead of whole-repo references.`;
+		},
+		appliesTo: (ctx) => {
+			// Don't double up with the auto-compaction insight, which already covers
+			// sessions that went past the line.
+			if (autoCompactCount(ctx) > 5) { return false; }
+			const cp = ctx.last30Days.contextPressure;
+			return !!cp && cp.sessionsWithFillData > 0 && nearLimitSessionCount(ctx) >= 2;
+		},
+		weight: 60,
+		allowToast: true,
+	},
+	{
+		id: 'context-window-healthy',
+		category: 'context',
+		severity: 'celebration',
+		title: '🎯 You keep your context windows comfortable',
+		buildBody: (ctx) => {
+			const cp = ctx.last30Days.contextPressure!;
+			const worst = cp.worstFillPercent;
+			const worstNote = worst ? ` — the fullest reached only ${worst}% of its window` : '';
+			return `None of your ${cp.sessionsWithFillData} sessions with measured context fill came close to their context window in the last 30 days${worstNote}. ` +
+				`That means no silent compaction and no lost earlier detail, which is exactly where you want to be. ` +
+				`Keep scoping one task per chat and pointing at specific files rather than the whole repo.`;
+		},
+		appliesTo: (ctx) => {
+			const cp = ctx.last30Days.contextPressure;
+			return !!cp && cp.sessionsWithFillData >= 10
+				&& compactedSessionCount(ctx) === 0
+				&& nearLimitSessionCount(ctx) === 0
+				&& autoCompactCount(ctx) === 0;
+		},
+		weight: 25,
 	},
 
 	// ── Model cost & efficiency ───────────────────────────────────────────────
@@ -851,6 +1029,109 @@ export const INSIGHT_CATALOG: InsightDefinition[] = [
 				&& (ms.highCostRequests / ms.totalRequests) > 0.70;
 		},
 		weight: 45,
+	},
+
+	// ── Model efficiency (edit retries, issue #1649) ──────────────────────────
+	{
+		id: 'model-edit-retries',
+		category: 'agentic',
+		severity: 'tip',
+		title: '🔁 Some of your models retry edits often',
+		buildBody: (ctx) => {
+			const ranked = rankModelsByEditRetries(ctx.last30Days);
+			const worst = ranked[0];
+			const best = ranked.length >= 2 ? ranked[ranked.length - 1] : undefined;
+			const intro = `${modelDisplayName(worst.model)} averaged ${worst.retryRate.toFixed(1)} edit retries per edit turn over the last 30 days ` +
+				`(${worst.retries} retries across ${worst.editTurns} edit turns).`;
+			if (best && best.retryRate < worst.retryRate / 2) {
+				return `${intro} ${modelDisplayName(best.model)} managed ${best.retryRate.toFixed(1)} on comparable work — ` +
+					`a model that lands its edits first try is often cheaper overall, even at a higher per-token price. ` +
+					`Compare them side by side in the Model Efficiency table.`;
+			}
+			return `${intro} Frequent retries usually mean failed edits being reattempted. ` +
+				`Compare your models in the Model Efficiency table, or give the model more context (attach the relevant files) before asking for edits.`;
+		},
+		actionLabel: 'View Model Efficiency',
+		actionCommand: 'aiEngineeringFluency.openModelEfficiency',
+		appliesTo: (ctx) => {
+			const ranked = rankModelsByEditRetries(ctx.last30Days);
+			if (ranked.length === 0) { return false; }
+			const worst = ranked[0];
+			const best = ranked[ranked.length - 1];
+			// Surface either an absolutely high retry rate, or a clear gap between models.
+			return worst.retryRate >= 0.5
+				|| (ranked.length >= 2 && worst.retryRate >= 0.25 && worst.retryRate >= best.retryRate * 2);
+		},
+		weight: 50,
+	},
+
+	// ── Efficiency trends (month over month) ──────────────────────────────────
+	{
+		id: 'trend-leaner-sessions',
+		category: 'trend',
+		severity: 'celebration',
+		title: '📉 Your sessions are getting leaner',
+		buildBody: (ctx) => {
+			const prev = trendTurnsPerSession(ctx.lastMonth)!;
+			const cur = trendTurnsPerSession(ctx.month)!;
+			const pct = Math.round(((prev - cur) / prev) * 100);
+			return `You averaged ${cur.toFixed(1)} turns per session this month, down ${pct}% from ${prev.toFixed(1)} last month — ` +
+				`less back-and-forth to get to a usable result. See the Efficiency view for the full trend and what is driving it.`;
+		},
+		actionLabel: 'Open Efficiency view',
+		actionCommand: 'aiEngineeringFluency.showEfficiency',
+		appliesTo: (ctx) => {
+			const prev = trendTurnsPerSession(ctx.lastMonth);
+			const cur = trendTurnsPerSession(ctx.month);
+			if (prev === null || cur === null || prev <= 0) { return false; }
+			const retryPrev = trendRetryRate(ctx.lastMonth);
+			const retryCur = trendRetryRate(ctx.month);
+			// Celebrate only when quality did not regress alongside the drop in turns.
+			const retryOk = retryPrev === null || retryCur === null || retryCur <= retryPrev * 1.1;
+			return (prev - cur) / prev >= 0.15 && retryOk;
+		},
+		weight: 65,
+		allowToast: true,
+	},
+	{
+		id: 'trend-sessions-getting-heavier',
+		category: 'trend',
+		severity: 'opportunity',
+		title: '📈 Sessions are taking more turns than last month',
+		buildBody: (ctx) => {
+			const prev = trendTurnsPerSession(ctx.lastMonth)!;
+			const cur = trendTurnsPerSession(ctx.month)!;
+			const pct = Math.round(((cur - prev) / prev) * 100);
+			return `You are averaging ${cur.toFixed(1)} turns per session this month, up ${pct}% from ${prev.toFixed(1)} last month. ` +
+				`More turns can mean harder tasks — or prompts that need more context up front. ` +
+				`The Efficiency view's Cost Attribution tab shows whether this is also driving your cost up.`;
+		},
+		actionLabel: 'Open Efficiency view',
+		actionCommand: 'aiEngineeringFluency.showEfficiency',
+		appliesTo: (ctx) => {
+			const prev = trendTurnsPerSession(ctx.lastMonth);
+			const cur = trendTurnsPerSession(ctx.month);
+			if (prev === null || cur === null || prev <= 0) { return false; }
+			return (cur - prev) / prev >= 0.25;
+		},
+		weight: 58,
+	},
+	{
+		id: 'retry-price-mismatch',
+		category: 'trend',
+		severity: 'tip',
+		title: '💸 Your priciest model is also retrying the most',
+		buildBody: (ctx) => {
+			const mismatch = findRetryPriceMismatch(ctx.last30Days)!;
+			return `${modelDisplayName(mismatch.worst.model)} retried ${mismatch.worst.retryRate.toFixed(1)} times per edit turn over the last 30 days — ` +
+				`while costing ~${mismatch.priceRatio.toFixed(1)}× as much per output token as ${modelDisplayName(mismatch.best.model)} ` +
+				`(${mismatch.best.retryRate.toFixed(1)} retries per edit turn on comparable work). ` +
+				`For edit-heavy tasks, switching models could improve both quality and cost at once.`;
+		},
+		actionLabel: 'Open Efficiency view',
+		actionCommand: 'aiEngineeringFluency.showEfficiency',
+		appliesTo: (ctx) => findRetryPriceMismatch(ctx.last30Days) !== null,
+		weight: 55,
 	},
 
 	// ── Code application habits ───────────────────────────────────────────────
@@ -923,6 +1204,22 @@ export const INSIGHT_CATALOG: InsightDefinition[] = [
 		},
 		appliesTo: (ctx) => (ctx.last30Days.multiAgentParentSessions ?? 0) >= 3,
 		weight: 35,
+		allowToast: true,
+	},
+
+	// ── Sub-agent delegation (tool-call based, no hierarchy data required) ────
+	{
+		id: 'subagent-delegation',
+		category: 'agentic',
+		severity: 'celebration',
+		title: '🧩 You\'re delegating work to sub-agents!',
+		buildBody: (ctx) => {
+			const n = ctx.last30Days.delegationSessions!;
+			return `You've delegated work to sub-agents/Task tools in ${n} sessions over the last 30 days. ` +
+				`Breaking work into focused delegated tasks is a strong AI-engineering habit — it keeps each agent's context tight and lets you parallelize independent pieces of work.`;
+		},
+		appliesTo: (ctx) => (ctx.last30Days.delegationSessions ?? 0) >= 5 && (ctx.last30Days.multiAgentParentSessions ?? 0) < 3,
+		weight: 32,
 		allowToast: true,
 	},
 
@@ -1135,6 +1432,92 @@ export const INSIGHT_CATALOG: InsightDefinition[] = [
 		},
 		weight: 40,
 	},
+
+	// ── Corrections ─────────────────────────────────────────────────────────
+	{
+		id: 'corrections-user-pushback',
+		category: 'customization',
+		severity: 'opportunity',
+		title: '🔁 You had to correct the agent repeatedly',
+		buildBody: (ctx) => {
+			const c = ctx.last30Days.corrections;
+			const count = c?.userCorrections ?? 0;
+			const sessions = c?.sessionsWithUserCorrections ?? Math.min(count, c?.sessionsWithMoments ?? 0);
+			return `In the last 30 days you corrected the agent ${count} time${count !== 1 ? 's' : ''} across ${sessions} session${sessions !== 1 ? 's' : ''} ` +
+				`(messages like "no, that's wrong" or "not what I asked"). Recurring corrections often mean the agent is missing project conventions — ` +
+				`capturing them in \`copilot-instructions.md\` or an \`AGENTS.md\` file can prevent the same mistakes. ` +
+				`See the Corrections tab for the exact moments.`;
+		},
+		actionLabel: 'View Corrections',
+		actionCommand: 'aiEngineeringFluency.openCorrectionsTab',
+		secondaryActionLabel: '🤖 Ask Copilot to Fix This',
+		secondaryActionCommand: 'aiEngineeringFluency.askCopilotAboutCorrections',
+		appliesTo: (ctx) => (ctx.last30Days.corrections?.userCorrections ?? 0) >= 3,
+		weight: 70,
+	},
+	{
+		id: 'corrections-tool-errors',
+		category: 'tools',
+		severity: 'tip',
+		title: '🛠️ The agent is hitting repeated tool failures',
+		buildBody: (ctx) => {
+			const c = ctx.last30Days.corrections;
+			const errors = c?.toolErrors ?? 0;
+			const editRetries = (c?.editRetries ?? 0) + (c?.editSelfCorrections ?? 0);
+			return `The agent hit ${errors} failed tool call${errors !== 1 ? 's' : ''} and re-edited a file it had just edited ${editRetries} time${editRetries !== 1 ? 's' : ''} ` +
+				`in the last 30 days. These self-correction loops burn tokens and time. ` +
+				`The Corrections tab shows which tools and files are involved — a recurring failure on the same tool is worth investigating.`;
+		},
+		actionLabel: 'View Corrections',
+		actionCommand: 'aiEngineeringFluency.openCorrectionsTab',
+		appliesTo: (ctx) => {
+			const c = ctx.last30Days.corrections;
+			if (!c) { return false; }
+			return c.toolErrors >= 5 || (c.editRetries + c.editSelfCorrections) >= 10;
+		},
+		weight: 55,
+	},
+	{
+		id: 'corrections-user-escalation',
+		category: 'customization',
+		severity: 'opportunity',
+		title: '📈 Corrections are clustering, not one-off',
+		buildBody: (ctx) => {
+			const c = ctx.last30Days.corrections;
+			const escalated = c?.escalatedUserCorrections ?? 0;
+			const sessions = c?.sessionsWithEscalations ?? 0;
+			return `In the last 30 days, ${escalated} correction${escalated !== 1 ? 's' : ''} landed within a few turns of ` +
+				`an earlier one in the same session, across ${sessions} session${sessions !== 1 ? 's' : ''} — no single editor records a real ` +
+				`sentiment score, but repeated back-to-back pushback is the closest local signal we have to "this conversation is going badly". ` +
+				`When you see this, it's often faster to stop, restate the goal or constraint clearly, and start a fresh turn than to keep correcting course. ` +
+				`See the Corrections tab (moments marked 📈) for exactly where.`;
+		},
+		actionLabel: 'View Corrections',
+		actionCommand: 'aiEngineeringFluency.openCorrectionsTab',
+		appliesTo: (ctx) => (ctx.last30Days.corrections?.escalatedUserCorrections ?? 0) >= 2,
+		weight: 60,
+	},
+	{
+		id: 'repeated-task-skill-candidate',
+		category: 'customization',
+		severity: 'opportunity',
+		title: '🧩 You keep prompting for the same task — make it a skill',
+		buildBody: (ctx) => {
+			const top = ctx.repeatedTasks?.clusters[0];
+			const count = top?.sessionCount ?? 0;
+			const prompt = top?.representativePrompt ?? '';
+			const more = (ctx.repeatedTasks?.clusters.length ?? 1) - 1;
+			return `You started ${count} sessions with a similar prompt: "${prompt}". ` +
+				`Turning a repeated task like this into a skill or prompt file saves you from re-explaining it and makes the outcome more consistent. ` +
+				(more > 0
+					? `${more} more repeated task${more !== 1 ? 's' : ''} found — see Tools & Integrations → Skill Suggestions.`
+					: `See Tools & Integrations → Skill Suggestions for details.`);
+		},
+		actionLabel: 'View Skill Suggestions',
+		actionCommand: 'aiEngineeringFluency.openToolsTab',
+		appliesTo: (ctx) => (ctx.repeatedTasks?.clusters[0]?.sessionCount ?? 0) >= 3,
+		weight: 60,
+	},
 ];
 
 // ---------------------------------------------------------------------------
@@ -1163,6 +1546,8 @@ export function evaluateInsights(
 				body: def.buildBody(ctx),
 				actionLabel: typeof def.actionLabel === 'function' ? def.actionLabel(ctx) : def.actionLabel,
 				actionCommand: typeof def.actionCommand === 'function' ? def.actionCommand(ctx) : def.actionCommand,
+				secondaryActionLabel: typeof def.secondaryActionLabel === 'function' ? def.secondaryActionLabel(ctx) : def.secondaryActionLabel,
+				secondaryActionCommand: typeof def.secondaryActionCommand === 'function' ? def.secondaryActionCommand(ctx) : def.secondaryActionCommand,
 				status,
 				allowToast: def.allowToast,
 			};

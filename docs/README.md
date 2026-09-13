@@ -1,7 +1,7 @@
 ---
 title: Documentation Index
 created: 2026-01-19
-updated: 2026-05-15
+updated: 2026-09-05
 status: active
 type: reference
 tags: [documentation, index]
@@ -22,6 +22,8 @@ Essential reference documents covering the data model, scoring rules, and tracke
 | [TRACKABLE-DATA.md](TRACKABLE-DATA.md) | All metrics extractable from GitHub Copilot Chat session logs |
 | [USAGE-ANALYSIS.md](USAGE-ANALYSIS.md) | Guide to the Usage Analysis Dashboard features and tracked metrics |
 | [COPILOT-CLI-FORMAT-CHANGES.md](COPILOT-CLI-FORMAT-CHANGES.md) | Breaking changes to Copilot CLI session log format and their impact |
+| [COPILOT-CLI-OTEL-EXPORT.md](COPILOT-CLI-OTEL-EXPORT.md) | Enabling Copilot CLI's OpenTelemetry file export for exact token counts |
+| [VALIDATION.md](VALIDATION.md) | What each check catches, and the one-command release preflight (`npm run preflight`) |
 
 ## Component Documentation
 
@@ -31,8 +33,11 @@ Per-component guides and READMEs.
 |---|---|
 | [cli/](cli/README.md) | CLI tool — commands, options, and development guide |
 | [vscode-extension/](vscode-extension/README.md) | VS Code extension guide |
+| [vscode-extension/DESIGN.md](vscode-extension/DESIGN.md) | VS Code extension UI design system (DESIGN.md spec) |
+| [vscode-extension/WEBVIEW-MESSAGING.md](vscode-extension/WEBVIEW-MESSAGING.md) | How data reaches a webview panel: trust model, readiness/replay, diagnostics, companion-extension impact |
 | [visual-studio/](visual-studio/README.md) | Visual Studio extension guide |
-| [sharing-server/](sharing-server/README.md) | Sharing server guide |
+| [sharing-server/](sharing-server/README.md) | Sharing server setup, personal dashboard and Team Insights |
+| [Sharing server data separation contract](../sharing-server/AGENTS.md) | Authoritative server privacy, comparison semantics and coding/testing requirements |
 | [specs/backend.md](specs/backend.md) | Backend API specification |
 | [specs/nonCopilotFilesDetection.md](specs/nonCopilotFilesDetection.md) | Non-Copilot file detection spec |
 
@@ -46,6 +51,8 @@ Documentation and JSON schemas for Copilot session log file formats across diffe
 | [logFilesSchema/SCHEMA-ANALYSIS.md](logFilesSchema/SCHEMA-ANALYSIS.md) | Quick reference — field-level schema analysis |
 | [logFilesSchema/VSCODE-VARIANTS.md](logFilesSchema/VSCODE-VARIANTS.md) | VS Code variant support details |
 | [logFilesSchema/gemini-cli-session-format.md](logFilesSchema/gemini-cli-session-format.md) | Gemini CLI JSONL session format (Windows) |
+| [logFilesSchema/vscode-chat-debug-log-format.md](logFilesSchema/vscode-chat-debug-log-format.md) | VS Code Copilot Chat debug log — exact tokens and the AI Unit billing path |
+| [logFilesSchema/hydrafusion-routing-events.md](logFilesSchema/hydrafusion-routing-events.md) | HydraFusion routing events in Copilot CLI logs — which models ran behind one answer, and what each leg cost |
 | [logFilesSchema/session-file-schema.json](logFilesSchema/session-file-schema.json) | Manual schema documentation (JSON) |
 | [logFilesSchema/session-file-schema-analysis.json](logFilesSchema/session-file-schema-analysis.json) | Auto-generated schema analysis (JSON) |
 
@@ -71,6 +78,13 @@ Detailed documentation for individual features.
 | [features/FLUENCY-LEVEL-VIEWER-UI-MOCKUP.md](features/FLUENCY-LEVEL-VIEWER-UI-MOCKUP.md) | UI mockup for the Fluency Level Viewer |
 | [features/THEMING_CHANGES.md](features/THEMING_CHANGES.md) | Light theme support implementation details |
 | [features/TOOL-CURATION.md](features/TOOL-CURATION.md) | Tool Curation — surface unused MCP servers and stale skills |
+| [features/MODEL-EFFICIENCY-COMPARISON.md](features/MODEL-EFFICIENCY-COMPARISON.md) | Models tab — compare two models, or one model across two periods |
+| [features/CORRECTIONS.md](features/CORRECTIONS.md) | Corrections tab — detect moments where the agent or the user had to correct the conversation |
+| [features/REPEATED-TASKS.md](features/REPEATED-TASKS.md) | Skill Suggestions — find tasks you keep prompting for across sessions and turn them into skills |
+| [features/CLOUD-AGENT-COST.md](features/CLOUD-AGENT-COST.md) | Cloud Agent tab — per-repository AI credits, and the hourly cached snapshot behind it |
+| [features/DARK-FACTORY-READINESS.md](features/DARK-FACTORY-READINESS.md) | Dark Factory Readiness — per-repository governance control scan on the Fluency Score view |
+| [features/TTFT-TRENDS.md](features/TTFT-TRENDS.md) | Research > TTFT diagnostics tab — time-to-first-token averages and per-model trendlines from VS Code Chat's debug log |
+| [features/WHATS-NEW.md](features/WHATS-NEW.md) | What's New view and the one-a-day new-feature notification — the release catalog, view-visit tracking, and the pacing rules |
 
 ## Architecture Decision Records (ADR)
 
@@ -83,3 +97,4 @@ Implementation notes and decisions captured during development sessions.
 | [adr/IMPLEMENTATION-SUMMARY-SOCIAL-SHARE.md](adr/IMPLEMENTATION-SUMMARY-SOCIAL-SHARE.md) | Social media share feature implementation summary |
 | [adr/FLUENCY-DATA-IMPLEMENTATION.md](adr/FLUENCY-DATA-IMPLEMENTATION.md) | Fluency data cloud upload — gap analysis and plan |
 | [adr/PR_SUMMARY.md](adr/PR_SUMMARY.md) | PR summary: comprehensive light theme support |
+| [adr/SQLITE-WAL-READS.md](adr/SQLITE-WAL-READS.md) | Why sql.js reads of data.db/opencode.db must merge pending WAL frames first |

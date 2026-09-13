@@ -23,14 +23,14 @@ jobs:
 
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Validate Gradle wrapper JAR
-        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
           min-wrapper-count: 1

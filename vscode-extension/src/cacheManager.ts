@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFileSync } from 'child_process';
 import type { SessionFileCache } from '../../src/types';
 import { type CachePolicy, VsCodeCachePolicy } from '../../src/cachePolicy';
 
@@ -16,11 +17,23 @@ export interface CacheManagerDeps {
 }
 
 export class CacheManager {
+	private static readonly SNAPSHOT_SCHEMA_VERSION = 1;
+	private static readonly SNAPSHOT_MAX_ENTRIES = 20_000;
+
+	// Checkpoint constants: save every N new entries or every M milliseconds, whichever comes first
+	private static readonly CHECKPOINT_NEW_ENTRIES_THRESHOLD = 100;
+	private static readonly CHECKPOINT_INTERVAL_MS = 20_000;
+
 	private sessionFileCache: Map<string, SessionFileCache> = new Map();
 	private readonly context: vscode.ExtensionContext;
 	private readonly deps: CacheManagerDeps;
 	private readonly cacheVersion: number;
 	private readonly policy: CachePolicy<SessionFileCache>;
+	private lastLoadedSnapshotMtime = 0;
+	// Checkpoint tracking
+	private lastCheckpointTime = 0;
+	private entriesSinceLastCheckpoint = 0;
+	private checkpointInProgress = false;
 
 	constructor(
 		context: vscode.ExtensionContext,
@@ -57,13 +70,18 @@ export class CacheManager {
 
 	/**
 	 * Sets the cache entry for a session file, including file size.
+	 * Also tracks new entries for checkpointing purposes.
 	 */
-	setCachedSessionData(filePath: string, data: SessionFileCache, fileSize?: number): void {
+	setCachedSessionData(filePath: string, data: SessionFileCache, fileSize?: number, isNewEntry: boolean = false): void {
 		if (typeof fileSize === 'number') {
 			data.size = fileSize;
 		}
+		const isActualNewEntry = isNewEntry && !this.sessionFileCache.has(filePath);
 		this.sessionFileCache.set(filePath, data);
 		this.policy.evict(this.sessionFileCache);
+		if (isActualNewEntry) {
+			this.entriesSinceLastCheckpoint++;
+		}
 	}
 
 	async clearExpiredCache(): Promise<void> {
@@ -84,21 +102,107 @@ export class CacheManager {
 	}
 
 	/**
+	 * Check if a checkpoint save should be triggered based on time or entry count thresholds.
+	 * Returns true if checkpoint was triggered.
+	 */
+	maybeCheckpointCache(): boolean {
+		const now = Date.now();
+		const timeElapsed = now - this.lastCheckpointTime;
+		const entriesThresholdReached = this.entriesSinceLastCheckpoint >= CacheManager.CHECKPOINT_NEW_ENTRIES_THRESHOLD;
+		const timeThresholdReached = timeElapsed >= CacheManager.CHECKPOINT_INTERVAL_MS;
+
+		if ((entriesThresholdReached || timeThresholdReached) && !this.checkpointInProgress) {
+			this.checkpointInProgress = true;
+			void this.checkpointCacheInternal().finally(() => {
+				this.checkpointInProgress = false;
+			});
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Internal method to perform the checkpoint save.
+	 */
+	private async checkpointCacheInternal(): Promise<void> {
+		const now = Date.now();
+		const entriesCount = this.entriesSinceLastCheckpoint;
+		this.deps.log(`Checkpointing cache: ${entriesCount} new entries since last checkpoint (${((now - this.lastCheckpointTime) / 1000).toFixed(1)}s elapsed)`);
+
+		try {
+			await this.saveCacheToStorage();
+			this.lastCheckpointTime = now;
+			this.entriesSinceLastCheckpoint = 0;
+		} catch (error) {
+			this.deps.warn(`Checkpoint cache save failed: ${error}`);
+		}
+	}
+
+	/**
+	 * Reset checkpoint counters (call this at the start of a new refresh cycle).
+	 */
+	resetCheckpointCounters(): void {
+		this.lastCheckpointTime = Date.now();
+		this.entriesSinceLastCheckpoint = 0;
+		this.checkpointInProgress = false;
+	}
+
+	/**
 	 * Generate a cache identifier based on VS Code extension mode.
 	 * VS Code editions (stable vs insiders) already have separate globalState storage,
 	 * so we only need to distinguish between production and development (debug) mode.
-	 * In development mode, each VS Code window gets a unique cache identifier using
-	 * the session ID, preventing the Extension Development Host from sharing/fighting
-	 * with the main dev window's cache.
+	 * The identifier is stable across Extension Development Host launches (it is not
+	 * derived from vscode.env.sessionId, which changes every F5/debug run and every
+	 * fresh worktree). This lets consecutive debug sessions reuse the same on-disk
+	 * snapshot instead of re-parsing all session files from scratch every time, while
+	 * still keeping debug-mode data isolated from the 'prod' snapshot used by real
+	 * installs. Cache invalidation across debug runs is driven by content, not
+	 * identity: a schemaVersion/cacheVersion mismatch (see loadCacheFromStorage) still
+	 * clears the cache whenever the on-disk shape or parsing logic actually changes.
+	 * Concurrent debug windows (e.g. multiple worktrees debugged at once) share this
+	 * identifier safely via the same leader-election/lock coordination used for
+	 * multiple production windows — see acquireRefreshLock().
 	 */
 	getCacheIdentifier(): string {
 		if (this.context.extensionMode === vscode.ExtensionMode.Development) {
-			// Use a short hash of the session ID to keep the key short but unique per window
-			const sessionId = vscode.env.sessionId;
-			const hash = sessionId.substring(0, 8);
-			return `dev-${hash}`;
+			return 'dev';
 		}
 		return 'prod';
+	}
+
+	/**
+	 * Deletes legacy per-session dev-mode cache/lock files (e.g. `cache_dev-<hash>.snapshot.json`)
+	 * left behind by older versions of the extension, which used to mint a new dev-<hash>
+	 * identifier per Extension Development Host launch — orphaning every past debug session's
+	 * snapshot once that window closed. getCacheIdentifier() now returns a stable 'dev'
+	 * identifier, so no new files matching this legacy pattern are created; this cleanup only
+	 * reclaims leftovers from before that change. Only touches files older than
+	 * STALE_DEV_CACHE_AGE_MS, so the current and any still-running sessions' files are never at
+	 * risk. Best-effort: failures (e.g. a file locked by another window) are swallowed, not surfaced.
+	 */
+	async cleanupStaleDevCacheFiles(): Promise<void> {
+		if (this.context.extensionMode !== vscode.ExtensionMode.Development) { return; }
+		const STALE_DEV_CACHE_AGE_MS = 24 * 60 * 60 * 1000;
+		const dir = this.context.globalStorageUri.fsPath;
+		try {
+			const entries = await fs.promises.readdir(dir);
+			const now = Date.now();
+			let removedCount = 0;
+			for (const name of entries) {
+				if (!/^(cache|refresh|agenttasks|repoprs)_dev-[0-9a-f]+\.(snapshot\.json|lock)$/.test(name)) { continue; }
+				const filePath = path.join(dir, name);
+				try {
+					const stat = await fs.promises.stat(filePath);
+					if (now - stat.mtimeMs > STALE_DEV_CACHE_AGE_MS) {
+						await fs.promises.unlink(filePath);
+						removedCount++;
+					}
+				} catch { /* file removed/locked concurrently — skip */ }
+			}
+			if (removedCount > 0) {
+				this.deps.log(`Cleaned up ${removedCount} stale dev cache file(s) from previous debug sessions`);
+			}
+		} catch { /* globalStorage dir missing or unreadable — nothing to clean up */ }
 	}
 
 	/**
@@ -122,6 +226,29 @@ export class CacheManager {
 	}
 
 	/**
+	 * Get the path for the agent-tasks refresh lock file.
+	 * Held by the single window that refreshes the hourly Copilot cloud-agent snapshot from the
+	 * GitHub API, so the other windows never duplicate those API calls. Kept separate from the
+	 * cache-refresh leader lock because the two run on different schedules.
+	 */
+	getAgentTasksLockPath(): string {
+		const cacheId = this.getCacheIdentifier();
+		return path.join(this.context.globalStorageUri.fsPath, `agenttasks_${cacheId}.lock`);
+	}
+
+	/**
+	 * Get the path for the repository-PRs refresh lock file.
+	 * Held by the single window that refreshes the hourly Repository PRs snapshot from the
+	 * GitHub API, so the other windows never duplicate those API calls. Kept separate from the
+	 * cache-refresh leader lock and the agent-tasks lock because all three run on independent
+	 * schedules and cost independent sets of GitHub API calls.
+	 */
+	getRepoPrLockPath(): string {
+		const cacheId = this.getCacheIdentifier();
+		return path.join(this.context.globalStorageUri.fsPath, `repoprs_${cacheId}.lock`);
+	}
+
+	/**
 	 * Acquire an exclusive file lock for cache writes.
 	 * Uses atomic file creation (O_EXCL / CREATE_NEW) to prevent concurrent writes
 	 * across multiple VS Code windows of the same edition.
@@ -129,6 +256,40 @@ export class CacheManager {
 	 */
 	async acquireCacheLock(): Promise<boolean> {
 		return this.acquireLock(this.getCacheLockPath());
+	}
+
+	/**
+	 * Try to become the window that refreshes the agent-tasks snapshot. Returns false when another
+	 * window is already refreshing it, in which case this window serves the shared snapshot.
+	 */
+	async acquireAgentTasksLock(): Promise<boolean> {
+		return this.acquireLock(this.getAgentTasksLockPath());
+	}
+
+	/** Release the agent-tasks refresh lock, but only if we own it. */
+	async releaseAgentTasksLock(): Promise<void> {
+		return this.releaseLock(this.getAgentTasksLockPath());
+	}
+
+	/**
+	 * Try to become the window that refreshes the repository-PRs snapshot. Returns false when
+	 * another window is already refreshing it, in which case this window serves the shared snapshot.
+	 */
+	async acquireRepoPrLock(): Promise<boolean> {
+		return this.acquireLock(this.getRepoPrLockPath());
+	}
+
+	/** Release the repository-PRs refresh lock, but only if we own it. */
+	async releaseRepoPrLock(): Promise<void> {
+		return this.releaseLock(this.getRepoPrLockPath());
+	}
+
+	/**
+	 * Renew (heartbeat) the repository-PRs lock so a slow GitHub API pass is not mistaken for a
+	 * stale lock by another window, which would let it duplicate the same API calls.
+	 */
+	async renewRepoPrLock(): Promise<boolean> {
+		return this.renewLock(this.getRepoPrLockPath());
 	}
 
 	/**
@@ -146,7 +307,19 @@ export class CacheManager {
 	 * Returns true if the lock is still owned by us after the renew attempt.
 	 */
 	async renewRefreshLock(): Promise<boolean> {
-		const lockPath = this.getRefreshLockPath();
+		return this.renewLock(this.getRefreshLockPath());
+	}
+
+	/**
+	 * Renew (heartbeat) the agent-tasks lock so a slow GitHub API pass is not mistaken for a stale
+	 * lock by another window, which would let it duplicate the same API calls.
+	 */
+	async renewAgentTasksLock(): Promise<boolean> {
+		return this.renewLock(this.getAgentTasksLockPath());
+	}
+
+	/** Refresh a lock file's timestamp, but only while this window still owns it. */
+	private async renewLock(lockPath: string): Promise<boolean> {
 		try {
 			const content = await fs.promises.readFile(lockPath, 'utf-8');
 			const lock = JSON.parse(content);
@@ -189,9 +362,11 @@ export class CacheManager {
 
 	private async writeLockFile(lockPath: string): Promise<boolean> {
 		try {
-			const fd = await fs.promises.open(lockPath, 'wx');
-			await fd.writeFile(JSON.stringify({ sessionId: vscode.env.sessionId, pid: process.pid, timestamp: Date.now() }));
-			await fd.close();
+			await fs.promises.writeFile(
+				lockPath,
+				JSON.stringify({ sessionId: vscode.env.sessionId, pid: process.pid, timestamp: Date.now() }),
+				{ flag: 'wx' },
+			);
 			return true;
 		} catch (err: unknown) {
 			if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'EEXIST') { throw err; }
@@ -203,19 +378,59 @@ export class CacheManager {
 		if (typeof pid !== 'number') { return true; }
 		try {
 			process.kill(pid, 0);
-			return true;
 		} catch (killErr: unknown) {
 			if (killErr instanceof Error && (killErr as NodeJS.ErrnoException).code === 'ESRCH') {
 				return false; // Process no longer exists
 			}
 			return true; // EPERM means process exists but is owned by another user
 		}
+		// A PID being alive is not enough on its own: Windows reuses PIDs
+		// aggressively, so after a reboot or crash a stale lock can appear "owned" by
+		// an unrelated new process, forcing every window into follower mode. On
+		// Windows, only treat the lock as live when the PID's image is an
+		// Electron-family host OR the current process itself (tests / same-process
+		// re-acquire). A live but clearly-foreign image (e.g. cmd.exe) means the
+		// PID was recycled and the lock is stale.
+		if (process.platform === 'win32') {
+			return pid === process.pid || this.isWindowsHostProcess(pid);
+		}
+		return true;
+	}
+
+	/**
+	 * Windows-only check that a PID belongs to a VS Code/Electron host process.
+	 * Uses tasklist's CSV output; on any failure we assume the owner is alive so
+	 * we never break a lock that is genuinely in use.
+	 */
+	private isWindowsHostProcess(pid: number): boolean {
+		try {
+			const out = execFileSync(
+				'tasklist',
+				['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'],
+				{ encoding: 'utf-8', timeout: 5000, windowsHide: true },
+			);
+			// No match → "INFO: No tasks are running which match the specified criteria."
+			if (!out.startsWith('"')) { return false; }
+			const image = (out.split('","')[0] ?? '').replace(/^"/, '').toLowerCase();
+			return /code|codium|electron|windsurf|cursor|kiro|antigravity|vibe|tray/.test(image);
+		} catch {
+			return true; // Can't verify — err on the side of not breaking the lock
+		}
 	}
 
 	private async handleExistingLock(lockPath: string): Promise<boolean> {
 		try {
 			const content = await fs.promises.readFile(lockPath, 'utf-8');
-			const lock = JSON.parse(content);
+			const lock = this.parseLockContent(content);
+			if (!lock) {
+				// Corrupt/empty lock (e.g. owner killed between atomic create and
+				// write). The staleness checks below can never run on unparseable
+				// content, so without this branch the file would block every
+				// acquire attempt forever, forcing all windows into follower mode.
+				this.deps.log('Breaking corrupt cache lock (unparseable content)');
+				await fs.promises.unlink(lockPath);
+				return this.writeLockFile(lockPath);
+			}
 			const staleThreshold = 5 * 60 * 1000;
 			const ownerAlive = this.checkOwnerAlive(lock.pid);
 			const isTimestampStale = Date.now() - lock.timestamp > staleThreshold;
@@ -228,6 +443,16 @@ export class CacheManager {
 			// Can't read lock file — might have been deleted by the owner already
 		}
 		return false;
+	}
+
+	private parseLockContent(content: string): { sessionId?: unknown; pid?: unknown; timestamp: number } | undefined {
+		try {
+			const lock = JSON.parse(content);
+			if (!lock || typeof lock !== 'object' || typeof lock.timestamp !== 'number') { return undefined; }
+			return lock;
+		} catch {
+			return undefined;
+		}
 	}
 
 	/**
@@ -259,6 +484,7 @@ export class CacheManager {
 	 * Also removes any legacy cache data from globalState as a one-time migration.
 	 */
 	async loadCacheFromStorage(): Promise<void> {
+		const loadStartedAt = Date.now();
 		try {
 			const cacheId = this.getCacheIdentifier();
 
@@ -297,7 +523,7 @@ export class CacheManager {
 				this.sessionFileCache = new Map(
 					Object.entries(envelope.entries as Record<string, SessionFileCache>),
 				);
-				this.deps.log(`Loaded ${this.sessionFileCache.size} cached session files from disk snapshot (${cacheId})`);
+				this.deps.log(`Loaded ${this.sessionFileCache.size} cached session files from disk snapshot (${cacheId}) in ${Date.now() - loadStartedAt}ms`);
 
 				// Record the snapshot mtime so loadSharedSnapshotIfChanged won't reload it redundantly.
 				try {
@@ -384,15 +610,6 @@ export class CacheManager {
 	// edition). Writes are atomic (temp file + rename) so readers never observe a
 	// partially written file.
 	// ---------------------------------------------------------------------------
-
-	/** Schema version for the snapshot envelope; bump on incompatible shape changes. */
-	private static readonly SNAPSHOT_SCHEMA_VERSION = 1;
-
-	/** Upper bound on entries kept in the shared snapshot (newest by mtime). */
-	private static readonly SNAPSHOT_MAX_ENTRIES = 5000;
-
-	/** mtime (ms) of the snapshot file the last time this window loaded it. */
-	private lastLoadedSnapshotMtime = 0;
 
 	getSharedSnapshotPath(): string {
 		const cacheId = this.getCacheIdentifier();
@@ -509,6 +726,7 @@ export class CacheManager {
 	 * Returns the number of entries merged.
 	 */
 	async loadSharedSnapshotIfChanged(): Promise<number> {
+		const loadStartedAt = Date.now();
 		const snapshotPath = this.getSharedSnapshotPath();
 		let mtimeMs: number;
 		try {
@@ -529,7 +747,7 @@ export class CacheManager {
 		const merged = this.mergeSnapshotEntries(entries);
 		this.lastLoadedSnapshotMtime = mtimeMs;
 		if (merged > 0) {
-			this.deps.log(`Warmed cache from shared snapshot: merged ${merged} entr${merged === 1 ? 'y' : 'ies'}`);
+			this.deps.log(`Warmed cache from shared snapshot: merged ${merged} entr${merged === 1 ? 'y' : 'ies'} in ${Date.now() - loadStartedAt}ms`);
 		}
 		return merged;
 	}

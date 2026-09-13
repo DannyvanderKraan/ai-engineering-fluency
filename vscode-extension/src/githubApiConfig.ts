@@ -3,8 +3,116 @@
  * Used by agentSessionsService.ts and githubPrService.ts.
  */
 
-/** GitHub REST API hostname. */
+import * as vscode from 'vscode';
+import type * as http from 'http';
+
+/** GitHub REST API hostname for github.com (the default, used when no enterprise URI is configured). */
 export const GITHUB_API_HOSTNAME = 'api.github.com';
+
+/** Where to reach a configured GitHub host: hostname for REST calls, REST path prefix, and GraphQL path. */
+export interface GitHubApiEndpoints {
+	/** REST API hostname, e.g. `api.github.com` or `api.tenant.ghe.com`. */
+	hostname: string;
+	/** Path prefix prepended to REST paths — empty for github.com/GHE.com, `/api/v3` for on-prem GitHub Enterprise Server. */
+	restPathPrefix: string;
+	/** GraphQL endpoint path — `/graphql` for github.com/GHE.com, `/api/graphql` for on-prem GitHub Enterprise Server. */
+	graphQlPath: string;
+}
+
+const GITHUB_DOT_COM_ENDPOINTS: GitHubApiEndpoints = {
+	hostname: GITHUB_API_HOSTNAME,
+	restPathPrefix: '',
+	graphQlPath: '/graphql',
+};
+
+/**
+ * Derive the GitHub API endpoints for an optional GitHub Enterprise base URI, mirroring the same
+ * derivation VS Code's own built-in GitHub Authentication provider (and the `github-enterprise.uri`
+ * setting) uses to decide which host to authenticate against:
+ *
+ * - unset / empty / unparseable / a github.com URI → github.com defaults.
+ * - GitHub Enterprise Cloud with data residency (authority ends in `.ghe.com`, e.g. `octocat.ghe.com`)
+ *   → REST API on an `api.` subdomain (`https://api.octocat.ghe.com`), same paths as github.com.
+ * - GitHub Enterprise Server (on-prem, any other host) → REST under `/api/v3`, GraphQL under `/api/graphql`.
+ *
+ * Pure function (no VS Code dependency) so it can be unit tested directly.
+ */
+export function deriveGitHubApiEndpoints(enterpriseUri: string | undefined): GitHubApiEndpoints {
+	if (!enterpriseUri) { return GITHUB_DOT_COM_ENDPOINTS; }
+
+	let url: URL;
+	try {
+		url = new URL(enterpriseUri);
+	} catch {
+		return GITHUB_DOT_COM_ENDPOINTS;
+	}
+
+	const authority = url.host;
+	if (!authority || authority === 'github.com' || authority === 'www.github.com' || authority === 'api.github.com') {
+		return GITHUB_DOT_COM_ENDPOINTS;
+	}
+
+	const isGheCloud = /\.ghe\.com$/i.test(authority);
+	return isGheCloud
+		? { hostname: `api.${authority}`, restPathPrefix: '', graphQlPath: '/graphql' }
+		: { hostname: authority, restPathPrefix: '/api/v3', graphQlPath: '/api/graphql' };
+}
+
+/**
+ * Read the user's configured GitHub Enterprise URI, if any (the same `github-enterprise.uri` setting
+ * VS Code's built-in GitHub Authentication provider uses). Set this to authenticate against and query
+ * a GHE.com or GitHub Enterprise Server instance instead of github.com.
+ */
+export function getConfiguredGitHubEnterpriseUri(): string | undefined {
+	return vscode.workspace.getConfiguration().get<string>('github-enterprise.uri') || undefined;
+}
+
+/**
+ * Derive the *web* origin (for building `https://host/owner/repo`-style links, as opposed to the
+ * REST API host from `deriveGitHubApiEndpoints`) for an optional GitHub Enterprise base URI.
+ * Unlike the API host, the web host never gets an `api.` prefix or an `/api/v3` path — both GHE.com
+ * and on-prem GitHub Enterprise Server serve their web UI from the same host the user configured.
+ *
+ * Pure function (no VS Code dependency) so it can be unit tested directly.
+ */
+export function deriveGitHubWebOrigin(enterpriseUri: string | undefined): string {
+	const GITHUB_DOT_COM_ORIGIN = 'https://github.com';
+	if (!enterpriseUri) { return GITHUB_DOT_COM_ORIGIN; }
+
+	let url: URL;
+	try {
+		url = new URL(enterpriseUri);
+	} catch {
+		return GITHUB_DOT_COM_ORIGIN;
+	}
+
+	const authority = url.host;
+	if (!authority || authority === 'github.com' || authority === 'www.github.com' || authority === 'api.github.com') {
+		return GITHUB_DOT_COM_ORIGIN;
+	}
+	return `${url.protocol}//${authority}`;
+}
+
+/** The GitHub web origin to use for building repo/PR links for the current configuration. */
+export function getConfiguredGitHubWebOrigin(): string {
+	return deriveGitHubWebOrigin(getConfiguredGitHubEnterpriseUri());
+}
+
+/** The GitHub API endpoints to use for the current configuration (github.com, GHE.com, or GHES). */
+export function getGitHubApiEndpoints(): GitHubApiEndpoints {
+	return deriveGitHubApiEndpoints(getConfiguredGitHubEnterpriseUri());
+}
+
+/**
+ * The `vscode.authentication` provider ID to use for the current configuration. VS Code ships two
+ * built-in GitHub auth providers: `github` (authenticates against github.com) and
+ * `github-enterprise` (authenticates against the host configured via `github-enterprise.uri`).
+ * This mirrors `getGitHubApiEndpoints()` so the auth provider decision is always consistent with
+ * the API host we end up calling.
+ */
+export function getGitHubAuthProviderId(): string {
+	return getGitHubApiEndpoints().hostname === GITHUB_API_HOSTNAME ? 'github' : 'github-enterprise';
+}
 
 /** User-Agent header value sent with all GitHub API requests. */
 export const GITHUB_API_USER_AGENT = 'copilot-token-tracker';
@@ -26,4 +134,58 @@ export function buildGitHubApiHeaders(token: string): Record<string, string> {
 		Accept: GITHUB_API_ACCEPT_V3,
 		'X-GitHub-Api-Version': GITHUB_API_VERSION,
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Low-level request failure handling shared by every GitHub HTTPS request
+// ---------------------------------------------------------------------------
+
+/**
+ * Marker stamped on the synthetic error passed to `req.destroy()` when our own socket-inactivity
+ * timeout fires, so the paired `'error'` handler can tell it apart from a genuine transport
+ * failure (DNS resolution, TLS handshake, connection reset/refused, ...). `req.destroy(err)`
+ * re-emits `err` on the request's `'error'` event, so both paths land in the same listener.
+ */
+const INACTIVITY_TIMEOUT_MARKER = Symbol('inactivityTimeout');
+
+type MarkedError = NodeJS.ErrnoException & { [INACTIVITY_TIMEOUT_MARKER]?: true };
+
+/**
+ * Attaches error/timeout handling to an in-flight `http(s).ClientRequest`, reporting an accurate,
+ * distinguishable failure reason via `onFailure` instead of a single generic "timed out" string.
+ *
+ * Two distinct failure classes are reported differently:
+ *
+ * - **Socket inactivity**: no bytes exchanged for `timeoutMs`. Node's per-socket idle timer can
+ *   fire well before `timeoutMs` of THIS request's own lifetime has elapsed — e.g. when the
+ *   request reuses a keep-alive connection whose idle clock had already been running before this
+ *   request began. Reporting the configured limit here would be actively misleading, so this
+ *   reports the REAL elapsed time since the request was created instead.
+ * - **Any other transport failure** (DNS, TLS, ECONNRESET, ECONNREFUSED, ...): reported with its
+ *   real `error.code` and message, not folded into the timeout wording.
+ *
+ * Only the first failure is reported — once a request has failed once it will not report again.
+ */
+export function attachRequestFailureHandling(
+	req: http.ClientRequest,
+	timeoutMs: number,
+	onFailure: (message: string) => void,
+): void {
+	const startedAt = Date.now();
+	let settled = false;
+	req.on('error', (e: MarkedError) => {
+		if (settled) { return; }
+		settled = true;
+		const elapsedS = ((Date.now() - startedAt) / 1000).toFixed(1);
+		if (e[INACTIVITY_TIMEOUT_MARKER]) {
+			onFailure(`No response for ${elapsedS}s (socket inactivity limit ${(timeoutMs / 1000).toFixed(0)}s)`);
+			return;
+		}
+		onFailure(`Connection failed after ${elapsedS}s${e.code ? ` (${e.code})` : ''}: ${e.message}`);
+	});
+	req.setTimeout(timeoutMs, () => {
+		const err: MarkedError = new Error('Socket inactivity timeout');
+		err[INACTIVITY_TIMEOUT_MARKER] = true;
+		req.destroy(err);
+	});
 }

@@ -13,13 +13,16 @@ import { isMcpTool, extractMcpServerName } from '../../src/workspaceHelpers';
 import { resolveFileUri } from '../../src/workspacePathResolver';
 import { parseSessionFileContent } from '../../src/sessionParser';
 import { estimateTokensFromText, getModelFromRequest, isJsonlContent, estimateTokensFromJsonlSession, calculateEstimatedCost, extractAllTokensFromDebugLog } from '../../src/tokenEstimation';
+import { extractCopilotCliSessionId, getCopilotCliExactUsage } from '../../src/copilotCliOtel';
 import { extractDailyFractions } from '../../src/dailyAttribution';
 import { toLocalDayKey } from '../../src/utils/dayKeys';
 import { isJetBrainsSessionPath } from '../../src/adapters/adapterPredicates';
 import { parseJetBrainsPartition } from '../../src/jetbrains';
-import type { DetailedStats, ModelUsage, UsageAnalysisStats, WorkspaceCustomizationMatrix } from '../../src/types';
+import type { DetailedStats, ModelUsage, UsageAnalysisStats, WorkspaceCustomizationMatrix, TodaySessionSummary } from '../../src/types';
 import { analyzeSessionUsage, mergeUsageAnalysis, getModelUsageFromSession } from '../../src/usageAnalysis';
+import { addModelUsage, scaleModelUsage, preserveAutoRouting, reconcileModelUsageToActualTokens } from '../../src/statsHelpers';
 import { withErrorRecovery } from '../../src/utils/errors';
+import { buildRecentSessionBuckets, type RecentSessionBucketItem } from '../../src/recentSessions';
 import * as vscodeStub from './vscode-stub';
 import { loadCache, saveCache, disableCache, getCached, setCached, getCacheStats } from './cliCache';
 import { ENVIRONMENTAL } from './constants';
@@ -319,7 +322,8 @@ export async function processSessionFile(filePath: string, verbose = false): Pro
 		let fileModelUsage: ModelUsage = {};
 
 		if (isJsonl) {
-			const result = estimateTokensFromJsonlSession(content);
+			const exactUsage = extractCopilotCliSessionId(filePath) ? await getCopilotCliExactUsage(filePath) : null;
+			const result = estimateTokensFromJsonlSession(content, exactUsage);
 			// Prefer actualTokens (from session.shutdown modelMetrics) over estimated tokens,
 			// matching VS Code's logic: actualTokens > 0 ? actualTokens : estimatedTokens
 			tokens = result.actualTokens > 0 ? result.actualTokens : result.tokens;
@@ -348,9 +352,15 @@ export async function processSessionFile(filePath: string, verbose = false): Pro
 					fileModelUsage = jbResult.modelUsage;
 				} else if (jbResult.tokens > 0) {
 					const modelKey = jbResult.modelHint && jbResult.modelHint !== 'unknown' ? jbResult.modelHint : 'unknown';
-					fileModelUsage = { [modelKey]: { inputTokens: jbResult.tokens, outputTokens: 0 } };
+					fileModelUsage = { [modelKey]: { inputTokens: jbResult.tokens, outputTokens: 0, sessions: 0 } };
 				}
 			}
+
+			// Reconcile the per-model breakdown to the session total so Input+Output never
+			// exceeds Total in CLI reports. Event-based sessions (Copilot CLI without exact
+			// usage, JetBrains, …) derive actualTokens from real output while modelUsage
+			// derives input from accumulated message content; those heuristics can diverge.
+			fileModelUsage = reconcileModelUsageToActualTokens(fileModelUsage, actualTokens || tokens);
 
 			// Count interactions from JSONL
 			const lines = content.trim().split('\n');
@@ -375,7 +385,11 @@ export async function processSessionFile(filePath: string, verbose = false): Pro
 			thinkingTokens = result.thinkingTokens;
 			actualTokens = result.actualTokens;
 			interactions = result.interactions;
-			fileModelUsage = result.modelUsage as ModelUsage;
+			fileModelUsage = await getModelUsageFromSession(
+				{ warn, tokenEstimators, modelPricing, ecosystems: getEcosystems() },
+				filePath,
+				content
+			);
 		}
 
 		const dailyFractions = extractDailyFractions(content, isJsonl, stats.mtime);
@@ -389,10 +403,12 @@ export async function processSessionFile(filePath: string, verbose = false): Pro
 			tokens = debugLogTokens.inputTokens + debugLogTokens.outputTokens;
 			actualTokens = tokens;
 			if (Object.keys(debugLogTokens.modelBreakdown).length > 0) {
-				fileModelUsage = {};
+				const replacement: ModelUsage = {};
 				for (const [model, bd] of Object.entries(debugLogTokens.modelBreakdown)) {
-					fileModelUsage[model] = { inputTokens: bd.inputTokens, outputTokens: bd.outputTokens, ...(bd.cachedTokens > 0 ? { cachedReadTokens: bd.cachedTokens } : {}) };
+					replacement[model] = { inputTokens: bd.inputTokens, outputTokens: bd.outputTokens, sessions: 0, ...(bd.cachedTokens > 0 ? { cachedReadTokens: bd.cachedTokens } : {}) };
 				}
+				preserveAutoRouting(fileModelUsage, replacement);
+				fileModelUsage = replacement;
 			}
 		}
 
@@ -530,6 +546,8 @@ export async function calculateUsageAnalysisStats(sessionFiles: string[]): Promi
 	const last30DaysPeriod = createEmptyUsageAnalysisPeriod();
 	const monthPeriod = createEmptyUsageAnalysisPeriod();
 	const lastMonthPeriod = createEmptyUsageAnalysisPeriod();
+	const todaySessions: TodaySessionSummary[] = [];
+	const recentSessionItems: RecentSessionBucketItem<TodaySessionSummary>[] = [];
 
 	for (const file of sessionFiles) {
 		try {
@@ -541,6 +559,38 @@ export async function calculateUsageAnalysisStats(sessionFiles: string[]): Promi
 			}
 
 			const analysis = await analyzeSessionUsage(deps, file);
+			let sessionSummary: TodaySessionSummary | undefined;
+			const data = modified >= last30DaysStart ? await processSessionFile(file) : undefined;
+			if (data && data.interactions > 0) {
+				let inputTokens = 0, outputTokens = 0, cachedTokens = 0;
+				for (const usage of Object.values(data.modelUsage)) {
+					inputTokens += usage.inputTokens;
+					outputTokens += usage.outputTokens;
+					cachedTokens += usage.cachedReadTokens ?? 0;
+				}
+				sessionSummary = {
+					title: null,
+					filePath: file,
+					interactions: data.interactions,
+					toolCalls: analysis.toolCalls.total,
+					inputTokens,
+					outputTokens,
+					thinkingTokens: data.thinkingTokens ?? 0,
+					cachedTokens,
+					totalTokens: data.tokens,
+					estimatedCost: calculateEstimatedCost(data.modelUsage, modelPricing),
+					editor: data.editorSource,
+					models: Object.keys(data.modelUsage),
+					lastActivity: data.lastModified.toISOString(),
+					...(analysis.sessionDuration?.totalDurationMs !== undefined ? { durationMs: analysis.sessionDuration.totalDurationMs } : {}),
+					...(analysis.sessionDuration?.activeDurationMs !== undefined ? { activeDurationMs: analysis.sessionDuration.activeDurationMs } : {}),
+				};
+				recentSessionItems.push({
+					activityKey: toLocalDayKey(data.lastModified),
+					interactions: data.interactions,
+					value: sessionSummary,
+				});
+			}
 
 			if (modified >= last30DaysStart) {
 				mergeUsageAnalysis(last30DaysPeriod, analysis);
@@ -553,6 +603,7 @@ export async function calculateUsageAnalysisStats(sessionFiles: string[]): Promi
 			if (modified >= todayStart) {
 				mergeUsageAnalysis(todayPeriod, analysis);
 				todayPeriod.sessions++;
+				if (sessionSummary) { todaySessions.push(sessionSummary); }
 			}
 			if (modified >= lastMonthStart && modified < monthStart) {
 				mergeUsageAnalysis(lastMonthPeriod, analysis);
@@ -569,6 +620,8 @@ export async function calculateUsageAnalysisStats(sessionFiles: string[]): Promi
 		month: monthPeriod,
 		lastMonth: lastMonthPeriod,
 		lastUpdated: now,
+		todaySessions: todaySessions.sort((a, b) => b.interactions - a.interactions),
+		recentSessions: buildRecentSessionBuckets(recentSessionItems, now),
 	};
 }
 
@@ -608,31 +661,23 @@ export async function calculateDailyStats(sessionFiles: string[], verbose = fals
 
 		for (const [dateKey, fraction] of Object.entries(data.dailyFractions)) {
 			const tokForDay = Math.round(displayTok * fraction);
+			const scaledUsage = scaleModelUsage(data.modelUsage, fraction);
 
 			// 30-day map: only add days within the window
 			const dailyEntry = dailyMap.get(dateKey);
 			if (dailyEntry) {
 				dailyEntry.tokens += tokForDay;
 				dailyEntry.sessions++;
-				for (const [model, usage] of Object.entries(data.modelUsage)) {
-					if (!dailyEntry.modelUsage[model]) {
-						dailyEntry.modelUsage[model] = { inputTokens: 0, outputTokens: 0 };
-					}
-					dailyEntry.modelUsage[model].inputTokens += Math.round(usage.inputTokens * fraction);
-					dailyEntry.modelUsage[model].outputTokens += Math.round(usage.outputTokens * fraction);
-					if (usage.cachedReadTokens !== undefined) {
-						dailyEntry.modelUsage[model].cachedReadTokens = (dailyEntry.modelUsage[model].cachedReadTokens ?? 0) + Math.round(usage.cachedReadTokens * fraction);
-					}
-					if (usage.cacheCreationTokens !== undefined) {
-						dailyEntry.modelUsage[model].cacheCreationTokens = (dailyEntry.modelUsage[model].cacheCreationTokens ?? 0) + Math.round(usage.cacheCreationTokens * fraction);
-					}
-				}
+				addModelUsage(dailyEntry.modelUsage, scaledUsage);
 				const editor = data.editorSource;
 				if (!dailyEntry.editorUsage[editor]) {
 					dailyEntry.editorUsage[editor] = { tokens: 0, sessions: 0 };
 				}
 				dailyEntry.editorUsage[editor].tokens += tokForDay;
 				dailyEntry.editorUsage[editor].sessions++;
+				if (!dailyEntry.editorModelUsage) { dailyEntry.editorModelUsage = {}; }
+				if (!dailyEntry.editorModelUsage[editor]) { dailyEntry.editorModelUsage[editor] = {}; }
+				addModelUsage(dailyEntry.editorModelUsage[editor], scaledUsage);
 			}
 
 			// Full history map: always add regardless of age (used for weekly/monthly charts)
@@ -642,25 +687,16 @@ export async function calculateDailyStats(sessionFiles: string[], verbose = fals
 			const allEntry = allDaysMap.get(dateKey)!;
 			allEntry.tokens += tokForDay;
 			allEntry.sessions++;
-			for (const [model, usage] of Object.entries(data.modelUsage)) {
-				if (!allEntry.modelUsage[model]) {
-					allEntry.modelUsage[model] = { inputTokens: 0, outputTokens: 0 };
-				}
-				allEntry.modelUsage[model].inputTokens += Math.round(usage.inputTokens * fraction);
-				allEntry.modelUsage[model].outputTokens += Math.round(usage.outputTokens * fraction);
-				if (usage.cachedReadTokens !== undefined) {
-					allEntry.modelUsage[model].cachedReadTokens = (allEntry.modelUsage[model].cachedReadTokens ?? 0) + Math.round(usage.cachedReadTokens * fraction);
-				}
-				if (usage.cacheCreationTokens !== undefined) {
-					allEntry.modelUsage[model].cacheCreationTokens = (allEntry.modelUsage[model].cacheCreationTokens ?? 0) + Math.round(usage.cacheCreationTokens * fraction);
-				}
-			}
+			addModelUsage(allEntry.modelUsage, scaledUsage);
 			const editor = data.editorSource;
 			if (!allEntry.editorUsage[editor]) {
 				allEntry.editorUsage[editor] = { tokens: 0, sessions: 0 };
 			}
 			allEntry.editorUsage[editor].tokens += tokForDay;
 			allEntry.editorUsage[editor].sessions++;
+			if (!allEntry.editorModelUsage) { allEntry.editorModelUsage = {}; }
+			if (!allEntry.editorModelUsage[editor]) { allEntry.editorModelUsage[editor] = {}; }
+			addModelUsage(allEntry.editorModelUsage[editor], scaledUsage);
 		}
 	}
 

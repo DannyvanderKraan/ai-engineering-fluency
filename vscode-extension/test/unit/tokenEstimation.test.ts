@@ -2,6 +2,83 @@ import test from 'node:test';
 import * as assert from 'node:assert/strict';
 
 import { extractSubAgentData, normalizeDisplayModelName, extractResponseItemText } from '../../../src/tokenEstimation';
+import { isCopilotAutoRequest, attachEstimatedTurnCosts } from '../../../src/tokenEstimation';
+import type { ChatTurn, ModelUsage } from '../../../src/types';
+import { getPricingSourceForEditor } from '../../../src/chartDataBuilder';
+
+const autoPricing = { 'gpt-4o': {
+	inputCostPerMillion: 20, outputCostPerMillion: 40, cachedInputCostPerMillion: 1,
+	copilotPricing: { inputCostPerMillion: 2, outputCostPerMillion: 4 },
+} };
+
+test('Auto discount: only the eligible Copilot token subset gets 10% off', () => {
+	const manual = { inputTokens: 1_000_000, outputTokens: 1_000_000, sessions: 1 };
+	const auto = { ...manual, autoRouting: { inputTokens: 1_000_000, outputTokens: 1_000_000 } };
+	assert.equal(calculateEstimatedCost({ 'gpt-4o': auto }, autoPricing, 'copilot'), 5.4);
+	assert.equal(calculateEstimatedCost({ 'gpt-4o': manual }, autoPricing, 'copilot'), 6);
+	assert.equal(calculateEstimatedCost({ 'gpt-4o': auto }, autoPricing, 'provider'), 60);
+	const mixed = { ...auto, inputTokens: 2_000_000, outputTokens: 3_000_000 };
+	assert.equal(calculateEstimatedCost({ 'gpt-4o': mixed }, autoPricing, 'copilot'), 15.4);
+	assert.equal(calculateEstimatedCost({ 'gpt-4o': mixed }, autoPricing), 160);
+	assert.equal(calculateEstimatedCost({ 'gpt-4o': auto }, { 'gpt-4o': { inputCostPerMillion: 20, outputCostPerMillion: 40 } }, 'copilot'), 60);
+});
+
+test('Auto discount: cache subset uses only Copilot rates and their fallbacks', () => {
+	const tokens = { inputTokens: 1_000_000, outputTokens: 1_000_000, cachedReadTokens: 500_000 };
+	const usage = { 'gpt-4o': { ...tokens, autoRouting: tokens, sessions: 1 } };
+	// Copilot has no cache rate: use its $2 input rate, not the provider's $1 cache rate.
+	assert.equal(calculateEstimatedCost(usage, autoPricing, 'copilot'), 5.4);
+	const pricing = { 'gpt-4o': { ...autoPricing['gpt-4o'], copilotPricing: {
+		inputCostPerMillion: 2, outputCostPerMillion: 4, cachedInputCostPerMillion: 0.2,
+		cacheCreationCostPerMillion: 3, cacheCreation1hCostPerMillion: 5,
+	} } };
+	const cached = { ...tokens, cacheCreationTokens: 200_000, cacheCreation1hTokens: 100_000 };
+	const autoUsage: ModelUsage = { 'gpt-4o': { ...cached, autoRouting: cached, sessions: 1 } };
+	assert.ok(Math.abs(calculateEstimatedCost(autoUsage, pricing, 'copilot') - 5.5 * 0.9) < 1e-12);
+});
+
+test('Auto detection and resolution use request evidence, not unrelated auto strings', () => {
+	for (const modelId of ['auto', 'copilot/auto']) {
+		const request = { modelId, result: { metadata: { modelId: 'gpt-4o' } } };
+		assert.equal(isCopilotAutoRequest(request), true);
+		assert.equal(getModelFromRequest(request), 'gpt-4o');
+	}
+	const response = [{ kind: 'autoModeResolution', resolved: { id: 'copilot/gpt-4o', name: 'GPT-4o' } }];
+	assert.equal(isCopilotAutoRequest({ response }), true);
+	assert.equal(getModelFromRequest({ response }), 'gpt-4o');
+	assert.equal(getModelFromRequest({ modelId: 'auto' }), 'auto');
+	assert.equal(isCopilotAutoRequest({ modelId: 'customendpoint/kiro/auto' }), false);
+	assert.equal(isCopilotAutoRequest({ modelId: 'gpt-4o' }), false);
+	assert.equal(isCopilotAutoRequest({ response: [null, {}, { kind: 'markdownContent', value: 'auto' }] }), false);
+	assert.equal(getModelFromRequest({ response: [{ kind: 'autoModeResolution', resolved: null }] }), 'auto');
+});
+
+test('Steps Overview costs: Auto actual usage discounted, manual/provider and child calls unchanged', () => {
+	const makeTurn = (autoRouted: boolean): ChatTurn => ({
+		turnNumber: 1, timestamp: null, mode: 'agent', userMessage: '', assistantResponse: '',
+		model: 'gpt-4o', autoRouted, contextReferences: createEmptyContextRefs(), mcpTools: [],
+		inputTokensEstimate: 1, outputTokensEstimate: 1, thinkingTokensEstimate: 0,
+		actualUsage: { promptTokens: 1_000_000, completionTokens: 1_000_000 },
+		toolCalls: [{ toolName: 'runSubagent', isSubAgent: true, subAgentModel: 'gpt-4o', subAgentTokens: { input: 1_000_000, output: 1_000_000 } }],
+	});
+	const turns = [makeTurn(true), makeTurn(false)];
+	attachEstimatedTurnCosts(turns, autoPricing, getPricingSourceForEditor('VS Code'));
+	assert.equal(turns[0].estimatedCost, 5.4);
+	assert.equal(turns[1].estimatedCost, 6);
+	assert.equal(turns[0].toolCalls[0].subAgentCost, 6);
+	const provider = makeTurn(true);
+	attachEstimatedTurnCosts([provider], autoPricing, getPricingSourceForEditor('Claude Code'));
+	assert.equal(provider.estimatedCost, 60);
+	const estimated = makeTurn(true);
+	delete estimated.actualUsage;
+	estimated.inputTokensEstimate = 1_000_000;
+	estimated.outputTokensEstimate = 1_000_000;
+	attachEstimatedTurnCosts([estimated], autoPricing, 'copilot');
+	assert.equal(estimated.estimatedCost, 5.4);
+	const unknown = { ...makeTurn(true), model: 'auto' };
+	attachEstimatedTurnCosts([unknown], autoPricing, 'copilot');
+	assert.equal(unknown.estimatedCost, undefined);
+});
 
 test('normalizeDisplayModelName: lowercases and replaces spaces with hyphens', () => {
 	assert.equal(normalizeDisplayModelName('Claude Haiku 4.5'), 'claude-haiku-4.5');
@@ -223,13 +300,13 @@ test('isUuidPointerFile: returns false for non-UUID content', () => {
 
 // ── getModelTier ────────────────────────────────────────────────────────
 
-test('getModelTier: returns standard for multiplier 0', () => {
-        const pricing = { 'gpt-4o-mini': { inputCostPerMillion: 0.15, outputCostPerMillion: 0.6, multiplier: 0 } };
+test('getModelTier: returns standard for tier "standard"', () => {
+        const pricing = { 'gpt-4o-mini': { inputCostPerMillion: 0.15, outputCostPerMillion: 0.6, tier: 'standard' as const } };
         assert.equal(getModelTier('gpt-4o-mini', pricing), 'standard');
 });
 
-test('getModelTier: returns premium for multiplier > 0', () => {
-        const pricing = { 'claude-sonnet-4.5': { inputCostPerMillion: 3, outputCostPerMillion: 15, multiplier: 1 } };
+test('getModelTier: returns premium for tier "premium"', () => {
+        const pricing = { 'claude-sonnet-4.5': { inputCostPerMillion: 3, outputCostPerMillion: 15, tier: 'premium' as const } };
         assert.equal(getModelTier('claude-sonnet-4.5', pricing), 'premium');
 });
 
@@ -238,14 +315,14 @@ test('getModelTier: returns unknown for model not in pricing', () => {
 });
 
 test('getModelTier: falls back to partial match', () => {
-        const pricing = { 'gpt-4o': { inputCostPerMillion: 2.5, outputCostPerMillion: 10, multiplier: 1 } };
+        const pricing = { 'gpt-4o': { inputCostPerMillion: 2.5, outputCostPerMillion: 10, tier: 'premium' as const } };
         assert.equal(getModelTier('gpt-4o-2024-08-06', pricing), 'premium');
 });
 
 // ── calculateEstimatedCost ──────────────────────────────────────────────
 
 test('calculateEstimatedCost: calculates correct cost for known model', () => {
-        const modelUsage = { 'gpt-4o': { inputTokens: 1000, outputTokens: 500 } };
+        const modelUsage = { 'gpt-4o': { inputTokens: 1000, outputTokens: 500, sessions: 0} };
         const pricing = { 'gpt-4o': { inputCostPerMillion: 2.5, outputCostPerMillion: 10 } };
         const cost = calculateEstimatedCost(modelUsage, pricing);
         // input: 1000/1M * 2.5 = 0.0025, output: 500/1M * 10 = 0.005
@@ -257,15 +334,48 @@ test('calculateEstimatedCost: returns 0 for empty usage', () => {
 });
 
 test('calculateEstimatedCost: unknown models contribute $0 (no gpt-4o-mini fallback)', () => {
-        const modelUsage = { 'unknown-model': { inputTokens: 1000, outputTokens: 1000 } };
+        const modelUsage = { 'unknown-model': { inputTokens: 1000, outputTokens: 1000, sessions: 0} };
         const pricing = { 'gpt-4o-mini': { inputCostPerMillion: 0.15, outputCostPerMillion: 0.6 } };
         const cost = calculateEstimatedCost(modelUsage, pricing);
         // No pricing entry for 'unknown-model' → $0, not gpt-4o-mini rates
         assert.equal(cost, 0);
 });
 
+test('calculateEstimatedCost: prices a custom-endpoint model from its model-ID part', () => {
+        const modelUsage = { 'customendpoint/Mistral/mistral-medium-latest': { inputTokens: 1_000_000, outputTokens: 1_000_000, sessions: 0} };
+        const pricing = { 'mistral-medium-latest': { inputCostPerMillion: 0.4, outputCostPerMillion: 2.0 } };
+        const cost = calculateEstimatedCost(modelUsage, pricing);
+        assert.ok(Math.abs(cost - 2.4) < 1e-9);
+});
+
+test('calculateEstimatedCost: custom-endpoint model with an unpriced model part stays $0', () => {
+        const modelUsage = { 'customendpoint/Mistral/some-private-model': { inputTokens: 1_000_000, outputTokens: 1_000_000, sessions: 0} };
+        const pricing = { 'mistral-medium-latest': { inputCostPerMillion: 0.4, outputCostPerMillion: 2.0 } };
+        assert.equal(calculateEstimatedCost(modelUsage, pricing), 0);
+});
+
+test('calculateEstimatedCost: prices an org-UUID-prefixed catalog model from its model-ID part', () => {
+        const modelUsage = { '83a386ed-9f05-4fd9-83d4-f453d20c994c/mistral-medium-latest': { inputTokens: 1_000_000, outputTokens: 1_000_000, sessions: 0} };
+        const pricing = { 'mistral-medium-latest': { inputCostPerMillion: 0.4, outputCostPerMillion: 2.0 } };
+        const cost = calculateEstimatedCost(modelUsage, pricing);
+        assert.ok(Math.abs(cost - 2.4) < 1e-9);
+});
+
+test('calculateEstimatedCost: prices a dash-separated version id from its dotted pricing key', () => {
+        const modelUsage = { 'claude-opus-4-8': { inputTokens: 1_000_000, outputTokens: 1_000_000, sessions: 0} };
+        const pricing = { 'claude-opus-4.8': { inputCostPerMillion: 5.0, outputCostPerMillion: 25.0 } };
+        const cost = calculateEstimatedCost(modelUsage, pricing);
+        assert.ok(Math.abs(cost - 30.0) < 1e-9);
+});
+
+test('calculateEstimatedCost: UUID-prefixed model with an unpriced model part stays $0', () => {
+        const modelUsage = { '83a386ed-9f05-4fd9-83d4-f453d20c994c/some-private-model': { inputTokens: 1_000_000, outputTokens: 1_000_000, sessions: 0} };
+        const pricing = { 'mistral-medium-latest': { inputCostPerMillion: 0.4, outputCostPerMillion: 2.0 } };
+        assert.equal(calculateEstimatedCost(modelUsage, pricing), 0);
+});
+
 test('calculateEstimatedCost: copilot source uses copilotPricing block when present', () => {
-        const modelUsage = { 'gpt-x': { inputTokens: 1_000_000, outputTokens: 1_000_000 } };
+        const modelUsage = { 'gpt-x': { inputTokens: 1_000_000, outputTokens: 1_000_000, sessions: 0} };
         const pricing = {
                 'gpt-x': {
                         inputCostPerMillion: 1.0,
@@ -280,7 +390,7 @@ test('calculateEstimatedCost: copilot source uses copilotPricing block when pres
 });
 
 test('calculateEstimatedCost: copilot source falls back to provider pricing when copilotPricing missing', () => {
-        const modelUsage = { 'gpt-y': { inputTokens: 1_000_000, outputTokens: 1_000_000 } };
+        const modelUsage = { 'gpt-y': { inputTokens: 1_000_000, outputTokens: 1_000_000, sessions: 0} };
         const pricing = { 'gpt-y': { inputCostPerMillion: 1.0, outputCostPerMillion: 2.0 } };
         const providerCost = calculateEstimatedCost(modelUsage, pricing);
         const copilotCost = calculateEstimatedCost(modelUsage, pricing, 'copilot');
@@ -293,8 +403,7 @@ test('calculateEstimatedCost: copilot source applies cached + cache-creation rat
                         inputTokens: 1_000_000,         // total input
                         outputTokens: 1_000_000,
                         cachedReadTokens: 400_000,
-                        cacheCreationTokens: 100_000
-                }
+                        cacheCreationTokens: 100_000, sessions: 0}
         };
         const pricing = {
                 'claude-x': {
@@ -323,8 +432,8 @@ test('calculateEstimatedCost: copilot source applies cached + cache-creation rat
 
 test('getTotalTokensFromModelUsage: sums input and output across models', () => {
         const usage = {
-                'gpt-4o': { inputTokens: 100, outputTokens: 200 },
-                'claude-sonnet': { inputTokens: 50, outputTokens: 150 }
+                'gpt-4o': { inputTokens: 100, outputTokens: 200, sessions: 0},
+                'claude-sonnet': { inputTokens: 50, outputTokens: 150, sessions: 0}
         };
         assert.equal(getTotalTokensFromModelUsage(usage), 500);
 });
@@ -539,7 +648,7 @@ test('estimateTokensFromJsonlSession: uses session.shutdown actual tokens', () =
                         type: 'session.shutdown',
                         data: {
                                 modelMetrics: {
-                                        'gpt-4o': { usage: { inputTokens: 100, outputTokens: 200 } }
+                                        'gpt-4o': { usage: { inputTokens: 100, outputTokens: 200, sessions: 0} }
                                 }
                         }
                 })
@@ -568,7 +677,7 @@ test('estimateTokensFromJsonlSession: session.shutdown handles non-numeric usage
                         type: 'session.shutdown',
                         data: {
                                 modelMetrics: {
-                                        'gpt-4o': { usage: { inputTokens: 'bad', outputTokens: 50 } }
+                                        'gpt-4o': { usage: { inputTokens: 'bad', outputTokens: 50, sessions: 0} }
                                 }
                         }
                 })
@@ -611,7 +720,7 @@ test('estimateTokensFromJsonlSession: session.shutdown without cache fields leav
                 type: 'session.shutdown',
                 data: {
                         modelMetrics: {
-                                'gpt-5.4': { usage: { inputTokens: 100, outputTokens: 50 } },
+                                'gpt-5.4': { usage: { inputTokens: 100, outputTokens: 50, sessions: 0} },
                         },
                 },
         });
@@ -649,7 +758,7 @@ test('extractCachedTokensFromDebugLog: ignores non-llm_request events', () => {
 
 test('extractCachedTokensFromDebugLog: ignores llm_request events without cachedTokens', () => {
         const lines = [
-                JSON.stringify({ type: 'llm_request', attrs: { inputTokens: 1000, outputTokens: 200 } }),
+                JSON.stringify({ type: 'llm_request', attrs: { inputTokens: 1000, outputTokens: 200, sessions: 0} }),
                 JSON.stringify({ type: 'llm_request', attrs: { cachedTokens: 50 } }),
         ].join('\n');
         assert.equal(extractCachedTokensFromDebugLog(lines), 50);
@@ -725,7 +834,7 @@ test('extractAllTokensFromDebugLog: handles missing optional fields gracefully',
 test('extractAllTokensFromDebugLog: ignores non-llm_request events', () => {
         const lines = [
                 JSON.stringify({ type: 'request_start', attrs: { inputTokens: 9999 } }),
-                JSON.stringify({ type: 'llm_request', attrs: { inputTokens: 500, outputTokens: 100 } }),
+                JSON.stringify({ type: 'llm_request', attrs: { inputTokens: 500, outputTokens: 100, sessions: 0} }),
                 JSON.stringify({ type: 'request_end', attrs: {} }),
         ].join('\n');
         const result = extractAllTokensFromDebugLog(lines);
@@ -737,9 +846,9 @@ test('extractAllTokensFromDebugLog: ignores non-llm_request events', () => {
 
 test('extractAllTokensFromDebugLog: skips invalid JSON lines without crashing', () => {
         const lines = [
-                JSON.stringify({ type: 'llm_request', attrs: { inputTokens: 300, outputTokens: 50 } }),
+                JSON.stringify({ type: 'llm_request', attrs: { inputTokens: 300, outputTokens: 50, sessions: 0} }),
                 'not valid json {{{',
-                JSON.stringify({ type: 'llm_request', attrs: { inputTokens: 200, outputTokens: 30 } }),
+                JSON.stringify({ type: 'llm_request', attrs: { inputTokens: 200, outputTokens: 30, sessions: 0} }),
         ].join('\n');
         const result = extractAllTokensFromDebugLog(lines);
         assert.ok(result);
@@ -875,7 +984,7 @@ test('EventJsonlTokenStrategy: uses session.shutdown for actual tokens and model
                 JSON.stringify({ type: 'user.message', data: { content: 'hi' } }),
                 JSON.stringify({
                         type: 'session.shutdown',
-                        data: { modelMetrics: { 'gpt-4o': { usage: { inputTokens: 100, outputTokens: 200 } } } }
+                        data: { modelMetrics: { 'gpt-4o': { usage: { inputTokens: 100, outputTokens: 200, sessions: 0} } } }
                 }),
         ];
         const result = new EventJsonlTokenStrategy().estimate(lines);
@@ -909,7 +1018,7 @@ test('EventJsonlTokenStrategy: attributes shutdown tokens to UTC day', () => {
                 JSON.stringify({
                         type: 'session.shutdown',
                         timestamp: ts,
-                        data: { modelMetrics: { 'gpt-4o': { usage: { inputTokens: 50, outputTokens: 50 } } } }
+                        data: { modelMetrics: { 'gpt-4o': { usage: { inputTokens: 50, outputTokens: 50, sessions: 0} } } }
                 }),
         ];
         const result = new EventJsonlTokenStrategy().estimate(lines);
@@ -1385,7 +1494,7 @@ test('EventJsonlTokenStrategy: ratio estimation skipped when session.shutdown pr
         const lines = [
                 ...Array(25).fill(null).map(() => JSON.stringify({ type: 'tool.execution_start', data: {} })),
                 JSON.stringify({ type: 'assistant.message', data: { model: 'gpt-4o', outputTokens: 1000 } }),
-                JSON.stringify({ type: 'session.shutdown', data: { modelMetrics: { 'gpt-4o': { usage: { inputTokens: 5000, outputTokens: 1000 } } } } }),
+                JSON.stringify({ type: 'session.shutdown', data: { modelMetrics: { 'gpt-4o': { usage: { inputTokens: 5000, outputTokens: 1000, sessions: 0} } } } }),
         ];
         const result = new EventJsonlTokenStrategy().estimate(lines);
         // session.shutdown overrides ratio estimation
@@ -1466,6 +1575,43 @@ test('getModelFromRequest: strips copilot/ prefix from result.metadata.modelId',
         assert.equal(getModelFromRequest(req), 'claude-sonnet-4.5');
 });
 
+// ── getModelFromRequest: Auto-mode resolution ───────────────────────────────
+// Copilot's "Auto" routing only records "auto"/"copilot/auto" as modelId; the
+// model actually picked for that turn is reported later as an
+// `autoModeResolution` item in the response stream. Without resolving this,
+// "auto" is treated as an unpriced model, silently dropping the turn's cost.
+
+test('getModelFromRequest: resolves the real model from an autoModeResolution response item', () => {
+        const req = {
+                modelId: 'copilot/auto',
+                response: [
+                        { kind: 'autoModeResolution', resolved: { id: 'mai-code-1.1-flash', name: 'MAI-Code-1.1-Flash' } },
+                ],
+        };
+        assert.equal(getModelFromRequest(req), 'mai-code-1.1-flash');
+});
+
+test('getModelFromRequest: falls back to "auto" when no autoModeResolution item is present', () => {
+        assert.equal(getModelFromRequest({ modelId: 'auto' }), 'auto');
+        assert.equal(getModelFromRequest({ modelId: 'copilot/auto', response: [] }), 'auto');
+});
+
+test('getModelFromRequest: non-auto modelId is unaffected by a response array', () => {
+        const req = {
+                modelId: 'copilot/gpt-4o',
+                response: [{ kind: 'autoModeResolution', resolved: { id: 'claude-sonnet-4.5' } }],
+        };
+        assert.equal(getModelFromRequest(req), 'gpt-4o');
+});
+
+test('getModelFromRequest: resolves auto from result.metadata.modelId (metadata-only shape) too', () => {
+        const req = {
+                result: { metadata: { modelId: 'copilot/auto' } },
+                response: [{ kind: 'autoModeResolution', resolved: { id: 'gpt-5.4' } }],
+        };
+        assert.equal(getModelFromRequest(req), 'gpt-5.4');
+});
+
 // ── selectTokenEstimationStrategy: format detection limit ──────────────────
 
 test('selectTokenEstimationStrategy: format detection stops after FORMAT_DETECTION_LINE_LIMIT non-empty lines', () => {
@@ -1519,7 +1665,7 @@ test('isUuidPointerFile: returns false for short UUID (too few chars)', () => {
 
 test('calculateEstimatedCost: clamps uncachedInput to 0 when cachedRead exceeds inputTokens', () => {
         // Math.max(0, inputTokens - cachedRead) should not go negative
-        const modelUsage = { 'claude-x': { inputTokens: 100, outputTokens: 50, cachedReadTokens: 200 } };
+        const modelUsage = { 'claude-x': { inputTokens: 100, outputTokens: 50, cachedReadTokens: 200, sessions: 0} };
         const pricing = { 'claude-x': { inputCostPerMillion: 10, outputCostPerMillion: 20 } };
         const cost = calculateEstimatedCost(modelUsage, pricing);
         // uncachedInput = max(0, 100 - 200 - 0) = 0
@@ -1530,7 +1676,7 @@ test('calculateEstimatedCost: clamps uncachedInput to 0 when cachedRead exceeds 
 
 test('calculateEstimatedCost: skips model with no pricing entry and no fallback', () => {
         // If neither exact model nor gpt-4o-mini fallback exists, model is skipped
-        const modelUsage = { 'exotic-model': { inputTokens: 1000000, outputTokens: 1000000 } };
+        const modelUsage = { 'exotic-model': { inputTokens: 1000000, outputTokens: 1000000, sessions: 0} };
         const pricing = { 'some-other-model': { inputCostPerMillion: 1, outputCostPerMillion: 2 } };
         const cost = calculateEstimatedCost(modelUsage, pricing);
         assert.equal(cost, 0);
@@ -1538,7 +1684,7 @@ test('calculateEstimatedCost: skips model with no pricing entry and no fallback'
 
 test('calculateEstimatedCost: uses cachedInputCostPerMillion when present', () => {
         const modelUsage = {
-                'model-a': { inputTokens: 1_000_000, outputTokens: 0, cachedReadTokens: 500_000 }
+                'model-a': { inputTokens: 1_000_000, outputTokens: 0, cachedReadTokens: 500_000, sessions: 0}
         };
         const pricing = {
                 'model-a': { inputCostPerMillion: 10, outputCostPerMillion: 20, cachedInputCostPerMillion: 2 }
@@ -1550,20 +1696,108 @@ test('calculateEstimatedCost: uses cachedInputCostPerMillion when present', () =
         assert.ok(Math.abs(cost - 6.0) < 1e-9);
 });
 
+// ── calculateEstimatedCost: 1-hour cache-creation TTL pricing ───────────────
+// Anthropic bills prompt-cache writes at different rates depending on TTL:
+// the default 5-minute TTL (cacheCreationCostPerMillion) vs. the 1-hour TTL
+// (cacheCreation1hCostPerMillion) that Claude Code uses by default, which is
+// billed at a higher rate. See issue #1589.
+
+test('calculateEstimatedCost: splits cacheCreationTokens into 1h and 5m portions', () => {
+        const modelUsage = {
+                'claude-sonnet-4-6': {
+                        inputTokens: 1_000_000,
+                        outputTokens: 0,
+                        cacheCreationTokens: 1_000_000,
+                        cacheCreation1hTokens: 400_000, // 400k of the 1M cache-write was 1h TTL, 600k was 5m TTL
+                        sessions: 0}
+        };
+        const pricing = {
+                'claude-sonnet-4-6': {
+                        inputCostPerMillion: 3,
+                        outputCostPerMillion: 15,
+                        cacheCreationCostPerMillion: 3.75,
+                        cacheCreation1hCostPerMillion: 6
+                }
+        };
+        const cost = calculateEstimatedCost(modelUsage, pricing);
+        // uncachedInput = max(0, 1_000_000 - 0 - 1_000_000) = 0
+        // 5m portion = 600_000 → 0.6 * 3.75 = 2.25
+        // 1h portion = 400_000 → 0.4 * 6 = 2.4
+        const expected = 2.25 + 2.4;
+        assert.ok(Math.abs(cost - expected) < 1e-9, `expected ${expected}, got ${cost}`);
+});
+
+test('calculateEstimatedCost: falls back to cacheCreationCostPerMillion when cacheCreation1hCostPerMillion is missing', () => {
+        const modelUsage = {
+                'model-x': {
+                        inputTokens: 100_000,
+                        outputTokens: 0,
+                        cacheCreationTokens: 100_000,
+                        cacheCreation1hTokens: 100_000,
+                        sessions: 0}
+        };
+        const pricing = {
+                'model-x': { inputCostPerMillion: 3, outputCostPerMillion: 15, cacheCreationCostPerMillion: 3.75 }
+        };
+        const cost = calculateEstimatedCost(modelUsage, pricing);
+        // No cacheCreation1hCostPerMillion → all 100_000 tokens fall back to the 5-min rate
+        assert.ok(Math.abs(cost - 0.375) < 1e-9);
+});
+
+test('calculateEstimatedCost: cacheCreation1hTokens is clamped to cacheCreationTokens (never exceeds total)', () => {
+        const modelUsage = {
+                'claude-sonnet-4-6': {
+                        inputTokens: 100_000,
+                        outputTokens: 0,
+                        cacheCreationTokens: 50_000,
+                        cacheCreation1hTokens: 999_999, // malformed/overcounted input should not blow up the total
+                        sessions: 0}
+        };
+        const pricing = {
+                'claude-sonnet-4-6': {
+                        inputCostPerMillion: 3,
+                        outputCostPerMillion: 15,
+                        cacheCreationCostPerMillion: 3.75,
+                        cacheCreation1hCostPerMillion: 6
+                }
+        };
+        const cost = calculateEstimatedCost(modelUsage, pricing);
+        // cacheCreation1h clamped to 50_000 → 0.05 * 6 = 0.3, 5m portion = 0
+        // uncachedInput = max(0, 100_000 - 0 - 50_000) = 50_000 → 0.05 * 3 = 0.15
+        assert.ok(Math.abs(cost - 0.45) < 1e-9, `expected 0.45, got ${cost}`);
+});
+
+test('calculateEstimatedCost: no cacheCreation1hTokens behaves exactly as before (backward compatible)', () => {
+        const modelUsage = {
+                'claude-sonnet-4-6': { inputTokens: 100_000, outputTokens: 0, cacheCreationTokens: 100_000, sessions: 0}
+        };
+        const pricing = {
+                'claude-sonnet-4-6': {
+                        inputCostPerMillion: 3,
+                        outputCostPerMillion: 15,
+                        cacheCreationCostPerMillion: 3.75,
+                        cacheCreation1hCostPerMillion: 6
+                }
+        };
+        const cost = calculateEstimatedCost(modelUsage, pricing);
+        // All 100_000 tokens priced at the 5m rate since cacheCreation1hTokens is absent
+        assert.ok(Math.abs(cost - 0.375) < 1e-9);
+});
+
 // ── getModelTier: additional edge cases ─────────────────────────────────────
 
 test('getModelTier: partial match where modelId includes key', () => {
-        const pricing = { 'claude': { inputCostPerMillion: 3, outputCostPerMillion: 15, multiplier: 1 } };
+        const pricing = { 'claude': { inputCostPerMillion: 3, outputCostPerMillion: 15, tier: 'premium' as const } };
         assert.equal(getModelTier('claude-sonnet-4.5', pricing), 'premium');
 });
 
 test('getModelTier: partial match where key includes modelId', () => {
-        const pricing = { 'claude-sonnet': { inputCostPerMillion: 3, outputCostPerMillion: 15, multiplier: 0 } };
+        const pricing = { 'claude-sonnet': { inputCostPerMillion: 3, outputCostPerMillion: 15, tier: 'standard' as const } };
         assert.equal(getModelTier('claude', pricing), 'standard');
 });
 
-test('getModelTier: multiplier 0 returns standard (exact match)', () => {
-        const pricing = { 'gpt-4o': { inputCostPerMillion: 2.5, outputCostPerMillion: 10, multiplier: 0 } };
+test('getModelTier: tier "standard" returns standard (exact match)', () => {
+        const pricing = { 'gpt-4o': { inputCostPerMillion: 2.5, outputCostPerMillion: 10, tier: 'standard' as const } };
         assert.equal(getModelTier('gpt-4o', pricing), 'standard');
 });
 
@@ -1573,7 +1807,7 @@ test('EventJsonlTokenStrategy: session.shutdown without timestamp still accumula
         const lines = [
                 JSON.stringify({
                         type: 'session.shutdown',
-                        data: { modelMetrics: { 'gpt-4o': { usage: { inputTokens: 100, outputTokens: 200 } } } }
+                        data: { modelMetrics: { 'gpt-4o': { usage: { inputTokens: 100, outputTokens: 200, sessions: 0} } } }
                         // no timestamp field
                 }),
         ];
@@ -1588,7 +1822,7 @@ test('EventJsonlTokenStrategy: session.shutdown with zero total tokens does not 
                 JSON.stringify({
                         type: 'session.shutdown',
                         timestamp: '2025-03-15T10:00:00.000Z',
-                        data: { modelMetrics: { 'gpt-4o': { usage: { inputTokens: 0, outputTokens: 0 } } } }
+                        data: { modelMetrics: { 'gpt-4o': { usage: { inputTokens: 0, outputTokens: 0, sessions: 0} } } }
                 }),
         ];
         const result = new EventJsonlTokenStrategy().estimate(lines);
@@ -1599,11 +1833,11 @@ test('EventJsonlTokenStrategy: session.shutdown with zero total tokens does not 
 // ── getTotalTokensFromModelUsage: additional cases ──────────────────────────
 
 test('getTotalTokensFromModelUsage: single model returns correct sum', () => {
-        assert.equal(getTotalTokensFromModelUsage({ 'gpt-4o': { inputTokens: 1000, outputTokens: 500 } }), 1500);
+        assert.equal(getTotalTokensFromModelUsage({ 'gpt-4o': { inputTokens: 1000, outputTokens: 500, sessions: 0} }), 1500);
 });
 
 test('getTotalTokensFromModelUsage: model with zero tokens contributes zero', () => {
-        assert.equal(getTotalTokensFromModelUsage({ 'empty': { inputTokens: 0, outputTokens: 0 } }), 0);
+        assert.equal(getTotalTokensFromModelUsage({ 'empty': { inputTokens: 0, outputTokens: 0, sessions: 0} }), 0);
 });
 
 // ── extractAllTokensFromDebugLog: model breakdown ──────────────────────────
@@ -2063,4 +2297,64 @@ test('getLongContextInfo: returns null for models without a longContext block', 
 	assert.equal(getLongContextInfo('claude-sonnet-4.5', pricing), null);
 	assert.equal(getLongContextInfo('unknown-model', pricing), null);
 	assert.equal(getLongContextInfo('anything', {}), null);
+});
+
+// ── extractTtftSamplesFromDebugLog ──────────────────────────────────────
+
+import { extractTtftSamplesFromDebugLog } from '../../../src/tokenEstimation';
+
+test('extractTtftSamplesFromDebugLog: extracts one sample per llm_request event with ttft, model, and ts', () => {
+	const lines = [
+		JSON.stringify({ type: 'llm_request', ts: 1_780_000_000_000, attrs: { model: 'claude-sonnet-5', ttft: 0.45 } }),
+		JSON.stringify({ type: 'llm_request', ts: 1_780_000_005_000, attrs: { model: 'gpt-5', ttft: 1.2 } }),
+	].join('\n');
+	const samples = extractTtftSamplesFromDebugLog(lines);
+	assert.equal(samples.length, 2);
+	assert.equal(samples[0].model, 'claude-sonnet-5');
+	assert.equal(samples[0].ttftSeconds, 0.45);
+	assert.equal(samples[0].tsMs, 1_780_000_000_000);
+	assert.equal(samples[1].model, 'gpt-5');
+});
+
+test('extractTtftSamplesFromDebugLog: ignores non-llm_request events and events missing ttft/model/ts', () => {
+	const lines = [
+		JSON.stringify({ type: 'turn_start', ts: 1_780_000_000_000, attrs: { turnId: 'a' } }),
+		JSON.stringify({ type: 'llm_request', ts: 1_780_000_000_000, attrs: { model: 'claude-sonnet-5' } }), // no ttft
+		JSON.stringify({ type: 'llm_request', ts: 1_780_000_000_000, attrs: { ttft: 0.3 } }), // no model
+		JSON.stringify({ type: 'llm_request', attrs: { model: 'claude-sonnet-5', ttft: 0.3 } }), // no ts
+		JSON.stringify({ type: 'llm_request', ts: 1_780_000_000_000, attrs: { model: 'claude-sonnet-5', ttft: 0.3 } }), // valid
+	].join('\n');
+	const samples = extractTtftSamplesFromDebugLog(lines);
+	assert.equal(samples.length, 1);
+	assert.equal(samples[0].ttftSeconds, 0.3);
+});
+
+test('extractTtftSamplesFromDebugLog: skips invalid JSON lines and blank lines without crashing', () => {
+	const lines = [
+		JSON.stringify({ type: 'llm_request', ts: 1_780_000_000_000, attrs: { model: 'gpt-5', ttft: 0.5 } }),
+		'',
+		'not valid json {{{',
+		JSON.stringify({ type: 'llm_request', ts: 1_780_000_001_000, attrs: { model: 'gpt-5', ttft: 0.6 } }),
+	].join('\n');
+	const samples = extractTtftSamplesFromDebugLog(lines);
+	assert.equal(samples.length, 2);
+});
+
+test('extractTtftSamplesFromDebugLog: normalizes a seconds-magnitude ts (unix seconds) up to milliseconds', () => {
+	// 1780000000 (10 digits, ~year 2026 in seconds) vs. the ms equivalent 1780000000000.
+	const lines = JSON.stringify({ type: 'llm_request', ts: 1_780_000_000, attrs: { model: 'gpt-5', ttft: 0.5 } });
+	const samples = extractTtftSamplesFromDebugLog(lines);
+	assert.equal(samples[0].tsMs, 1_780_000_000_000);
+});
+
+test('extractTtftSamplesFromDebugLog: normalizes a milliseconds-magnitude ttft down to seconds', () => {
+	// 450 only makes sense as milliseconds (450 seconds would be a 7.5-minute TTFT).
+	const lines = JSON.stringify({ type: 'llm_request', ts: 1_780_000_000_000, attrs: { model: 'gpt-5', ttft: 450 } });
+	const samples = extractTtftSamplesFromDebugLog(lines);
+	assert.equal(samples[0].ttftSeconds, 0.45);
+});
+
+test('extractTtftSamplesFromDebugLog: returns an empty array for content with no llm_request events', () => {
+	assert.deepEqual(extractTtftSamplesFromDebugLog(''), []);
+	assert.deepEqual(extractTtftSamplesFromDebugLog(JSON.stringify({ type: 'session_start', attrs: {} })), []);
 });

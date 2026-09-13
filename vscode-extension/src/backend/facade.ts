@@ -28,7 +28,7 @@ import { SharingServerUploadService } from "./services/sharingServerUploadServic
 import { SyncService } from "./services/syncService";
 import { BackendUtility } from "./services/utilityService";
 import type { BackendQueryFilters, BackendSettings } from "./settings";
-import { getBackendSettings, isBackendConfigured } from "./settings";
+import { getBackendSettings, isBackendConfigured, isAnyBackendConfigured } from "./settings";
 import { computeBackendSharingPolicy } from "./sharingProfile";
 import type { BackendAggDailyEntityLike } from "./storageTables";
 import type {
@@ -85,6 +85,8 @@ export interface BackendFacadeDeps {
   }>;
   // Visual Studio session detection (binary MessagePack — cannot be parsed as JSON)
   isVSSessionFile?: (sessionFile: string) => boolean;
+  /** Resolves session-specific labels such as Copilot CLI (App). */
+  getEditorLabel?: (sessionFile: string) => string;
   /** Returns the current GitHub OAuth access token, or undefined if not authenticated. */
   getGithubToken?: () => string | undefined;
 }
@@ -150,6 +152,7 @@ export class BackendFacade {
         },
         updateTokenStats: deps.updateTokenStats,
         getGithubToken: deps.getGithubToken,
+        getEditorLabel: deps.getEditorLabel,
       },
       this.credentialService,
       this.dataPlaneService,
@@ -173,7 +176,7 @@ export class BackendFacade {
 
   public startTimerIfEnabled(): void {
     const settings = this.getSettings();
-    this.syncService.startTimerIfEnabled(settings, this.isConfigured(settings));
+    this.syncService.startTimerIfEnabled(settings, this.isAnyConfigured(settings));
     this.clearQueryCache();
   }
 
@@ -202,6 +205,15 @@ export class BackendFacade {
 
   public isConfigured(settings: BackendSettings): boolean {
     return isBackendConfigured(settings);
+  }
+
+  /**
+   * Whether *either* backend (Azure Storage or the Team Server) is configured. Azure Storage
+   * and the Team Server are independent sync targets that can each be enabled on their own,
+   * so sync scheduling must not require both or gate on the legacy `backend.backend` selector.
+   */
+  public isAnyConfigured(settings: BackendSettings): boolean {
+    return isAnyBackendConfigured(settings);
   }
 
   /**
@@ -485,7 +497,7 @@ export class BackendFacade {
     const result = await this.syncService.syncToBackendStore(
       force,
       settings,
-      this.isConfigured(settings),
+      this.isAnyConfigured(settings),
     );
     this.clearQueryCache();
     // UI update is now handled by syncService after successful completion
@@ -1087,7 +1099,6 @@ export class BackendFacade {
     return true;
   }
 }
-
 
 
 

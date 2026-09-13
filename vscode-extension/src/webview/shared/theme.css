@@ -94,6 +94,33 @@ body[data-vscode-theme-kind="vscode-high-contrast-light"] {
 	flex-wrap: wrap;
 }
 
+/* Per-button icon accent color (set via the --icon-accent custom property on the icon
+   span itself), so the label text keeps the theme's normal button foreground while the
+   glyph picks up a distinct color — breaks up an otherwise uniform row of solid pills.
+   The explicit margin-right overrides vscode-button's own ::slotted(*) 4px default —
+   some codicon glyphs (graph, target, globe) fill their 16px box edge-to-edge with
+   little built-in whitespace, so 4px reads as touching the label; a fixed 6px keeps the
+   gap visually consistent across glyphs instead of varying with each icon's artwork. */
+.button-row .nav-icon {
+	color: var(--icon-accent, inherit);
+	margin-right: 6px !important;
+}
+
+/* Active view indicator — the nav button for the currently open view.
+   Rendered non-clickable (disabled) but kept fully opaque and marked with a
+   secondary background plus an accent underline so the row reads as a tab strip. */
+.button-row vscode-button.nav-active {
+	opacity: 1;
+	pointer-events: none;
+}
+
+.button-row vscode-button.nav-active::part(control) {
+	background: var(--button-secondary-bg);
+	color: var(--button-secondary-fg);
+	border-bottom: 2px solid var(--focus-border);
+	cursor: default;
+}
+
 /* ------------------------------------------------------------------ *
  * High contrast themes — INDUSTRIAL REDUX
  * Stark outlines, uppercase navigation, neon stage colors, monospace.
@@ -174,6 +201,13 @@ body[data-vscode-theme-kind="vscode-high-contrast-light"] {
 	--stage-4-color: #00a300;
 }
 
+/* High contrast stays stark and monochrome by design — the per-button icon accent
+   colors are a normal-theme-only affordance and must not dilute that contrast. */
+body[data-vscode-theme-kind="vscode-high-contrast"] .button-row .nav-icon,
+body[data-vscode-theme-kind="vscode-high-contrast-light"] .button-row .nav-icon {
+	color: currentColor;
+}
+
 /* Industrial navigation tab bar (high contrast only) */
 body[data-vscode-theme-kind="vscode-high-contrast"] .button-row,
 body[data-vscode-theme-kind="vscode-high-contrast-light"] .button-row {
@@ -251,6 +285,23 @@ body[data-vscode-theme-kind="vscode-high-contrast-light"] .button-row .nav-butto
 	background-color: var(--vscode-foreground) !important;
 	color: var(--vscode-editor-background) !important;
 	border-bottom: 3px solid var(--vscode-terminal-ansiCyan) !important; /* Cyber/Industrial accent indicator */
+}
+
+/* Active view indicator (high contrast) — inverted like hover, with the accent underline */
+body[data-vscode-theme-kind="vscode-high-contrast"] .button-row vscode-button.nav-active,
+body[data-vscode-theme-kind="vscode-high-contrast-light"] .button-row vscode-button.nav-active {
+	background-color: var(--vscode-foreground) !important;
+	color: var(--vscode-editor-background) !important;
+	border-bottom: 3px solid var(--vscode-terminal-ansiCyan) !important;
+	opacity: 1;
+	pointer-events: none;
+}
+
+body[data-vscode-theme-kind="vscode-high-contrast"] .button-row vscode-button.nav-active::part(control),
+body[data-vscode-theme-kind="vscode-high-contrast-light"] .button-row vscode-button.nav-active::part(control) {
+	background-color: var(--vscode-foreground) !important;
+	color: var(--vscode-editor-background) !important;
+	cursor: default;
 }
 
 /* Industrial header + title (high contrast only) */

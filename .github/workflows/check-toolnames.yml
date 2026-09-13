@@ -19,12 +19,12 @@ jobs:
       contents: read
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
       - name: Checkout main branch
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
 
@@ -56,6 +56,9 @@ jobs:
           import os
           import re
           import sys
+          
+          sys.path.insert(0, ".github/scripts")
+          from toolnames_utils import find_matches_for_new_tool
           
           issue_body = os.environ.get("ISSUE_BODY", "")
           issue_number = os.environ.get("ISSUE_NUMBER", "")
@@ -92,20 +95,24 @@ jobs:
               already_added = []
               needs_adding = []
               case_variants = []
-          
+              canonical_equivalents = []
+              family_equivalents = []
+
               for tool in tools:
-                  if tool in known_tools:
+                  matches = find_matches_for_new_tool(tool, known_tools)
+                  if matches["exact"]:
                       already_added.append((tool, known_tools[tool]))
+                  elif matches["case_variant"]:
+                      existing_id, friendly = matches["case_variant"][0]
+                      case_variants.append((tool, existing_id, friendly))
+                  elif matches["canonical_equivalent"]:
+                      existing_id, friendly = matches["canonical_equivalent"][0]
+                      canonical_equivalents.append((tool, existing_id, friendly))
+                  elif matches["family_equivalent"]:
+                      _, friendly = matches["family_equivalent"][0]
+                      family_equivalents.append((tool, friendly))
                   else:
-                      # Case-insensitive check: if a differently-cased variant already
-                      # exists with the same friendly name, flag it as a case variant
-                      # rather than a missing entry — it should NOT be added separately.
-                      lower_tool = tool.lower()
-                      case_match = next((k for k in known_tools if k.lower() == lower_tool), None)
-                      if case_match and known_tools[case_match] == known_tools.get(tool, known_tools[case_match]):
-                          case_variants.append((tool, case_match, known_tools[case_match]))
-                      else:
-                          needs_adding.append(tool)
+                      needs_adding.append(tool)
           
               lines = ["## 🔍 Toolnames Checkup", ""]
               lines.append("Checked the tool names in this issue against `src/toolNames.json` on the `main` branch:")
@@ -132,6 +139,36 @@ jobs:
                       lines.append(f"| `{tool}` | `{existing}` | {friendly} |")
                   lines.append("")
           
+              if canonical_equivalents:
+                  lines.append("### ⚠️ Equivalent to an existing entry — do not add")
+                  lines.append("")
+                  lines.append("These tool names normalize to the same canonical form as an existing entry (e.g. different MCP server registration or separator style).")
+                  lines.append("**Do not add a separate entry** — the existing entry covers this tool.")
+                  lines.append("")
+                  lines.append("| Tool Name (from issue) | Existing Entry | Friendly Name |")
+                  lines.append("| --- | --- | --- |")
+                  for tool, existing, friendly in canonical_equivalents:
+                      lines.append(f"| `{tool}` | `{existing}` | {friendly} |")
+                  lines.append("")
+
+              if family_equivalents:
+                  lines.append("### ⚠️ Recognized MCP tool under a new server registration — do not add")
+                  lines.append("")
+                  lines.append(
+                      "These aren't in `toolNames.json` yet, but they match a known MCP tool "
+                      "family (GitHub/Playwright/Context7/Tavily/Claude Browser) by action name — "
+                      "just registered under a different server id (e.g. a different MCP client or "
+                      "user config). The extension already resolves these to a friendly name at "
+                      "runtime and excludes them from \"unknown tools\" reports."
+                  )
+                  lines.append("**Do not add a separate entry.**")
+                  lines.append("")
+                  lines.append("| Tool Name (from issue) | Resolved Friendly Name |")
+                  lines.append("| --- | --- |")
+                  for tool, friendly in family_equivalents:
+                      lines.append(f"| `{tool}` | {friendly} |")
+                  lines.append("")
+
               if needs_adding:
                   lines.append("### ❌ Not yet in `toolNames.json`")
                   lines.append("")
@@ -141,10 +178,11 @@ jobs:
                       lines.append(f"| `{tool}` |")
                   lines.append("")
           
-              if already_added and not needs_adding and not case_variants:
+              has_issues = case_variants or canonical_equivalents or family_equivalents
+              if already_added and not needs_adding and not has_issues:
                   lines.append("> **All tool names in this issue are already mapped.** This issue may be a duplicate — consider closing it.")
-              elif case_variants and not needs_adding:
-                  lines.append("> **All unmapped tool names are case variants of existing entries.** No new entries should be added. Consider closing this issue.")
+              elif has_issues and not needs_adding:
+                  lines.append("> **All unmapped tool names are variants of existing entries.** No new entries should be added. Consider closing this issue.")
               elif needs_adding:
                   lines.append(f"> **{len(needs_adding)} tool name(s) still need to be added.** Please use the `tool-names` custom agent or update `src/toolNames.json` manually.")
           
@@ -185,12 +223,12 @@ jobs:
           - /home/runner/.ollama:/root/.ollama
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
       - name: Checkout main branch
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
@@ -215,6 +253,9 @@ jobs:
           python3 - << 'PYEOF'
           import json, os, re, sys
 
+          sys.path.insert(0, ".github/scripts")
+          from toolnames_utils import find_matches_for_new_tool
+
           issue_body = os.environ.get("ISSUE_BODY", "")
           MAX_BODY_LEN = 100_000
           if len(issue_body) > MAX_BODY_LEN:
@@ -237,11 +278,24 @@ jobs:
 
           missing = []
           for tool in tools:
-              if tool not in known_tools:
-                  lower = tool.lower()
-                  case_match = next((k for k in known_tools if k.lower() == lower), None)
-                  if not case_match:
-                      missing.append(tool)
+              matches = find_matches_for_new_tool(tool, known_tools)
+              if not (
+                  matches["exact"] or matches["case_variant"]
+                  or matches["canonical_equivalent"] or matches["family_equivalent"]
+              ):
+                  missing.append(tool)
+              elif matches["canonical_equivalent"]:
+                  existing_id, friendly = matches["canonical_equivalent"][0]
+                  print(
+                      f"Skipping {tool!r} — canonical equivalent of {existing_id!r} ({friendly})",
+                      file=sys.stderr
+                  )
+              elif matches["family_equivalent"]:
+                  _, friendly = matches["family_equivalent"][0]
+                  print(
+                      f"Skipping {tool!r} — resolves via known MCP family pattern ({friendly})",
+                      file=sys.stderr
+                  )
 
           print(f"Missing tools: {missing}", file=sys.stderr)
           with open("/tmp/missing-tools.json", "w") as f:
@@ -294,6 +348,9 @@ jobs:
           python3 - << 'PYEOF'
           import json, re, sys, urllib.request, urllib.error, os
 
+          sys.path.insert(0, ".github/scripts")
+          from toolnames_utils import looks_like_json_fragment
+
           with open("/tmp/missing-tools.json") as f:
               missing_tools = json.load(f)
 
@@ -337,7 +394,25 @@ jobs:
               '  mcp_gitkraken_ -> "GitKraken MCP: <action>"',
               '  mcp_io_github_ups_ -> "Context7 MCP: <action>"',
               '  mcp_microsoftdocs_microsoft_ -> "Microsoft Docs MCP: <action>"',
-              "  other mcp_ prefix -> derive server name from identifier",
+              '  mcp_github_mcp_se_ -> "GitHub MCP: <action>"',
+              '  github-mcp-server- -> "GitHub MCP: <action>"',
+              '  context7- or mcp_context7<digits>_ -> "Context7 MCP: <action>"',
+              '  atlassian- -> "Atlassian MCP: <action>"',
+              '  mcp_home-assistan_ -> "Home Assistant MCP: <action>"',
+              '  mcp__microsoft_playwright-mcp__ -> "Playwright MCP: <action>"',
+              "  other mcp_ prefix -> derive server name from identifier;",
+              "  VS Code IDs look like mcp_<server>_<tool> where <server> is the",
+              "  user-configured server name TRUNCATED TO 13 CHARS (home-assistan =",
+              "  home-assistant). Copilot CLI IDs look like <full-server-name>-<tool>.",
+              "  Claude Code IDs look like mcp__<server>__<tool>.",
+              "- Tool IDs without any MCP prefix: just Title Case the words.",
+              '- Never output placeholder text like "Tool Name Not Found" or "Unknown".',
+              "- Every value must be a plain string, never a nested JSON object or array.",
+              '  WRONG: {"MCP": {"run_workflow": "Playwright MCP: Run Workflow"}}',
+              '  RIGHT: {"MCP_run_workflow": "Playwright MCP: Run Workflow"}',
+              "  If a tool ID looks like it could describe multiple actions, pick the",
+              "  single best display name for that exact ID as given — do not invent",
+              "  sub-keys or restructure the input.",
               "",
               "EXISTING MAPPINGS (follow these patterns):",
               sample_lines,
@@ -345,7 +420,9 @@ jobs:
               "INPUT:",
               tool_ids_json,
               "",
-              "OUTPUT: JSON object only, no explanation.",
+              "OUTPUT: a flat JSON object only, no explanation. Every key must be exactly",
+              "one of the INPUT tool IDs (same spelling), and every value a plain string",
+              "with no braces, brackets, or quotes of its own.",
           ])
 
           payload = {
@@ -376,10 +453,24 @@ jobs:
                   generated = json.loads(m.group(0)) if m else {}
 
               # Only keep entries for the tool IDs we asked about; sanitize values.
+              PLACEHOLDERS = {"tool name not found", "unknown", "not found", "n/a", "none", "unknown tool"}
               validated = {}
               for tool in missing_tools:
-                  friendly = str(generated.get(tool, "")).strip()
-                  if not friendly or len(friendly) > 200:
+                  raw = generated.get(tool, "")
+                  # The model occasionally nests a sub-object under a key
+                  # instead of a plain string (e.g. {"MCP": {"run_workflow":
+                  # "Playwright MCP: Run Workflow"}}). str()-ing that dict
+                  # produces a Python-repr string like
+                  # "{'run_workflow': 'Playwright MCP: Run Workflow'}", which
+                  # is not a valid friendly name — treat it as missing rather
+                  # than forwarding the raw structure.
+                  friendly = "" if isinstance(raw, (dict, list)) else str(raw).strip()
+                  if (
+                      not friendly
+                      or len(friendly) > 200
+                      or friendly.lower() in PLACEHOLDERS
+                      or looks_like_json_fragment(friendly)
+                  ):
                       # Local fallback transformation
                       s = re.sub(r'[_\-.]', ' ', tool)
                       s = re.sub(r'([a-z])([A-Z])', r'\1 \2', s)
@@ -416,17 +507,33 @@ jobs:
 
       - name: Update toolNames.json with new entries
         if: steps.extract.outputs.has_missing == 'true'
+        id: update
         run: |
           python3 - << 'PYEOF'
-          import json, re, sys
+          import json, os, re, sys
+
+          sys.path.insert(0, ".github/scripts")
+          from toolnames_utils import find_friendly_duplicates, find_matches_for_new_tool, looks_like_json_fragment
 
           TOOLNAMES_FILE = "src/toolNames.json"
+          SKIP_REASONS_FILE = "/tmp/slm-skip-reasons.json"
+
+          skip_reasons = []
+
+          def write_skip_reasons():
+              with open(SKIP_REASONS_FILE, "w") as f:
+                  json.dump(skip_reasons, f)
+
+          def skip(tool_id, reason):
+              print(f"Skipping {tool_id!r} — {reason}", file=sys.stderr)
+              skip_reasons.append({"tool_id": tool_id, "reason": reason})
 
           with open("/tmp/slm-names.json") as f:
               new_entries = json.load(f)
 
           if not new_entries:
               print("No new entries to add.", file=sys.stderr)
+              write_skip_reasons()
               sys.exit(0)
 
           with open(TOOLNAMES_FILE) as f:
@@ -434,16 +541,52 @@ jobs:
 
           to_add = {}
           for tool_id, friendly_name in new_entries.items():
-              if tool_id in known_tools:
-                  print(f"Skipping {tool_id!r} — already present", file=sys.stderr)
+              # Final backstop: never write a JSON-like friendly name, even
+              # if the generation step's own fallback was somehow bypassed.
+              if looks_like_json_fragment(friendly_name):
+                  skip(
+                      tool_id,
+                      f"friendly name {friendly_name!r} looks like a stray JSON/dict "
+                      "fragment, not a valid display name"
+                  )
                   continue
-              if any(k.lower() == tool_id.lower() for k in known_tools):
-                  print(f"Skipping {tool_id!r} — case variant present", file=sys.stderr)
+              matches = find_matches_for_new_tool(tool_id, known_tools)
+              if matches["exact"]:
+                  skip(tool_id, "already present")
+                  continue
+              if matches["case_variant"]:
+                  existing_id = matches["case_variant"][0][0]
+                  skip(tool_id, f"case variant of {existing_id!r}")
+                  continue
+              if matches["canonical_equivalent"]:
+                  existing_id = matches["canonical_equivalent"][0][0]
+                  skip(tool_id, f"canonical equivalent of {existing_id!r}")
+                  continue
+              if matches["family_equivalent"]:
+                  skip(tool_id, "resolves via known MCP family pattern")
+                  continue
+              friendly_dups = find_friendly_duplicates(friendly_name, known_tools)
+              if friendly_dups:
+                  existing_id, existing_friendly = friendly_dups[0]
+                  skip(
+                      tool_id,
+                      f"friendly name '{friendly_name}' already used by "
+                      f"{existing_id!r} ({existing_friendly})"
+                  )
                   continue
               to_add[tool_id] = friendly_name
 
+          write_skip_reasons()
+
           if not to_add:
               print("All entries already present after dedup. Nothing to write.", file=sys.stderr)
+              print(
+                  f"::warning::add-toolnames-with-slm generated {len(new_entries)} friendly "
+                  f"name(s) but all were skipped by dedup, so no PR was opened. See the "
+                  "'Update toolNames.json with new entries' step log for per-tool reasons."
+              )
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("added_count=0\n")
               sys.exit(0)
 
           ordered_items = list(known_tools.items()) + list(to_add.items())
@@ -464,6 +607,8 @@ jobs:
           with open(TOOLNAMES_FILE, "w") as f:
               f.write(new_content)
           print(f"✅ Wrote {len(to_add)} new entries to toolNames.json", file=sys.stderr)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"added_count={len(to_add)}\n")
           PYEOF
           
       - name: Restore gradlew files to prevent stash conflicts
@@ -544,7 +689,15 @@ jobs:
                   lines.append("")
                   lines.append("> ⚠️ Also check whether any of these tools should be added to `automaticTools.json`.")
               else:
-                  lines.append("> ℹ️ No PR was opened (either no changes were needed or generation failed).")
+                  skip_path = "/tmp/slm-skip-reasons.json"
+                  skip_reasons = json.load(open(skip_path)) if os.path.exists(skip_path) else []
+                  lines.append("> ⚠️ **No PR was opened** — every generated name was rejected by dedup, so `toolNames.json` was left unchanged:")
+                  lines.append(">")
+                  if skip_reasons:
+                      for item in skip_reasons:
+                          lines.append(f"> - `{esc(item['tool_id'])}`: {esc(item['reason'])}")
+                  else:
+                      lines.append("> - (no per-tool reason was recorded — check the workflow run log below)")
               lines.append("")
               lines.append(f"_Workflow run: {server_url}/{repo}/actions/runs/{run_id}_")
               comment = "\n".join(lines)

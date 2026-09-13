@@ -1,6 +1,6 @@
-# Contributing to Copilot Token Tracker
+# Contributing to AI Engineering Fluency
 
-Thank you for your interest in contributing to the Copilot Token Tracker extension! This guide will help you get started with development, especially when working with AI assistants like GitHub Copilot.
+Thank you for your interest in contributing to the AI Engineering Fluency extension! This guide will help you get started with development, especially when working with AI assistants like GitHub Copilot.
 
 ## Table of Contents
 
@@ -300,6 +300,12 @@ The project uses **`pnpm-lock.yaml`** for reproducible builds and dependency con
 
 ### Development Principles
 
+Sharing-server contributions (including tests, docs and downstream overrides)
+must follow the [server data separation contract](sharing-server/AGENTS.md).
+For server build and test commands, use the
+[server validation guidance](docs/VALIDATION.md#sharing-server), not the
+extension-specific workflow below.
+
 1. **Minimal Changes:** Only modify files directly needed for your changes
 2. **Focused Modifications:** Make surgical, precise changes
 3. **Preserve Structure:** Maintain existing code organization
@@ -336,6 +342,10 @@ pnpm run lint:json
 **Note:** JSON validation is automatically run in CI/CD pipelines to catch syntax errors early.
 
 ## Testing
+
+For the sharing server, follow the [required privacy tests](sharing-server/AGENTS.md#required-validation)
+and [server validation guidance](docs/VALIDATION.md#sharing-server). Tests use
+isolated SQLite fixtures and stubbed GitHub access, never production data.
 
 - Test the extension manually in the Extension Development Host (F5)
 - Verify token tracking works correctly

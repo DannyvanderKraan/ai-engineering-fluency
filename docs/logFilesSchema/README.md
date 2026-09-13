@@ -34,6 +34,30 @@ This is the **primary reference** for understanding Copilot session file structu
 - Model attribution heuristic from `toolCallId` prefix (`toolu_*` ⇒ Anthropic, `call_*` ⇒ OpenAI)
 - Why the JetBrains JSONL must NOT be conflated with the Copilot CLI JSONL under `~/.copilot/session-state/`
 
+### devin-windsurf-session-format.md
+**Research documentation** of Devin (Cognition Labs' desktop IDE) and its relationship to
+Windsurf. Devin is a direct fork/rebrand of Windsurf and shares the exact same Cascade
+`.pb` trajectory storage, bundled `codeium.windsurf` extension, and gRPC API — covers the
+**desktop app only**. This file documents:
+- The `product.json` / `oldDataFolderName` evidence that Devin is a Windsurf fork
+- Why `src/windsurf.ts` (`WindsurfDataAccess`) is the single data access layer for both editors
+- How live sessions are attributed to "Windsurf" vs. "Devin" based on `vscode.env.appName`
+- The known limitation for file-based `.pb` fallback discovery (always labeled "Windsurf")
+- A cross-reference to devin-cli-session-format.md for the separate Devin CLI tool
+
+### devin-cli-session-format.md
+**Research documentation** of Devin CLI (Cognition Labs' separate, ACP-based CLI agent
+tool — distinct from the Devin desktop app above). Integrated as a regular
+`IEcosystemAdapter` (`DevinCliAdapter`/`DevinCliDataAccess`), not a special case. This file
+documents:
+- The global `sessions.db` SQLite schema (`sessions`, `message_nodes` tree via
+  `parent_node_id`/`main_chain_id`, `prompt_history`, `tool_call_state`)
+- Best-effort `chat_message` JSON parsing inferred from the ACP v2 protocol schema
+- Why token counts are estimated (ACP has no per-message token counts; `cogs_json` field
+  names are guessed defensively) rather than actual API usage
+- The known limitation that all data tables were empty on the machine this was researched
+  on, so the schema is confirmed but example values are not
+
 ### gemini-cli-session-format.md
 **Research documentation** of an observed Gemini CLI session format on Windows. This file describes:
 - File locations under `~/.gemini/`
@@ -42,6 +66,23 @@ This is the **primary reference** for understanding Copilot session file structu
 - Turn reconstruction rules, including deduping assistant updates by `id`
 - Why the observed format differs from TokTrack's current Gemini parser assumptions
 - Why the logs are sufficient for token totals, session lists, and chat turn rendering
+
+### hydrafusion-routing-events.md
+**Schema documentation** of the HydraFusion routing events the Copilot CLI writes into its
+own `~/.copilot/session-state/{id}/events.jsonl`. HydraFusion is a synthetic model that runs
+several real models per turn; the CLI shows you one answer and one credit number, and these
+events are the only record of what ran behind it. This file documents:
+- The four event types (`session.fusion_resolved`, `assistant.fusion_phase_completed`,
+  `session.fusion_handoff`, `session.fusion_completed`) and every field on them
+- The accounting rules that separate a correct reading from a plausible one — above all that
+  the turn rollup and its phase events are the same credits counted twice
+- Why review spend, final-source attribution and planned-but-skipped legs are the numbers
+  worth surfacing, with calibration figures from a real 24-turn session
+- Which fields are deliberately discarded (all model output: `content`, `projectionMessage`,
+  handoff `message`)
+
+Parsed by [`src/hydrafusion.ts`](../../src/hydrafusion.ts); rendered as the "⚡ HydraFusion
+Routing" section of the Session Log Viewer.
 
 
 ### session-file-schema-analysis.json

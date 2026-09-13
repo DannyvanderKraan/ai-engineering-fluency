@@ -27,19 +27,29 @@ import { CopilotCliAdapter } from '../../../src/adapters/copilotCliAdapter';
 import { AntigravityAdapter } from '../../../src/adapters/antigravityAdapter';
 import { KiroAdapter } from '../../../src/adapters/kiroAdapter';
 import { KiroCliAdapter } from '../../../src/adapters/kiroCliAdapter';
+import { DevinCliAdapter } from '../../../src/adapters/devinCliAdapter';
+import { ClineAdapter } from '../../../src/adapters/clineAdapter';
+import { CodexCliAdapter } from '../../../src/adapters/codexCliAdapter';
+import { HermesAdapter } from '../../../src/adapters/hermesAdapter';
+import { KiloAdapter } from '../../../src/adapters/kiloAdapter';
 
 import { OpenCodeDataAccess } from '../../../src/opencode';
 import { CrushDataAccess } from '../../../src/crush';
 import { ContinueDataAccess } from '../../../src/continue';
 import { EclipseDataAccess } from '../../../src/eclipse';
 import { ClaudeCodeDataAccess } from '../../../src/claudecode';
-import { ClaudeDesktopCoworkDataAccess } from '../../../src/claudedesktop';
+import { ClaudeDesktopDataAccess } from '../../../src/claudedesktop';
 import { VisualStudioDataAccess } from '../../../src/visualstudio';
 import { MistralVibeDataAccess } from '../../../src/mistralvibe';
 import { GeminiCliDataAccess } from '../../../src/geminicli';
 import { AntigravityDataAccess } from '../../../src/antigravity';
 import { KiroDataAccess } from '../../../src/kiro';
 import { KiroCliDataAccess } from '../../../src/kirocli';
+import { DevinCliDataAccess } from '../../../src/devinCli';
+import { ClineDataAccess } from '../../../src/cline';
+import { CodexCliDataAccess } from '../../../src/codexcli';
+import { HermesDataAccess } from '../../../src/hermes';
+import { KiloDataAccess } from '../../../src/kilo';
 
 // Stub functions for adapters requiring callbacks
 const noopEstimateTokens = (_text: string, _model?: string) => 0;
@@ -52,13 +62,18 @@ const crushDA = new CrushDataAccess(null as any);
 const continueDA = new ContinueDataAccess();
 const eclipseDA = new EclipseDataAccess();
 const claudeCodeDA = new ClaudeCodeDataAccess();
-const claudeDesktopDA = new ClaudeDesktopCoworkDataAccess();
+const claudeDesktopDA = new ClaudeDesktopDataAccess();
 const visualStudioDA = new VisualStudioDataAccess();
 const mistralVibeDA = new MistralVibeDataAccess();
 const geminiCliDA = new GeminiCliDataAccess();
 const antigravityDA = new AntigravityDataAccess();
 const kiroDA = new KiroDataAccess();
 const kiroCliDA = new KiroCliDataAccess();
+const devinCliDA = new DevinCliDataAccess();
+const clineDA = new ClineDataAccess();
+const codexCliDA = new CodexCliDataAccess();
+const hermesDA = new HermesDataAccess();
+const kiloDA = new KiloDataAccess(null as any);
 
 const openCodeAdapter = new OpenCodeAdapter(openCodeDA);
 const crushAdapter = new CrushAdapter(crushDA);
@@ -74,22 +89,31 @@ const copilotCliAdapter = new CopilotCliAdapter();
 const antigravityAdapter = new AntigravityAdapter(antigravityDA);
 const kiroAdapter = new KiroAdapter(kiroDA);
 const kiroCliAdapter = new KiroCliAdapter(kiroCliDA);
+const devinCliAdapter = new DevinCliAdapter(devinCliDA);
+const clineAdapter = new ClineAdapter(clineDA);
+const codexCliAdapter = new CodexCliAdapter(codexCliDA);
+const hermesAdapter = new HermesAdapter(hermesDA);
+const kiloAdapter = new KiloAdapter(kiloDA);
 
 const allAdapters: IEcosystemAdapter[] = [
     openCodeAdapter, crushAdapter, continueAdapter, eclipseAdapter,
     claudeCodeAdapter, claudeDesktopAdapter, visualStudioAdapter, mistralVibeAdapter, geminiCliAdapter,
-    copilotChatAdapter, copilotCliAdapter, antigravityAdapter, kiroAdapter, kiroCliAdapter,
+    copilotChatAdapter, copilotCliAdapter, antigravityAdapter, kiroAdapter, kiroCliAdapter, devinCliAdapter,
+    clineAdapter,
+    codexCliAdapter,
+    hermesAdapter,
+    kiloAdapter,
 ];
 
 // ---------------------------------------------------------------------------
 // isDiscoverable type guard
 // ---------------------------------------------------------------------------
 
-test('isDiscoverable: returns true for all 14 adapters', () => {
+test('isDiscoverable: returns true for all 19 adapters', () => {
     for (const adapter of allAdapters) {
         assert.ok(isDiscoverable(adapter), `Expected ${adapter.id} to be discoverable`);
     }
-    assert.equal(allAdapters.length, 14);
+    assert.equal(allAdapters.length, 19);
 });
 
 test('isDiscoverable: returns false for plain IEcosystemAdapter without discover()', () => {
@@ -123,6 +147,29 @@ test('adapter IDs are stable lowercase identifiers', () => {
     assert.equal(antigravityAdapter.id, 'antigravity');
     assert.equal(kiroAdapter.id, 'kiro');
     assert.equal(kiroCliAdapter.id, 'kirocli');
+    assert.equal(devinCliAdapter.id, 'devincli');
+    assert.equal(clineAdapter.id, 'cline');
+    assert.equal(hermesAdapter.id, 'hermes');
+    assert.equal(kiloAdapter.id, 'kilo');
+});
+
+// ---------------------------------------------------------------------------
+// ClineAdapter — path recognition
+// ---------------------------------------------------------------------------
+
+test('ClineAdapter.handles: recognises saoudrizwan.claude-dev task ui_messages.json paths', () => {
+    const p = path.join(os.homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage',
+        'saoudrizwan.claude-dev', 'tasks', '1782681302220', 'ui_messages.json');
+    assert.ok(clineAdapter.handles(p));
+});
+
+test('ClineAdapter.handles: rejects sibling task files and unrelated paths', () => {
+    const taskDir = path.join(os.homedir(), 'AppData', 'Roaming', 'Code', 'User', 'globalStorage',
+        'saoudrizwan.claude-dev', 'tasks', '1782681302220');
+    assert.ok(!clineAdapter.handles(path.join(taskDir, 'api_conversation_history.json')));
+    assert.ok(!clineAdapter.handles(path.join(taskDir, 'task_metadata.json')));
+    assert.ok(!clineAdapter.handles(path.join(os.homedir(), '.continue', 'sessions', 'abc.json')));
+    assert.equal(codexCliAdapter.id, 'codexcli');
 });
 
 // ---------------------------------------------------------------------------
@@ -144,6 +191,53 @@ test('OpenCodeAdapter.handles: rejects unrelated paths', () => {
     assert.ok(!openCodeAdapter.handles(path.join(os.homedir(), '.claude', 'projects', 'hash', 'abc.jsonl')));
 });
 
+test('KiloAdapter.handles: recognises kilo.db DB virtual paths', () => {
+    const p = path.join(kiloDA.getKiloDataDir(), 'kilo.db#ses_abc123');
+    assert.ok(kiloAdapter.handles(p));
+});
+
+test('KiloAdapter.handles: rejects OpenCode paths and unrelated paths', () => {
+    assert.ok(!kiloAdapter.handles(path.join(openCodeDA.getOpenCodeDataDir(), 'opencode.db#ses_abc123')));
+    assert.ok(!kiloAdapter.handles(path.join(os.homedir(), '.continue', 'sessions', 'abc.json')));
+    assert.ok(!kiloAdapter.handles(path.join(os.homedir(), '.claude', 'projects', 'hash', 'abc.jsonl')));
+});
+
+test('KiloDataAccess: coerces numeric token strings and ISO timestamps', async () => {
+    const dataAccess = new KiloDataAccess(null as any);
+    dataAccess.getKiloMessagesForSession = async () => [
+        { id: 'user-1', role: 'user', time: { created: '2026-09-07T12:00:00.000Z' } },
+        {
+            id: 'assistant-1', role: 'assistant', parentID: 'user-1', modelID: 'test-model',
+            tokens: { total: '150', output: '20', reasoning: '5', cache: { read: '10', write: '3' } }
+        }
+    ];
+
+    const result = await dataAccess.getKiloSessionData('kilo.db#ses_test');
+
+    assert.equal(result.timestamp, Date.parse('2026-09-07T12:00:00.000Z'));
+    assert.equal(result.tokens, 150);
+    assert.equal(result.modelUsage['test-model'].inputTokens, 125);
+    assert.equal(result.modelUsage['test-model'].outputTokens, 25);
+    assert.equal(result.modelUsage['test-model'].cachedReadTokens, 10);
+    assert.equal(result.modelUsage['test-model'].cacheCreationTokens, 3);
+});
+
+test('KiloAdapter.analyzeUsage: ignores unsafe tool names', async () => {
+    const dataAccess = new KiloDataAccess(null as any);
+    dataAccess.getKiloMessagesForSession = async () => [{ id: 'assistant-1', role: 'assistant', modelID: 'test-model' }];
+    dataAccess.getKiloPartsForMessage = async () => [
+        { type: 'tool', tool: '__proto__' },
+        { type: 'tool', tool: 'read_file' }
+    ];
+    const adapter = new KiloAdapter(dataAccess);
+
+    const analysis = await adapter.analyzeUsage('kilo.db#ses_test', { modelPricing: {}, toolNameMap: {} });
+
+    assert.equal(analysis.toolCalls.total, 1);
+    assert.deepEqual(analysis.toolCalls.byTool, { read_file: 1 });
+    assert.equal(Object.prototype.hasOwnProperty.call(analysis.toolCalls.byTool, '__proto__'), false);
+});
+
 test('ContinueAdapter.handles: recognises ~/.continue/sessions paths', () => {
     const p = path.join(os.homedir(), '.continue', 'sessions', 'abc123.json');
     assert.ok(continueAdapter.handles(p));
@@ -160,6 +254,32 @@ test('ClaudeCodeAdapter.handles: recognises ~/.claude/projects paths', () => {
 
 test('ClaudeCodeAdapter.handles: rejects ~/.claude/stats-cache.json', () => {
     assert.ok(!claudeCodeAdapter.handles(path.join(os.homedir(), '.claude', 'stats-cache.json')));
+});
+
+test('ClaudeCodeAdapter.getDisplayName: returns Claude Desktop for entrypoint claude-desktop', () => {
+    const dir = fs.mkdtempSync(path.join(process.cwd(), 'claude-adapter-'));
+    const projectsDir = path.join(dir, '.claude', 'projects', 'hash');
+    fs.mkdirSync(projectsDir, { recursive: true });
+    const file = path.join(projectsDir, 'session.jsonl');
+    fs.writeFileSync(file, JSON.stringify({ type: 'user', entrypoint: 'claude-desktop', timestamp: '2026-01-01T00:00:00.000Z' }) + '\n');
+    try {
+        assert.equal(claudeCodeAdapter.getDisplayName(file), 'Claude Desktop');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('ClaudeCodeAdapter.getDisplayName: returns Claude Code CLI for entrypoint cli', () => {
+    const dir = fs.mkdtempSync(path.join(process.cwd(), 'claude-adapter-'));
+    const projectsDir = path.join(dir, '.claude', 'projects', 'hash');
+    fs.mkdirSync(projectsDir, { recursive: true });
+    const file = path.join(projectsDir, 'session.jsonl');
+    fs.writeFileSync(file, JSON.stringify({ type: 'user', entrypoint: 'cli', timestamp: '2026-01-01T00:00:00.000Z' }) + '\n');
+    try {
+        assert.equal(claudeCodeAdapter.getDisplayName(file), 'Claude Code CLI');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
 });
 
 test('MistralVibeAdapter.handles: recognises ~/.vibe/logs/session paths', () => {
@@ -213,6 +333,34 @@ test('KiroCliAdapter.handles: recognises ~/.kiro/sessions/cli metadata paths', (
 test('KiroCliAdapter.handles: rejects the .jsonl message log and unrelated paths', () => {
     assert.ok(!kiroCliAdapter.handles(path.join(os.homedir(), '.kiro', 'sessions', 'cli', 'abc.jsonl')));
     assert.ok(!kiroCliAdapter.handles(path.join(os.homedir(), '.continue', 'sessions', 'abc.json')));
+});
+
+test('DevinCliAdapter.handles: recognises the sessions.db virtual path scheme', () => {
+    const p = `${devinCliDA.getDbPath()}#sess-abc123`;
+    assert.ok(devinCliAdapter.handles(p));
+});
+
+test('DevinCliAdapter.handles: rejects unrelated paths and the Devin desktop devin:// scheme', () => {
+    assert.ok(!devinCliAdapter.handles('devin://trajectory/abc123'));
+    assert.ok(!devinCliAdapter.handles(path.join(os.homedir(), '.crush', 'crush.db#abc')));
+    assert.ok(!devinCliAdapter.handles(path.join(os.homedir(), '.continue', 'sessions', 'abc.json')));
+});
+
+test('CodexCliAdapter.handles: recognises rollout files and state-db virtual thread paths', () => {
+    const rollout = path.join(codexCliDA.getSessionsDir(), '2026', '03', '19', 'rollout-2026-03-19T12-00-00-019d0233-2d86-7c21-b13a-8fa9578d3a0d.jsonl');
+    assert.ok(codexCliAdapter.handles(rollout));
+    const archived = path.join(codexCliDA.getArchivedSessionsDir(), '2026', '03', '19', 'rollout-2026-03-19T12-00-00-019d0233-2d86-7c21-b13a-8fa9578d3a0d.jsonl');
+    assert.ok(codexCliAdapter.handles(archived));
+    const virtual = codexCliDA.virtualPath('019d0233-2d86-7c21-b13a-8fa9578d3a0d');
+    assert.ok(codexCliAdapter.handles(virtual));
+    assert.ok(codexCliAdapter.handles(virtual.replace(/\//g, '\\')));
+});
+
+test('CodexCliAdapter.handles: rejects unrelated paths (incl. the logs db and other adapters)', () => {
+    assert.ok(!codexCliAdapter.handles(path.join(os.homedir(), '.codex', 'logs_1.sqlite')));
+    assert.ok(!codexCliAdapter.handles(path.join(os.homedir(), '.codex', 'models_cache.json')));
+    assert.ok(!codexCliAdapter.handles(path.join(os.homedir(), '.crush', 'crush.db#abc')));
+    assert.ok(!codexCliAdapter.handles(path.join(os.homedir(), '.continue', 'sessions', 'abc.json')));
 });
 
 test('KiroAdapter.handles: recognises kiro.kiroagent workspace-sessions paths', () => {
@@ -283,6 +431,13 @@ test('OpenCodeAdapter.getCandidatePaths: returns both JSON dir and DB paths', ()
     assert.equal(paths.length, 2);
 });
 
+test('KiloAdapter.getCandidatePaths: returns the kilo.db database path', () => {
+    const paths = kiloAdapter.getCandidatePaths();
+    assert.equal(paths.length, 1);
+    assert.ok(paths[0].path.endsWith('kilo.db'));
+    assert.equal(paths[0].source, 'Kilo Code (DB)');
+});
+
 test('CrushAdapter.getCandidatePaths: always includes projects.json path', () => {
     const paths = crushAdapter.getCandidatePaths();
     assert.ok(paths.length >= 1);
@@ -334,7 +489,7 @@ test('VisualStudioAdapter.getCandidatePaths: returns VS log dir and SSMS session
 test('getEditorRoot: all adapters return non-empty string', () => {
     const dummyFile = '/dummy/path/session.json';
     for (const adapter of allAdapters) {
-        // claudedesktop is Windows/macOS only; getCoworkBaseDir() returns '' on Linux
+        // claudedesktop is Windows/macOS only; getDesktopSessionDirs() returns [] on Linux
         if (adapter.id === 'claudedesktop' && os.platform() === 'linux') { continue; }
         const root = adapter.getEditorRoot(dummyFile);
         assert.ok(typeof root === 'string' && root.length > 0, `${adapter.id}: getEditorRoot should return non-empty string`);
@@ -418,7 +573,7 @@ test('getCandidatePaths paths are consistent with discover candidatePaths', asyn
 // extractClaudeSlashCommand — slash command detection
 // ---------------------------------------------------------------------------
 
-import { extractClaudeSlashCommand } from '../../../src/adapters/claudeCodeAdapter';
+import { extractClaudeSlashCommand, extractSkillName, extractInvokedSkillName } from '../../../src/adapters/claudeCodeAdapter';
 
 test('extractClaudeSlashCommand: returns command name for allowed slash commands', () => {
     assert.equal(extractClaudeSlashCommand('/review'), 'review');
@@ -456,11 +611,65 @@ test('extractClaudeSlashCommand: ignores slash commands not at the start', () =>
 });
 
 // ---------------------------------------------------------------------------
+// extractSkillName — agnostic Skill tool_use unwrapping (any skill, not an allowlist)
+// ---------------------------------------------------------------------------
+
+test('extractSkillName: resolves the skill name from a Skill tool_use input', () => {
+    assert.equal(extractSkillName('Skill', { skill: 'graphify' }), 'graphify');
+    assert.equal(extractSkillName('Skill', { skill: 'sync-host-views' }), 'sync-host-views');
+});
+
+test('extractSkillName: trims whitespace around the skill name', () => {
+    assert.equal(extractSkillName('Skill', { skill: '  graphify  ' }), 'graphify');
+});
+
+test('extractSkillName: returns null for non-Skill tool names', () => {
+    assert.equal(extractSkillName('Bash', { skill: 'graphify' }), null);
+    assert.equal(extractSkillName('Read', {}), null);
+});
+
+test('extractSkillName: returns null for missing or malformed input.skill', () => {
+    assert.equal(extractSkillName('Skill', {}), null);
+    assert.equal(extractSkillName('Skill', undefined), null);
+    assert.equal(extractSkillName('Skill', null), null);
+    assert.equal(extractSkillName('Skill', { skill: '' }), null);
+    assert.equal(extractSkillName('Skill', { skill: '   ' }), null);
+    assert.equal(extractSkillName('Skill', { skill: 123 }), null);
+});
+
+// ---------------------------------------------------------------------------
+// extractInvokedSkillName — user-typed slash invocation (<command-name> tag),
+// a completely different representation from the Skill tool_use path above.
+// ---------------------------------------------------------------------------
+
+test('extractInvokedSkillName: resolves the skill name from a <command-name> tag (string content)', () => {
+    const content = '<command-message>graphify</command-message>\n<command-name>/graphify</command-name>';
+    assert.equal(extractInvokedSkillName(content), 'graphify');
+});
+
+test('extractInvokedSkillName: resolves any command name agnostically, no allowlist', () => {
+    assert.equal(extractInvokedSkillName('<command-name>/some-random-skill</command-name>'), 'some-random-skill');
+    assert.equal(extractInvokedSkillName('<command-name>/code-review</command-name>'), 'code-review');
+});
+
+test('extractInvokedSkillName: handles array content blocks', () => {
+    const content = [{ type: 'text', text: '<command-message>graphify</command-message>\n<command-name>/graphify</command-name>' }];
+    assert.equal(extractInvokedSkillName(content), 'graphify');
+});
+
+test('extractInvokedSkillName: returns null when no <command-name> tag is present', () => {
+    assert.equal(extractInvokedSkillName('just a normal user message'), null);
+    assert.equal(extractInvokedSkillName(''), null);
+    assert.equal(extractInvokedSkillName(null), null);
+    assert.equal(extractInvokedSkillName(undefined), null);
+});
+
+// ---------------------------------------------------------------------------
 // ClaudeDesktopAdapter.buildTurns() — requestId deduplication
 // ---------------------------------------------------------------------------
 
 test('ClaudeDesktopAdapter.buildTurns: counts tokens once per requestId (dedup split content blocks)', async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-test-'));
+    const tmpDir = fs.mkdtempSync(path.join(process.cwd(), 'cowork-test-'));
     const sessionFile = path.join(tmpDir, 'session.jsonl');
     try {
         // Simulate Cowork JSONL: one API call (req_001) split into two events —
@@ -503,7 +712,7 @@ test('ClaudeDesktopAdapter.buildTurns: counts tokens once per requestId (dedup s
 });
 
 test('ClaudeDesktopAdapter.buildTurns: collects tool calls from all content-block events of same requestId', async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-test-'));
+    const tmpDir = fs.mkdtempSync(path.join(process.cwd(), 'cowork-test-'));
     const sessionFile = path.join(tmpDir, 'session.jsonl');
     try {
         // One API call (req_001) split into 3 events: thinking, tool_use A, tool_use B
@@ -552,7 +761,7 @@ test('ClaudeDesktopAdapter.buildTurns: collects tool calls from all content-bloc
 });
 
 test('ClaudeDesktopAdapter.buildTurns: unique requestIds across turns sum correctly', async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-test-'));
+    const tmpDir = fs.mkdtempSync(path.join(process.cwd(), 'cowork-test-'));
     const sessionFile = path.join(tmpDir, 'session.jsonl');
     try {
         // Two user turns, each with one API call (no duplicates)
@@ -584,6 +793,61 @@ test('ClaudeDesktopAdapter.buildTurns: unique requestIds across turns sum correc
         assert.equal(turns[0].actualUsage?.completionTokens, 20);
         assert.equal(turns[1].actualUsage?.promptTokens, 150);
         assert.equal(turns[1].actualUsage?.completionTokens, 25);
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// ClaudeDesktopAdapter.analyzeUsage — Skill tool_use -> skillCalls
+// (Claude Desktop Cowork shares Claude Code's Skill tool wrapper convention.)
+// ---------------------------------------------------------------------------
+
+const desktopAdapterCtx = { modelPricing: {}, toolNameMap: {} };
+
+test('ClaudeDesktopAdapter.analyzeUsage: unwraps Skill tool_use into skillCalls.byName', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(process.cwd(), 'cowork-test-'));
+    const sessionFile = path.join(tmpDir, 'session.jsonl');
+    try {
+        const events = [
+            {
+                type: 'assistant', requestId: 'req_skill',
+                message: {
+                    role: 'assistant', model: 'claude-sonnet-4-6', stop_reason: 'tool_use',
+                    content: [{ type: 'tool_use', id: 'toolu_1', name: 'Skill', input: { skill: 'graphify' } }],
+                },
+            },
+        ];
+        fs.writeFileSync(sessionFile, events.map(e => JSON.stringify(e)).join('\n'));
+
+        const result = await claudeDesktopAdapter.analyzeUsage(sessionFile, desktopAdapterCtx);
+        assert.equal(result.skillCalls?.byName['graphify'], 1);
+        assert.equal(result.skillCalls?.total, 1);
+        // Additive (Option C): the raw "Skill" wrapper tool call is still counted as-is, unchanged.
+        assert.equal(result.toolCalls.byTool['Skill'], 1);
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('ClaudeDesktopAdapter.analyzeUsage: does not record skillCalls for non-Skill tool calls', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(process.cwd(), 'cowork-test-'));
+    const sessionFile = path.join(tmpDir, 'session.jsonl');
+    try {
+        const events = [
+            {
+                type: 'assistant', requestId: 'req_bash',
+                message: {
+                    role: 'assistant', model: 'claude-sonnet-4-6', stop_reason: 'tool_use',
+                    content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls' } }],
+                },
+            },
+        ];
+        fs.writeFileSync(sessionFile, events.map(e => JSON.stringify(e)).join('\n'));
+
+        const result = await claudeDesktopAdapter.analyzeUsage(sessionFile, desktopAdapterCtx);
+        assert.equal(result.skillCalls?.total ?? 0, 0);
+        assert.equal(result.toolCalls.byTool['Bash'], 1);
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }

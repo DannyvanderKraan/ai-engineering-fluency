@@ -2,12 +2,15 @@
  * Token estimation and model-related utility functions.
  * Pure or near-pure functions extracted from CopilotTokenTracker for reusability.
  */
-import type { ModelUsage, ModelPricing, ContextReferenceUsage, TokenEstimator } from './types';
+import type { ModelUsage, ModelPricing, ContextReferenceUsage, TokenEstimator, ChatTurn } from './types';
 import { toLocalDayKey } from './utils/dayKeys';
+import type { CopilotCliOtelSessionUsage } from './copilotCliOtel';
+import { getModelLookupCandidates } from './webview/shared/modelUtils';
 
 /** Minimum request shape needed by getModelFromRequest. */
 interface ModelRequestSource {
 	modelId?: string;
+	response?: unknown[];
 	result?: {
 		metadata?: { modelId?: string };
 		details?: string;
@@ -503,7 +506,7 @@ function _ejtsAccumulateModelMetrics(modelName: string, metrics: ShutdownModelMe
 	state.cliActualTokens += input + output;
 	state.cliCacheReadTokens += cacheRead;
 	if (!state.cliShutdownModelUsage![modelName]) {
-		state.cliShutdownModelUsage![modelName] = { inputTokens: 0, outputTokens: 0 };
+		state.cliShutdownModelUsage![modelName] = { inputTokens: 0, outputTokens: 0, sessions: 0 };
 	}
 	state.cliShutdownModelUsage![modelName].inputTokens += input;
 	state.cliShutdownModelUsage![modelName].outputTokens += output;
@@ -693,12 +696,27 @@ export function selectTokenEstimationStrategy(lines: string[]): TokenEstimationS
 
 /**
  * Estimate tokens from a JSONL session file (used by Copilot CLI/Agent mode and VS Code incremental format)
- * Each line is a separate JSON object representing an event in the session
+ * Each line is a separate JSON object representing an event in the session.
+ *
+ * `exactUsage`, when supplied by the caller (resolved via getCopilotCliExactUsage against
+ * the session's file path), overrides actualTokens/cacheReadTokens/copilotNanoAiu with
+ * exact counts from the Copilot CLI `assistant_usage_events` billing table or the
+ * OpenTelemetry file export instead of the ratio-based estimate below — the same
+ * "exact data wins" precedent as a session.shutdown event.
  */
-export function estimateTokensFromJsonlSession(fileContent: string): TokenEstimationResult {
+export function estimateTokensFromJsonlSession(fileContent: string, exactUsage?: CopilotCliOtelSessionUsage | null): TokenEstimationResult {
 	const lines = fileContent.trim().split('\n');
 	const strategy = selectTokenEstimationStrategy(lines);
-	return strategy.estimate(lines);
+	const result = strategy.estimate(lines);
+	if (exactUsage) {
+		return {
+			...result,
+			actualTokens: exactUsage.actualTokens,
+			cacheReadTokens: exactUsage.cacheReadTokens,
+			copilotNanoAiu: exactUsage.nanoAiu || result.copilotNanoAiu,
+		};
+	}
+	return result;
 }
 
 /**
@@ -792,6 +810,68 @@ function _eatdlProcessEvent(event: unknown, state: EatdlState): void {
 		entry.cachedTokens += cached;
 		state.modelBreakdown[model] = entry;
 	}
+}
+
+/** One time-to-first-token observation extracted from an `llm_request` debug-log event. */
+export interface TtftSample {
+	/** Event timestamp, normalized to epoch milliseconds — see normalizeDebugLogTimestampMs. */
+	tsMs: number;
+	model: string;
+	/** Time to first token, normalized to seconds — see normalizeTtftSeconds. */
+	ttftSeconds: number;
+}
+
+/**
+ * VS Code's Copilot Chat debug log does not document its `ts` unit. A real timestamp in
+ * seconds stays under 1e10 until the year 2286; a real timestamp in milliseconds is already
+ * past 1e12 today. That gap is wide enough to tell the two apart reliably by magnitude alone,
+ * so this normalizes either convention to milliseconds without needing to assume one.
+ */
+function normalizeDebugLogTimestampMs(ts: number): number {
+	return ts < 1e12 ? ts * 1000 : ts;
+}
+
+/**
+ * `attrs.ttft`'s unit is undocumented too. A real time-to-first-token is realistically
+ * between ~0.05s and ~60s; the same call stored in milliseconds would read 50-60,000. The
+ * threshold below treats anything under 100 as seconds — a 100+ second TTFT would be a very
+ * different bug to report on than a units mismatch — normalizing either convention to seconds.
+ * See docs/logFilesSchema/vscode-chat-debug-log-format.md for why this is a magnitude
+ * heuristic rather than a documented unit.
+ */
+function normalizeTtftSeconds(ttft: number): number {
+	return ttft < 100 ? ttft : ttft / 1000;
+}
+
+/**
+ * Extracts one `TtftSample` per `llm_request` event that carries a model, a timestamp, and
+ * `attrs.ttft`. Events missing any of the three are skipped rather than defaulted to 0/'' —
+ * unlike token totals, a missing TTFT has no meaningful zero value to average in.
+ */
+/** Parses one debug-log line into a TtftSample, or null if it's not a usable llm_request event. */
+function _parseTtftSampleLine(line: string): TtftSample | null {
+	if (!line.trim()) { return null; }
+	try {
+		const event = JSON.parse(line);
+		if (event?.type !== 'llm_request') { return null; }
+		const attrs = event.attrs as Record<string, unknown> | undefined;
+		const ttft = typeof attrs?.ttft === 'number' ? attrs.ttft : undefined;
+		const model = typeof attrs?.model === 'string' && attrs.model ? attrs.model : undefined;
+		const ts = typeof event.ts === 'number' ? event.ts : undefined;
+		if (ttft === undefined || model === undefined || ts === undefined) { return null; }
+		return { tsMs: normalizeDebugLogTimestampMs(ts), model, ttftSeconds: normalizeTtftSeconds(ttft) };
+	} catch {
+		return null;
+	}
+}
+
+export function extractTtftSamplesFromDebugLog(content: string): TtftSample[] {
+	const samples: TtftSample[] = [];
+	for (const line of content.split(/\r?\n/)) {
+		const sample = _parseTtftSampleLine(line);
+		if (sample) { samples.push(sample); }
+	}
+	return samples;
 }
 
 export function extractAllTokensFromDebugLog(content: string): {
@@ -961,14 +1041,6 @@ function getDisplayNameLookup(modelPricing: { [key: string]: ModelPricing }): { 
 }
 
 /** Find the model ID for a request by matching display names against its details string. Returns null if not found. */
-function _gmfrFindByDisplayName(details: string, modelPricing: { [key: string]: ModelPricing }): string | null {
-	const { map, sortedNames } = getDisplayNameLookup(modelPricing);
-	for (const displayName of sortedNames) {
-		if (details.includes(displayName)) { return map[displayName]; }
-	}
-	return null;
-}
-
 function _gmrMatchDisplayName(details: string, modelPricing: { [key: string]: ModelPricing }): string | null {
 	const { map, sortedNames } = getDisplayNameLookup(modelPricing);
 	for (const displayName of sortedNames) {
@@ -977,24 +1049,41 @@ function _gmrMatchDisplayName(details: string, modelPricing: { [key: string]: Mo
 	return null;
 }
 
-export function getModelFromRequest(request: ModelRequestSource, modelPricing: { [key: string]: ModelPricing } = {}): string {
-	if (request.modelId) { return request.modelId.replace(/^copilot\//, ''); }
-	if (request.result?.metadata?.modelId) { return request.result.metadata.modelId.replace(/^copilot\//, ''); }
+function isAutoModel(model: string | undefined): boolean {
+	return model === 'auto' || model === 'copilot/auto';
+}
+
+function getAutoResolution(request: ModelRequestSource): string | undefined {
+	if (!Array.isArray(request.response)) { return undefined; }
+	for (const item of request.response) {
+		if (!item || typeof item !== 'object' || !('kind' in item) || item.kind !== 'autoModeResolution') { continue; }
+		if (!('resolved' in item) || !item.resolved || typeof item.resolved !== 'object') { continue; }
+		if ('id' in item.resolved && typeof item.resolved.id === 'string' && item.resolved.id && !isAutoModel(item.resolved.id)) {
+			return item.resolved.id.replace(/^copilot\//, '');
+		}
+	}
+	return undefined;
+}
+
+/** Only explicit request-level evidence qualifies; a session picker can change between turns. */
+export function isCopilotAutoRequest(request: ModelRequestSource): boolean {
+	return isAutoModel(request.modelId) || isAutoModel(request.result?.metadata?.modelId)
+		|| (Array.isArray(request.response) && request.response.some(item => !!item && typeof item === 'object' && 'kind' in item && item.kind === 'autoModeResolution'));
+}
+
+export function getModelFromRequest(request: ModelRequestSource, modelPricing: { [key: string]: ModelPricing } = {}, fallbackModel = 'gpt-4'): string {
+	if (request.modelId && !isAutoModel(request.modelId)) { return request.modelId.replace(/^copilot\//, ''); }
+	const resolved = getAutoResolution(request);
+	if (resolved) { return resolved; }
+	const candidates = [request.modelId, request.result?.metadata?.modelId];
+	const explicit = candidates.find(model => model && !isAutoModel(model));
+	if (explicit) { return explicit.replace(/^copilot\//, ''); }
 	if (request.result?.details) {
 		const matched = _gmrMatchDisplayName(request.result.details, modelPricing);
 		if (matched) { return matched; }
 	}
-
-	if (request.result?.metadata?.modelId) {
-		return request.result.metadata.modelId.replace(/^copilot\//, '');
-	}
-
-	if (request.result?.details) {
-		const found = _gmfrFindByDisplayName(request.result.details, modelPricing);
-		if (found) { return found; }
-	}
-
-	return 'gpt-4'; // default
+	if (isCopilotAutoRequest(request)) { return 'auto'; }
+	return fallbackModel;
 }
 
 /**
@@ -1105,18 +1194,17 @@ export function applyDelta(state: unknown, delta: unknown): unknown {
 }
 
 export function getModelTier(modelId: string, modelPricing: { [key: string]: ModelPricing } = {}): 'standard' | 'premium' | 'unknown' {
-	// Determine tier based on multiplier: 0 = standard, >0 = premium
-	// Look up from modelPricing.json
-	const pricingInfo = modelPricing[modelId];
-	if (pricingInfo && typeof pricingInfo.multiplier === 'number') {
-		return pricingInfo.multiplier === 0 ? 'standard' : 'premium';
+	// Look up the explicit `tier` field from modelPricing.json.
+	const pricingInfo = _lookupModelPricing(modelId, modelPricing);
+	if (pricingInfo?.tier) {
+		return pricingInfo.tier;
 	}
 
 	// Fallback: try to match partial model names
 	for (const [key, value] of Object.entries(modelPricing)) {
 		if (modelId.includes(key) || key.includes(modelId)) {
-			if (typeof value.multiplier === 'number') {
-				return value.multiplier === 0 ? 'standard' : 'premium';
+			if (value.tier) {
+				return value.tier;
 			}
 		}
 	}
@@ -1156,7 +1244,7 @@ export interface LongContextInfo {
  * parseable threshold — i.e. the model is billed at a single (default) rate.
  */
 export function getLongContextInfo(modelId: string, modelPricing: { [key: string]: ModelPricing } = {}): LongContextInfo | null {
-	let pricing: ModelPricing | undefined = modelPricing[modelId];
+	let pricing: ModelPricing | undefined = _lookupModelPricing(modelId, modelPricing);
 	if (!pricing) {
 		const id = modelId.toLowerCase();
 		for (const [key, value] of Object.entries(modelPricing)) {
@@ -1175,22 +1263,18 @@ export function getLongContextInfo(modelId: string, modelPricing: { [key: string
 }
 
 function _costBucketFromPricing(pricing: ModelPricing): 'low' | 'medium' | 'high' | 'unknown' {
-	const costPerM = pricing.copilotPricing?.inputCostPerMillion ?? null;
+	// Prefer the Copilot AI-Credit rate; fall back to the direct provider/API rate.
+	const costPerM = pricing.copilotPricing?.inputCostPerMillion ?? pricing.inputCostPerMillion ?? null;
 	if (costPerM !== null) {
 		if (costPerM < 2) { return 'low'; }
 		if (costPerM < 5) { return 'medium'; }
-		return 'high';
-	}
-	if (typeof pricing.multiplier === 'number') {
-		if (pricing.multiplier === 0) { return 'low'; }
-		if (pricing.multiplier <= 1) { return 'medium'; }
 		return 'high';
 	}
 	return 'unknown';
 }
 
 export function getModelCostBucket(modelId: string, modelPricing: { [key: string]: ModelPricing } = {}): 'low' | 'medium' | 'high' | 'unknown' {
-	const pricingInfo = modelPricing[modelId];
+	const pricingInfo = _lookupModelPricing(modelId, modelPricing);
 	if (pricingInfo) { return _costBucketFromPricing(pricingInfo); }
 	for (const [key, value] of Object.entries(modelPricing)) {
 		if (modelId.includes(key) || key.includes(modelId)) { return _costBucketFromPricing(value); }
@@ -1199,16 +1283,45 @@ export function getModelCostBucket(modelId: string, modelPricing: { [key: string
 }
 
 /**
+ * Resolves the pricing entry for a raw model id by trying the normalized
+ * candidates from getModelLookupCandidates — handles `copilot/` prefixes,
+ * custom-endpoint ids (`customendpoint/<provider>/<model id>`), org-scoped
+ * Copilot catalog ids (`<uuid>/<model id>`), and dash/dot version variants
+ * (`claude-opus-4-8` → `claude-opus-4.8`).
+ * Returns undefined when no candidate has a pricing entry.
+ */
+function _lookupModelPricing(
+	model: string,
+	modelPricing: { [key: string]: ModelPricing }
+): ModelPricing | undefined {
+	for (const candidate of getModelLookupCandidates(model)) {
+		const entry = modelPricing[candidate];
+		if (entry) { return entry; }
+	}
+	return undefined;
+}
+
+/**
  * Calculate estimated cost in USD based on model usage.
  * Applies cache-aware pricing when cachedReadTokens / cacheCreationTokens breakdowns
  * are available (e.g. Claude Desktop / Claude Code / OpenCode sessions).
  *
  * Cost formula:
+ *   cacheCreation1h = min(cacheCreation1hTokens ?? 0, cacheCreationTokens ?? 0)
+ *   cacheCreation5m = (cacheCreationTokens ?? 0) - cacheCreation1h
  *   uncachedInput = inputTokens - (cachedReadTokens ?? 0) - (cacheCreationTokens ?? 0)
  *   cost = uncachedInput × inputCostPerMillion
  *        + cachedReadTokens × cachedInputCostPerMillion (fallback: inputCostPerMillion)
- *        + cacheCreationTokens × cacheCreationCostPerMillion (fallback: inputCostPerMillion)
+ *        + cacheCreation5m × cacheCreationCostPerMillion (fallback: inputCostPerMillion)
+ *        + cacheCreation1h × cacheCreation1hCostPerMillion (fallback: cacheCreationCostPerMillion, then inputCostPerMillion)
  *        + outputTokens × outputCostPerMillion
+ *
+ * Anthropic bills prompt-cache writes at different premiums depending on the cache TTL:
+ * the default 5-minute TTL is priced via `cacheCreationCostPerMillion`, while the 1-hour
+ * TTL (`cache_creation.ephemeral_1h_input_tokens` in the raw API response — used by
+ * default by Claude Code) is priced via `cacheCreation1hCostPerMillion`, roughly 1.6x the
+ * 5-minute rate. When callers don't split out `cacheCreation1hTokens`, all cache-creation
+ * tokens fall back to the 5-minute rate (unchanged prior behavior).
  *
  * @param modelUsage Object with model names as keys and token counts as values
  * @param modelPricing Pricing table keyed by model id
@@ -1227,7 +1340,9 @@ export function calculateEstimatedCost(
 	for (const [model, usage] of Object.entries(modelUsage)) {
 		// No pricing entry → model still appears in usage breakdowns (via modelUsage)
 		// but contributes $0 to cost. Do NOT fall back to another model's rates.
-		const baseEntry = modelPricing[model];
+		// Prefixed/variant ids (custom endpoints, org-UUID catalog ids, dash/dot
+		// version variants) are priced by their resolved canonical id.
+		const baseEntry = _lookupModelPricing(model, modelPricing);
 		if (!baseEntry) {
 			continue;
 		}
@@ -1240,17 +1355,56 @@ export function calculateEstimatedCost(
 
 		const cachedRead = usage.cachedReadTokens ?? 0;
 		const cacheCreation = usage.cacheCreationTokens ?? 0;
+		const cacheCreation1h = Math.min(usage.cacheCreation1hTokens ?? 0, cacheCreation);
+		const cacheCreation5m = cacheCreation - cacheCreation1h;
 		const uncachedInput = Math.max(0, usage.inputTokens - cachedRead - cacheCreation);
 
 		const uncachedInputCost = (uncachedInput / 1_000_000) * pricing.inputCostPerMillion;
 		const cachedReadCost = (cachedRead / 1_000_000) * (pricing.cachedInputCostPerMillion ?? pricing.inputCostPerMillion);
-		const cacheCreationCost = (cacheCreation / 1_000_000) * (pricing.cacheCreationCostPerMillion ?? pricing.inputCostPerMillion);
+		const cacheCreation5mCost = (cacheCreation5m / 1_000_000) * (pricing.cacheCreationCostPerMillion ?? pricing.inputCostPerMillion);
+		const cacheCreation1hCost = (cacheCreation1h / 1_000_000) * (pricing.cacheCreation1hCostPerMillion ?? pricing.cacheCreationCostPerMillion ?? pricing.inputCostPerMillion);
 		const outputCost = (usage.outputTokens / 1_000_000) * pricing.outputCostPerMillion;
 
-		totalCost += uncachedInputCost + cachedReadCost + cacheCreationCost + outputCost;
+		totalCost += uncachedInputCost + cachedReadCost + cacheCreation5mCost + cacheCreation1hCost + outputCost;
+		totalCost -= copilotAutoDiscount(model, usage, baseEntry, pricingSource);
 	}
 
 	return totalCost;
+}
+
+function copilotAutoDiscount(model: string, usage: ModelUsage[string], pricing: ModelPricing, source: 'provider' | 'copilot'): number {
+	if (source !== 'copilot' || !pricing.copilotPricing || !usage.autoRouting) { return 0; }
+	// Provider fallbacks and recorded exact charges are not Copilot rate estimates.
+	return 0.1 * calculateEstimatedCost(
+		{ [model]: { ...usage.autoRouting, sessions: 0 } },
+		{ [model]: pricing.copilotPricing },
+		'provider',
+	);
+}
+
+function attachSubAgentCosts(turn: ChatTurn, modelPricing: Record<string, ModelPricing>, pricingSource: 'provider' | 'copilot'): void {
+	for (const tc of turn.toolCalls) {
+		if (!tc.isSubAgent || !tc.subAgentModel || !tc.subAgentTokens) { continue; }
+		const cost = calculateEstimatedCost({
+			[tc.subAgentModel]: { inputTokens: tc.subAgentTokens.input, outputTokens: tc.subAgentTokens.output, sessions: 1 },
+		}, modelPricing, pricingSource);
+		if (cost > 0) { tc.subAgentCost = cost; }
+	}
+}
+
+/** Attach estimates only; recorded exact billing is handled separately by the caller. */
+export function attachEstimatedTurnCosts(turns: ChatTurn[], modelPricing: Record<string, ModelPricing>, pricingSource: 'provider' | 'copilot'): void {
+	for (const turn of turns) {
+		const inputTokens = turn.actualUsage?.promptTokens ?? turn.inputTokensEstimate;
+		const outputTokens = turn.actualUsage?.completionTokens ?? turn.outputTokensEstimate;
+		if (turn.model && (inputTokens > 0 || outputTokens > 0)) {
+			const usage = { inputTokens, outputTokens, sessions: 1,
+				...(turn.autoRouted ? { autoRouting: { inputTokens, outputTokens } } : {}) };
+			const cost = calculateEstimatedCost({ [turn.model]: usage }, modelPricing, pricingSource);
+			if (cost > 0) { turn.estimatedCost = cost; }
+		}
+		attachSubAgentCosts(turn, modelPricing, pricingSource);
+	}
 }
 
 /**

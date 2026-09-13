@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Root build orchestrator for the Copilot Token Tracker mono-repo.
+    Root build orchestrator for the AI Engineering Fluency mono-repo.
 
 .DESCRIPTION
     Builds one or more sub-projects from the repo root so that nothing gets missed.
@@ -21,7 +21,7 @@
     Default: build
 
 .PARAMETER SkipInstall
-    Skip all `npm ci` dependency installs (assumes node_modules is already
+    Skip all `pnpm install --frozen-lockfile` dependency installs (assumes node_modules is already
     current in each project).  Useful for fast local iteration.
 
 .EXAMPLE
@@ -34,7 +34,7 @@
 
 .EXAMPLE
     ./build.ps1 -Project cli -SkipInstall
-    # builds the CLI without re-running npm ci (node_modules must be current)
+    # builds the CLI without re-running pnpm install --frozen-lockfile (node_modules must be current)
 #>
 
 param(
@@ -55,18 +55,18 @@ function Write-Ok([string]$msg)   { Write-Host "    $msg" -ForegroundColor Green
 function Write-Err([string]$msg)  { Write-Host "    ERROR: $msg" -ForegroundColor Red }
 
 # Tracks directories whose npm dependencies were already installed during this
-# invocation, so a full build doesn't re-run `npm ci` (which wipes
+# invocation, so a full build doesn't re-run `pnpm install --frozen-lockfile` (which wipes
 # node_modules) for the same project multiple times.
 $script:npmInstalled = @{}
 
-function Ensure-NpmDeps([string]$dir) {
+function Ensure-PnpmDeps([string]$dir) {
     if ($SkipInstall) { return }
     $key = (Resolve-Path $dir).Path
     if ($script:npmInstalled.ContainsKey($key)) { return }
     Push-Location $key
     try {
-        npm ci
-        if ($LASTEXITCODE -ne 0) { throw "npm ci failed in $key" }
+        pnpm install --frozen-lockfile
+        if ($LASTEXITCODE -ne 0) { throw "pnpm install --frozen-lockfile failed in $key" }
     }
     finally { Pop-Location }
     $script:npmInstalled[$key] = $true
@@ -80,9 +80,15 @@ function Build-VsCode {
     Push-Location "$PSScriptRoot/vscode-extension"
     try {
         switch ($Target) {
+<<<<<<< HEAD
             'build'   { pnpm install --frozen-lockfile; pnpm run compile }
             'package' { pnpm install --frozen-lockfile; pnpm run package; pnpm exec vsce package }
             'test'    { pnpm install --frozen-lockfile; pnpm run compile-tests; pnpm test }
+=======
+            'build'   { Ensure-PnpmDeps .; npm run validate }
+            'package' { Ensure-PnpmDeps .; npm run package; npx vsce package }
+            'test'    { Ensure-PnpmDeps .; npm run test:node }
+>>>>>>> origin/main
             'clean'   { Remove-Item -Recurse -Force dist, out -ErrorAction SilentlyContinue }
         }
         Write-Ok "vscode-extension done."
@@ -194,14 +200,22 @@ function Build-VisualStudio {
 
     switch ($Target) {
         'build'   {
-            # Restore SDK-style test project (needs dotnet restore, not nuget restore)
+            # Restore SDK-style projects (needs dotnet restore, not nuget restore)
             dotnet restore "$PSScriptRoot/visualstudio-extension/src/AIEngineeringFluency.Tests/AIEngineeringFluency.Tests.csproj"
-            & $msbuild $sln /p:Configuration=Release /t:Build   /v:minimal
+            dotnet restore "$PSScriptRoot/visualstudio-extension/src/AIEngineeringFluencyRunner/AIEngineeringFluencyRunner.csproj"
+            & $msbuild $sln /p:Configuration=Release /t:Build /v:minimal
+            if ($LASTEXITCODE -ne 0) { throw "MSBuild build failed" }
         }
-        'package' { & $msbuild $sln /p:Configuration=Release /t:Rebuild /v:minimal }
-        'test'    {
-            # 1. Restore SDK-style test project first, then build the full solution with MSBuild
+        'package' {
             dotnet restore "$PSScriptRoot/visualstudio-extension/src/AIEngineeringFluency.Tests/AIEngineeringFluency.Tests.csproj"
+            dotnet restore "$PSScriptRoot/visualstudio-extension/src/AIEngineeringFluencyRunner/AIEngineeringFluencyRunner.csproj"
+            & $msbuild $sln /p:Configuration=Release /t:Rebuild /v:minimal
+            if ($LASTEXITCODE -ne 0) { throw "MSBuild rebuild failed" }
+        }
+        'test'    {
+            # 1. Restore SDK-style projects first, then build the full solution with MSBuild
+            dotnet restore "$PSScriptRoot/visualstudio-extension/src/AIEngineeringFluency.Tests/AIEngineeringFluency.Tests.csproj"
+            dotnet restore "$PSScriptRoot/visualstudio-extension/src/AIEngineeringFluencyRunner/AIEngineeringFluencyRunner.csproj"
             & $msbuild $sln /p:Configuration=Release /t:Build /v:minimal
             if ($LASTEXITCODE -ne 0) { throw "MSBuild failed before running tests" }
 
@@ -219,7 +233,7 @@ function Build-VisualStudio {
             }
             finally { Pop-Location }
         }
-        'clean'   { & $msbuild $sln /p:Configuration=Release /t:Clean   /v:minimal }
+        'clean'   { & $msbuild $sln /p:Configuration=Release /t:Clean /v:minimal }
     }
     Write-Ok "visualstudio-extension done."
 }
@@ -283,9 +297,19 @@ function Build-Sharing {
     Push-Location "$PSScriptRoot/sharing-server"
     try {
         switch ($Target) {
+<<<<<<< HEAD
             'build'   { pnpm install --frozen-lockfile; pnpm run build }
             'package' { pnpm install --frozen-lockfile; pnpm run build:production }
             'test'    { Write-Host "    (no sharing-server tests yet)" }
+=======
+            'build'   { Ensure-PnpmDeps .; npm run build }
+            'package' { Ensure-PnpmDeps .; npm run build:production }
+            'test'    {
+                Ensure-PnpmDeps .
+                npm test
+                if ($LASTEXITCODE -ne 0) { throw "Sharing-server tests failed" }
+            }
+>>>>>>> origin/main
             'clean'   { Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue }
         }
         Write-Ok "sharing-server done."

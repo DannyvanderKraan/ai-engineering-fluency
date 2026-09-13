@@ -6,7 +6,9 @@
  * bootstrap-dependent logic lives in helpers.ts.
  */
 import { calculateEstimatedCost } from '../../src/tokenEstimation';
-import { normalizePathForComparison } from '../../src/workspaceHelpers';
+import { addModelUsage, scaleModelUsage } from '../../src/statsHelpers';
+import { normalizePathForComparison, detectClaudeCodeEditorVariant } from '../../src/workspaceHelpers';
+import { getCustomProviderGroup } from '../../src/webview/shared/modelUtils';
 import { createEmptyContextRefs } from '../../src/tokenEstimation';
 import type { ModelUsage, ModelPricing, PeriodStats, UsageAnalysisPeriod } from '../../src/types';
 export type { PeriodStats, UsageAnalysisPeriod } from '../../src/types';
@@ -52,6 +54,45 @@ export interface DailyEntry {
 	sessions: number;
 	modelUsage: ModelUsage;
 	editorUsage: { [editor: string]: { tokens: number; sessions: number } };
+	editorModelUsage?: { [editor: string]: ModelUsage };
+}
+
+// ── Billing group helpers (mirrors chartDataBuilder.ts) ──────────────────────────────────────
+
+/** Editor display names that bill through GitHub Copilot's AI-Credit system. */
+const COPILOT_EDITOR_NAMES = new Set([
+	'VS Code', 'VS Code Insiders', 'VS Code Exploration',
+	'VS Code Server', 'VS Code Server (Insiders)', 'VSCodium',
+	'Visual Studio', 'JetBrains', 'Copilot CLI', 'Copilot CLI (App)', 'MS Scout (Copilot CLI)',
+]);
+
+const MODEL_PROVIDER_PREFIXES: Array<[string, string]> = [
+	['claude', 'Anthropic'], ['anthropic', 'Anthropic'],
+	['gemini', 'Google'], ['google', 'Google'],
+	['mistral', 'Mistral AI'], ['codestral', 'Mistral AI'], ['magistral', 'Mistral AI'],
+	['ministral', 'Mistral AI'], ['devstral', 'Mistral AI'], ['pixtral', 'Mistral AI'],
+	['gpt', 'OpenAI'], ['o1', 'OpenAI'], ['o3', 'OpenAI'], ['o4', 'OpenAI'],
+	['grok', 'xAI'], ['raptor', 'xAI'], ['goldeneye', 'xAI'],
+	['qwen', 'Alibaba'], ['mai-', 'Microsoft'],
+];
+
+function getPricingSourceForEditor(editor: string): 'provider' | 'copilot' {
+	return COPILOT_EDITOR_NAMES.has(editor) ? 'copilot' : 'provider';
+}
+
+function getModelBillingProvider(modelId: string): string {
+	const customGroup = getCustomProviderGroup(modelId);
+	if (customGroup) { return customGroup; }
+	const id = modelId.toLowerCase();
+	const match = MODEL_PROVIDER_PREFIXES.find(([prefix]) => id.startsWith(prefix));
+	return match ? match[1] : 'Other';
+}
+
+/** Custom endpoints (BYOK) bill the user's own provider, so they keep their own group on Copilot surfaces too. */
+function getBillingGroup(editor: string, modelId: string): string {
+	const customGroup = getCustomProviderGroup(modelId);
+	if (customGroup) { return customGroup; }
+	return COPILOT_EDITOR_NAMES.has(editor) ? 'GitHub Copilot' : getModelBillingProvider(modelId);
 }
 
 // ── Pure helpers ───────────────────────────────────────────────────────────────────────────────────────
@@ -71,13 +112,22 @@ export function getEditorSourceFromPath(filePath: string): string {
 	if (normalized.includes('/.copilot/session-store.db#')) { return 'Copilot CLI'; }
 	if (normalized.includes('/.copilot/session-state/')) { return 'Copilot CLI'; }
 	if (normalized.includes('/.crush/crush.db#')) { return 'Crush'; }
+	// Cline task files live under <variant>/User/globalStorage/saoudrizwan.claude-dev/
+	// — must be checked before the generic /cursor/ and VS Code fallthrough below.
+	if (normalized.includes('/saoudrizwan.claude-dev/tasks/')) { return 'Cline'; }
+	// Kilo Code (OpenCode fork): virtual DB session paths <...>/.local/share/kilo/kilo.db#ses_<id>.
+	if (normalized.includes('/kilo/kilo.db#')) { return 'Kilo Code'; }
 	if (normalized.includes('/opencode/')) { return 'OpenCode'; }
+	// OpenAI Codex CLI (~/.codex): must be checked before the generic 'code'-based
+	// fallbacks below ('codex' contains 'code' and would misclassify as VS Code).
+	if (normalized.includes('/.codex/')) { return 'Codex CLI'; }
 	// Kiro CLI (~/.kiro/sessions/cli) and Kiro IDE (kiro.kiroagent global storage) are separate editors.
 	if (normalized.includes('/.kiro/sessions/cli/')) { return 'Kiro CLI'; }
 	if (normalized.includes('/kiro.kiroagent/workspace-sessions/')) { return 'Kiro'; }
 	if (normalized.includes('/.continue/sessions/')) { return 'Continue'; }
+	if (normalized.includes('/claude-code-sessions/')) { return 'Claude Desktop Cowork'; }
 	if (normalized.includes('/local-agent-mode-sessions/')) { return 'Claude Desktop Cowork'; }
-	if (normalized.includes('/.claude/projects/')) { return 'Claude Code'; }
+	if (normalized.includes('/.claude/projects/')) { return detectClaudeCodeEditorVariant(filePath); }
 	if (normalized.includes('/.vibe/logs/session/')) { return 'Mistral Vibe'; }
 	// Antigravity must be checked before Gemini CLI: both live under ~/.gemini/.
 	if (normalized.includes('/.gemini/antigravity/brain/')) { return 'Antigravity'; }
@@ -146,19 +196,7 @@ export function aggregateIntoPeriod(period: PeriodStats, data: SessionData, frac
 	period.sessions++;
 
 	// Merge model usage proportionally
-	for (const [model, usage] of Object.entries(data.modelUsage)) {
-		if (!period.modelUsage[model]) {
-			period.modelUsage[model] = { inputTokens: 0, outputTokens: 0 };
-		}
-		period.modelUsage[model].inputTokens += Math.round(usage.inputTokens * fraction);
-		period.modelUsage[model].outputTokens += Math.round(usage.outputTokens * fraction);
-		if (usage.cachedReadTokens !== undefined) {
-			period.modelUsage[model].cachedReadTokens = (period.modelUsage[model].cachedReadTokens ?? 0) + Math.round(usage.cachedReadTokens * fraction);
-		}
-		if (usage.cacheCreationTokens !== undefined) {
-			period.modelUsage[model].cacheCreationTokens = (period.modelUsage[model].cacheCreationTokens ?? 0) + Math.round(usage.cacheCreationTokens * fraction);
-		}
-	}
+	addModelUsage(period.modelUsage, scaleModelUsage(data.modelUsage, fraction));
 
 	// Track interactions proportionally for the running average
 	const interactions = Math.round(data.interactions * fraction);
@@ -187,6 +225,11 @@ export function createEmptyUsageAnalysisPeriod(): UsageAnalysisPeriod {
 			maxModelsPerSession: 0,
 			minModelsPerSession: 0,
 			switchingFrequency: 0,
+			autoSessions: 0,
+			foundryWindowsSessions: 0,
+			unknownProviderSessions: 0,
+			selectedModelExtensions: [],
+			unknownProviderModels: [],
 			standardModels: [],
 			premiumModels: [],
 			lowCostModels: [],
@@ -202,11 +245,6 @@ export function createEmptyUsageAnalysisPeriod(): UsageAnalysisPeriod {
 			lowCostRequests: 0,
 			mediumCostRequests: 0,
 			highCostRequests: 0,
-			autoSessions: 0,
-			foundryWindowsSessions: 0,
-			unknownProviderSessions: 0,
-			selectedModelExtensions: [],
-			unknownProviderModels: [],
 		},
 		repositories: [],
 		repositoriesWithCustomization: [],
@@ -241,6 +279,8 @@ export function createEmptyUsageAnalysisPeriod(): UsageAnalysisPeriod {
 			workspaceAgent: 0,
 			other: 0,
 		},
+		taskCategoryPrimarySessions: {},
+		taskCategoryWeightedSessions: {},
 	};
 }
 
@@ -296,27 +336,83 @@ export function buildChartPayload(labels: string[], days: DailyEntry[], allDaysM
 		const costData = entries.map(e => calculateEstimatedCost(e.modelUsage, modelPricing, 'copilot'));
 		const totalCost = costData.reduce((a, b) => a + b, 0);
 		const avgCostPerPeriod = periodCount > 0 ? totalCost / periodCount : 0;
-		return { labels: bLabels, tokensData, sessionsData, modelDatasets, editorDatasets, repositoryDatasets: [], periodCount, totalTokens, totalSessions, avgPerPeriod: periodCount > 0 ? Math.round(totalTokens / periodCount) : 0, costData, totalCost, avgCostPerPeriod };
+
+		// Editor cost datasets (cost per editor using per-editor model breakdown)
+		const allEditorsForCost = new Set<string>();
+		entries.forEach(e => { if (e.editorModelUsage) { Object.keys(e.editorModelUsage).forEach(ed => allEditorsForCost.add(ed)); } });
+		const editorCostTotals = new Map<string, number>();
+		for (const editor of allEditorsForCost) {
+			const total = entries.reduce((sum, e) => sum + calculateEstimatedCost(e.editorModelUsage?.[editor] ?? {}, modelPricing, getPricingSourceForEditor(editor)), 0);
+			editorCostTotals.set(editor, total);
+		}
+		const sortedCostEditors = Array.from(allEditorsForCost).sort((a, b) => (editorCostTotals.get(b) || 0) - (editorCostTotals.get(a) || 0));
+		const editorCostDatasets = sortedCostEditors.map((editor, idx) => {
+			const color = CHART_COLORS[idx % CHART_COLORS.length];
+			return { label: editor, data: entries.map(e => calculateEstimatedCost(e.editorModelUsage?.[editor] ?? {}, modelPricing, getPricingSourceForEditor(editor))), backgroundColor: color.bg, borderColor: color.border, borderWidth: 1 };
+		});
+
+		// Billing group cost datasets (cost per provider: "GitHub Copilot", "Anthropic", etc.)
+		const allGroups = new Set<string>();
+		entries.forEach(e => {
+			if (!e.editorModelUsage) { return; }
+			for (const [editor, mu] of Object.entries(e.editorModelUsage)) {
+				for (const modelId of Object.keys(mu)) { allGroups.add(getBillingGroup(editor, modelId)); }
+			}
+		});
+		const groupTotals = new Map<string, number>();
+		for (const group of allGroups) {
+			groupTotals.set(group, entries.reduce((sum, e) => {
+				if (!e.editorModelUsage) { return sum; }
+				const grouped: ModelUsage = {};
+				for (const [editor, mu] of Object.entries(e.editorModelUsage)) {
+					for (const [modelId, usage] of Object.entries(mu)) {
+						if (getBillingGroup(editor, modelId) !== group) { continue; }
+						addModelUsage(grouped, { [modelId]: { ...usage, sessions: 0 } });
+					}
+				}
+				const pricingSource = group === 'GitHub Copilot' ? 'copilot' : 'provider';
+				return sum + calculateEstimatedCost(grouped, modelPricing, pricingSource);
+			}, 0));
+		}
+		const sortedGroups = Array.from(allGroups).sort((a, b) => (groupTotals.get(b) || 0) - (groupTotals.get(a) || 0));
+		const billingGroupCostDatasets = sortedGroups.map((group, idx) => {
+			const color = CHART_COLORS[idx % CHART_COLORS.length];
+			const pricingSource = group === 'GitHub Copilot' ? 'copilot' : 'provider';
+			return {
+				label: group,
+				data: entries.map(e => {
+					if (!e.editorModelUsage) { return 0; }
+					const grouped: ModelUsage = {};
+					for (const [editor, mu] of Object.entries(e.editorModelUsage)) {
+						for (const [modelId, usage] of Object.entries(mu)) {
+							if (getBillingGroup(editor, modelId) !== group) { continue; }
+							addModelUsage(grouped, { [modelId]: { ...usage, sessions: 0 } });
+						}
+					}
+					return calculateEstimatedCost(grouped, modelPricing, pricingSource);
+				}),
+				backgroundColor: color.bg, borderColor: color.border, borderWidth: 1,
+			};
+		});
+
+		return { labels: bLabels, tokensData, sessionsData, modelDatasets, editorDatasets, repositoryDatasets: [], periodCount, totalTokens, totalSessions, avgPerPeriod: periodCount > 0 ? Math.round(totalTokens / periodCount) : 0, costData, totalCost, avgCostPerPeriod, editorCostDatasets, billingGroupCostDatasets };
 	};
 
 	const mergeEntry = (target: DailyEntry, src: DailyEntry) => {
 		target.tokens += src.tokens;
 		target.sessions += src.sessions;
-		for (const [m, u] of Object.entries(src.modelUsage)) {
-			if (!target.modelUsage[m]) { target.modelUsage[m] = { inputTokens: 0, outputTokens: 0 }; }
-			target.modelUsage[m].inputTokens += u.inputTokens;
-			target.modelUsage[m].outputTokens += u.outputTokens;
-			if (u.cachedReadTokens !== undefined) {
-				target.modelUsage[m].cachedReadTokens = (target.modelUsage[m].cachedReadTokens ?? 0) + u.cachedReadTokens;
-			}
-			if (u.cacheCreationTokens !== undefined) {
-				target.modelUsage[m].cacheCreationTokens = (target.modelUsage[m].cacheCreationTokens ?? 0) + u.cacheCreationTokens;
-			}
-		}
+		addModelUsage(target.modelUsage, scaleModelUsage(src.modelUsage, 1));
 		for (const [e, u] of Object.entries(src.editorUsage)) {
 			if (!target.editorUsage[e]) { target.editorUsage[e] = { tokens: 0, sessions: 0 }; }
 			target.editorUsage[e].tokens += u.tokens;
 			target.editorUsage[e].sessions += u.sessions;
+		}
+		if (src.editorModelUsage) {
+			if (!target.editorModelUsage) { target.editorModelUsage = {}; }
+			for (const [editor, mu] of Object.entries(src.editorModelUsage)) {
+				if (!target.editorModelUsage[editor]) { target.editorModelUsage[editor] = {}; }
+				addModelUsage(target.editorModelUsage[editor], scaleModelUsage(mu, 1));
+			}
 		}
 	};
 

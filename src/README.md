@@ -83,7 +83,6 @@ Contains pricing information for AI models, including input and output token cos
       "cacheCreationCostPerMillion": 2.1875,
       "category": "Model category",
       "tier": "standard|premium|unknown",
-      "multiplier": 1,
       "copilotPricing": {
         "inputCostPerMillion": 1.75,
         "cachedInputCostPerMillion": 0.175,
@@ -111,6 +110,32 @@ calculateEstimatedCost(usage, pricing);             // provider/API cost (defaul
 calculateEstimatedCost(usage, pricing, 'copilot');  // GitHub Copilot AI-Credit cost
 ```
 
+**Copilot Auto routing:** estimated paid-plan AI-Credit costs apply GitHub's
+[10% Auto discount](https://code.visualstudio.com/blogs/2025/09/15/autoModelSelection)
+only to requests with an `autoModeResolution` response item or a request-level
+`modelId` of `auto` / `copilot/auto`. The resolved model supplies the rate;
+unresolved Auto stays unpriced. `ModelUsage.autoRouting` holds the eligible token
+subset (including optional cache fields), not extra usage, so manual requests
+for the same model are not discounted. Provider/API prices, provider fallbacks
+without a `copilotPricing` block, and recorded exact Copilot charges are unchanged.
+Session logs do not identify plan eligibility; these are paid-plan rate estimates,
+not a claim that a Free account incurs a charge. Premium-request counts are not
+converted into token costs by this calculation.
+
+Auto subsets survive aggregation and day allocation. When debug logs replace
+per-model tokens without a per-request routing split, the original Auto input/output
+proportions are retained as an estimate; cache tokens use the Auto input proportion.
+If a partial debug breakdown omits an Auto-routed model entirely, that unmatched
+subset cannot be priced reliably and is not transferred to another model. Recovering
+its discount requires linking debug requests to their original model/routing evidence;
+the current per-model totals do not provide that link.
+The Session Steps Overview uses Copilot rates for Copilot editors and provider
+rates for other editors. Sub-agents do not inherit the parent's Auto discount.
+Copilot CLI's model-change events and per-model billing/shutdown totals do not
+provide a reliable per-request Auto signal in the supported schemas; neither
+these nor JetBrains/Visual Studio heuristics receive an inferred discount.
+Other vendors' `auto` model names are not treated as Copilot routing.
+
 When a model has no `copilotPricing` block the `'copilot'` source falls back to
 the provider rates as a proxy — this means the Copilot cost is never
 *under-reported* due to a missing entry, it just won't reflect the (often
@@ -128,13 +153,17 @@ identical) GitHub-published rate explicitly.
 | Field | Description |
 |-------|-------------|
 | `cachedInputCostPerMillion` | Cost per million tokens for cache **reads** — tokens already cached and billed at a reduced rate |
-| `cacheCreationCostPerMillion` | Cost per million tokens for cache **creation** — writing tokens into the cache (billed at a premium) |
+| `cacheCreationCostPerMillion` | Cost per million tokens for cache **creation**, 5-minute TTL — writing tokens into the cache (billed at a premium) |
+| `cacheCreation1hCostPerMillion` | Cost per million tokens for cache **creation**, 1-hour TTL — Anthropic's longer-lived cache tier, billed at a higher premium than the 5-minute TTL |
 
 When these fields are absent, the full `inputCostPerMillion` rate is applied to all input tokens.
 
 **Anthropic prompt caching rates** (used for all `claude-*` models):
 - Cache reads: **10% of input rate** (e.g. $0.30/M for Claude Sonnet 4 at $3.00/M input)
-- Cache creation: **125% of input rate** (e.g. $3.75/M for Claude Sonnet 4)
+- Cache creation, 5-minute TTL: **125% of input rate** (e.g. $3.75/M for Claude Sonnet 4)
+- Cache creation, 1-hour TTL: **200% of input rate** (e.g. $6.00/M for Claude Sonnet 4) — Claude Code uses this TTL by default, so its cache-write tokens should be priced with `cacheCreation1hCostPerMillion`, not the 5-minute rate.
+
+For sources that report the TTL breakdown (`cache_creation.ephemeral_1h_input_tokens` vs. `ephemeral_5m_input_tokens` in the raw Anthropic usage object — currently Claude Code and Claude Desktop), `ModelUsage.cacheCreation1hTokens` carries the 1-hour portion of `cacheCreationTokens`, and `calculateEstimatedCost()` prices it separately. When a source doesn't report the split, all cache-creation tokens fall back to the 5-minute rate (prior behavior, unchanged).
 
 **OpenAI prompt caching rates** (automatic prefix matching) vary by model family:
 - Cache reads use the explicit per-model `cachedInputCostPerMillion` values in `modelPricing.json` (for example: GPT-4o = 50% of input, GPT-4.1 = 25%, GPT-5.4 = 10%)

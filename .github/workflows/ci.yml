@@ -10,6 +10,38 @@ permissions:
   contents: read
 
 jobs:
+  # Deterministic guard against "new source logic without test changes" — the
+  # class of finding the agent-review Test Expert agent would otherwise have to
+  # catch with an LLM. Fails the PR when production source under
+  # vscode-extension/src/, cli/src/ or src/ changes without any test file
+  # changing too. Escape hatch: put [skip-test-check] in the PR body.
+  test-coverage-check:
+    name: Test coverage companion check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+    - name: Harden the runner (Block all outbound calls except allowed)
+      uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+      with:
+        egress-policy: block
+        allowed-endpoints: >
+          github.com:443
+          productionresultssa*.blob.core.windows.net:443
+          results-receiver.actions.githubusercontent.com:443
+
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0
+
+    - name: Check source changes come with test changes
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        PR_BODY: ${{ github.event.pull_request.body }}
+      shell: bash
+      run: bash .github/workflows/scripts/check-test-coverage.sh
+
   build:
     runs-on: ubuntu-latest
     
@@ -20,7 +52,7 @@ jobs:
     
     steps:
     - name: Harden the runner (Block all outbound calls except allowed)
-      uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+      uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
       with:
         egress-policy: block
         # Allowlist inferred from the harden-runner audit output of the 10 most
@@ -40,14 +72,14 @@ jobs:
           www.powershellgallery.com:443
 
     - name: Checkout code
-      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Setup pnpm
       uses: pnpm/action-setup@v4
       with:
         version: '11.2.2'
     - name: Setup Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: ${{ matrix.node-version }}
         cache: 'pnpm'
@@ -55,12 +87,24 @@ jobs:
         
     - name: Install dependencies
       working-directory: vscode-extension
-      run: pnpm install --frozen-lockfile
+      run: pnpm install --frozen-lockfile --ignore-scripts
       
     - name: Validate JSON files
       working-directory: vscode-extension
       run: pnpm run lint:json
-      
+
+    - name: Validate localization files
+      working-directory: vscode-extension
+      run: pnpm run lint:l10n
+
+    - name: Test hardcoded-string checker
+      working-directory: vscode-extension
+      run: pnpm run test:hardcoded-strings
+
+    - name: Check for hardcoded UI strings
+      working-directory: vscode-extension
+      run: pnpm run lint:hardcoded-strings
+
     - name: Run linting
       working-directory: vscode-extension
       run: pnpm run lint
@@ -75,9 +119,29 @@ jobs:
       shell: bash
       run: node scripts/parse-lint-output.js "$RUNNER_TEMP/lint-output.json" >> "$GITHUB_STEP_SUMMARY"
 
+    - name: Run code duplication analysis
+      # Report-only, like the complexity analysis above: surfaces copy-pasted
+      # blocks across vscode-extension/src, the shared src/ and cli/src so a
+      # reviewer can see them without failing the build on pre-existing clones.
+      # The detector exits 0 on report-only findings (no --fail-threshold), so
+      # its only nonzero exit is a genuine tool failure (syntax/runtime error);
+      # leaving that unmasked surfaces tool-health problems instead of a green
+      # job with no analysis.
+      if: always() && matrix.node-version == '24.x'
+      working-directory: vscode-extension
+      shell: bash
+      run: npm run --silent check:duplicates -- --min-lines 14 >> "$GITHUB_STEP_SUMMARY"
+
     - name: Run type checking
       working-directory: vscode-extension
       run: pnpm run check-types
+
+    # Neither the compiler nor the unit suite can see the webview<->host
+    # postMessage wiring, so a button posting a command nobody handles ships
+    # green. This fails the build on it instead.
+    - name: Validate webview message contract
+      working-directory: vscode-extension
+      run: pnpm run check:contract
       
     - name: Compile extension
       working-directory: vscode-extension
@@ -86,7 +150,67 @@ jobs:
     - name: Package extension
       working-directory: vscode-extension
       run: pnpm run package
-      
+
+    # Neither host commits webview content to git any more (see
+    # docs/adr/VS-WEBVIEW-BUNDLE-SOURCING.md) — vscode-extension/dist/webview,
+    # built by "Package extension" above, is the ONLY source for both the
+    # Visual Studio and JetBrains hosts, copied fresh at build time. There is
+    # no committed copy left to compare for staleness, so this step instead
+    # asserts that generation actually produces every file the Visual Studio
+    # .csproj's CopyWebviewBundles target expects to copy — the failure mode
+    # this exists to catch is a silently empty/partial dist/webview producing
+    # a "successful" but broken VSIX build downstream.
+    - name: Check webview bundles are generated correctly
+      if: matrix.node-version == '24.x'
+      shell: bash
+      run: |
+        set -euo pipefail
+        expected=(details chart usage diagnostics environmental maturity fluency-level-viewer)
+        expected_json=(tokenEstimators modelPricing toolNames automaticTools)
+        missing=()
+        for name in "${expected[@]}"; do
+          f="vscode-extension/dist/webview/${name}.js"
+          if [ ! -s "$f" ]; then missing+=("$f"); fi
+        done
+        for name in "${expected_json[@]}"; do
+          f="vscode-extension/dist/webview/${name}.json"
+          if [ ! -s "$f" ]; then missing+=("$f"); fi
+        done
+        if [ "${#missing[@]}" -ne 0 ]; then
+          echo "::error::pnpm run package did not produce all expected webview bundle(s): ${missing[*]}"
+          exit 1
+        fi
+        echo "All 11 expected webview bundle/sidecar files were generated and non-empty."
+
+        # Simulate the Visual Studio Remove-Item/Copy-Item build step
+        # (visualstudio-build.yml / visualstudio-publish.yml / release.yml) on a
+        # scratch directory, to catch a copy-list mismatch without needing MSBuild.
+        # dist/webview also holds bundles VS doesn't ship (dashboard, efficiency, ...);
+        # this only re-checks the same 11 names against the copy destination.
+        rm -rf /tmp/vs-webview-check
+        mkdir -p /tmp/vs-webview-check
+        cp vscode-extension/dist/webview/*.js vscode-extension/dist/webview/*.json /tmp/vs-webview-check/
+        missing=()
+        for name in "${expected[@]}"; do
+          f="/tmp/vs-webview-check/${name}.js"
+          if [ ! -s "$f" ]; then missing+=("$f"); fi
+        done
+        for name in "${expected_json[@]}"; do
+          f="/tmp/vs-webview-check/${name}.json"
+          if [ ! -s "$f" ]; then missing+=("$f"); fi
+        done
+        rm -rf /tmp/vs-webview-check
+        if [ "${#missing[@]}" -ne 0 ]; then
+          echo "::error::VS-style copy did not yield all expected webview file(s): ${missing[*]}"
+          exit 1
+        fi
+        echo "Simulated Visual Studio webview copy step: all 11 expected file(s) present and non-empty."
+
+        # View-LIST drift (NEW/ORPHAN) is unrelated to bundle generation and is
+        # informational only here — it's a human decision (see
+        # .github/skills/sync-host-views/SKILL.md), not a CI gate.
+        node .github/skills/sync-host-views/sync-host-views.js || true
+
     - name: Compile tests
       working-directory: vscode-extension
       run: pnpm run compile-tests
@@ -143,7 +267,7 @@ jobs:
     
     steps:
     - name: Harden the runner (Block all outbound calls except allowed)
-      uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+      uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
       with:
         egress-policy: block
         # Allowlist inferred from the harden-runner audit output of the sampled
@@ -156,14 +280,14 @@ jobs:
           results-receiver.actions.githubusercontent.com:443
 
     - name: Checkout code
-      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Setup pnpm
       uses: pnpm/action-setup@v4
       with:
         version: '11.2.2'
     - name: Setup Node.js
-      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version-file: '.nvmrc'
         cache: 'pnpm'
@@ -171,7 +295,7 @@ jobs:
         
     - name: Install dependencies
       working-directory: vscode-extension
-      run: pnpm install --frozen-lockfile
+      run: pnpm install --frozen-lockfile --ignore-scripts
       
     - name: Package extension
       working-directory: vscode-extension
@@ -180,6 +304,10 @@ jobs:
     - name: Create VSIX package
       working-directory: vscode-extension
       run: npx vsce package
+
+    - name: Validate localization bundle in VSIX
+      working-directory: vscode-extension
+      run: npm run validate:l10n -- --vsix "$(find . -maxdepth 1 -name 'ai-engineering-fluency-*.vsix' | head -n 1)"
       
     - name: Upload VSIX package
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -187,3 +315,80 @@ jobs:
         name: vsix-package
         path: 'vscode-extension/*.vsix'
         retention-days: 30
+
+  # The UI half of the review. Everything above proves the code compiles and the
+  # logic is right; nothing above can tell whether a control still works or what
+  # the panels now look like. This job clicks every control in every panel, and
+  # renders the panels next to the merge base so a reviewer can see the change
+  # rather than infer it from a diff of CSS.
+  ui-checks:
+    name: Webview UI checks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+    - name: Harden the runner (Audit all outbound calls)
+      uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+      with:
+        egress-policy: audit
+
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        # The visual diff builds the merge base in a temporary worktree, which
+        # needs real history rather than a shallow clone.
+        fetch-depth: 0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: '24.x'
+        cache: 'npm'
+        cache-dependency-path: vscode-extension/package-lock.json
+
+    - name: Install dependencies
+      working-directory: vscode-extension
+      run: npm ci --ignore-scripts
+
+    # Playwright is deliberately not a dependency of the extension - it is
+    # tooling, not shipped code - so the harness uses a dedicated locked install.
+    - name: Install Playwright Chromium
+      working-directory: .github/workflows/dependencies/playwright
+      run: |
+        npm ci --ignore-scripts --no-audit --no-fund
+        npx --no-install playwright install --with-deps chromium
+
+    - name: Compile webview bundles
+      working-directory: vscode-extension
+      run: npm run compile
+
+    - name: Interaction smoke (click every control)
+      working-directory: vscode-extension
+      run: npm run check:interaction
+
+    - name: Visual view diff vs merge base
+      id: visual
+      # A visual change is usually intended, so this reports rather than gates;
+      # the report and the images are the deliverable for the reviewer.
+      continue-on-error: true
+      run: node .github/skills/visual-view-diff/visual-diff.js --theme both
+
+    - name: Publish visual diff to the job summary
+      if: always()
+      shell: bash
+      run: |
+        if [ -f visual-output/diff/report.md ]; then
+          cat visual-output/diff/report.md >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "No visual diff report was produced." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Upload before/after/diff screenshots
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: webview-screenshots
+        path: |
+          visual-output/baseline/
+          visual-output/current/
+          visual-output/diff/
+        retention-days: 14

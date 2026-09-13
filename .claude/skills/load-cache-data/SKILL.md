@@ -7,7 +7,7 @@ description: Load and display the last 10 cache entries as raw JSON output. DO N
 
 **IMPORTANT: Always output raw JSON only. Do not create extra files for displaying data.**
 
-This skill helps you access and inspect the GitHub Copilot Token Tracker's local session file cache. The cache stores pre-computed statistics for session files to avoid re-processing unchanged files.
+This skill helps you access and inspect the AI Engineering Fluency's local session file cache. The cache stores pre-computed statistics for session files to avoid re-processing unchanged files.
 
 ## Overview
 
@@ -46,6 +46,7 @@ interface SessionFileCache {
   modelUsage: ModelUsage;              // Per-model token breakdown
   mtime: number;                       // File modification timestamp
   usageAnalysis?: SessionUsageAnalysis; // Detailed usage statistics
+  subAgentCalls?: number;               // Sub-agent/delegation tool calls (absent when 0)
 }
 
 interface ModelUsage {
@@ -304,7 +305,7 @@ The cache is tightly integrated with the extension's token tracking:
 **Solutions**:
 1. Check that session files exist via `getCopilotSessionFiles()`
 2. Verify global state is accessible
-3. Look for errors in Output channel (GitHub Copilot Token Tracker)
+3. Look for errors in Output channel (AI Engineering Fluency)
 
 ### Cache Out of Sync
 **Symptoms**: Token counts don't match session file contents

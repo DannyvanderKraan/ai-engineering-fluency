@@ -1,21 +1,38 @@
 // Diagnostics Report webview with tabbed interface
-import { buttonHtml } from "../shared/buttonConfig";
+import { navButtonsHtml } from "../shared/buttonConfig";
+import { setHtml } from "../shared/domUtils";
 import { wireExtensionPointButtons } from "../shared/extensionPoints";
 import { escapeHtml, formatFileSize, getTimeSince, getEditorIcon } from "../shared/formatUtils";
+import { createPeriodSelector, PERIOD_LABELS, type Period } from "../shared/periodSelector";
 import { createViewStateManager } from "../shared/viewState";
 // CSS imported as text via esbuild
 import themeStyles from "../shared/theme.css";
 import styles from "./styles.css";
 import { getWindowData } from "../../../../src/webview/shared/dataLoader";
+import { registerMessageHandler } from "../shared/messageHandler";
+import { getModelColor } from "../../../../src/chartDataBuilder";
+import { getModelDisplayName } from "../../../../src/webview/shared/modelUtils";
+import { initializeWebviewLocalization, setCurrentLanguage } from "../shared/localization";
 
 // Constants
 const LOADING_PLACEHOLDER = "Loading...";
 const SESSION_FILES_SECTION_REGEX =
   /Session File Locations \(first 20\):[\s\S]*?(?=\n\s*\n|={70})/;
-const LOADING_MESSAGE = `⏳ Loading diagnostic data...
-
-This may take a few moments depending on the number of session files.
-The view will automatically update when data is ready.`;
+/**
+ * Live-updating loading state for the Report tab, shown while `data.report` is still the
+ * LOADING_PLACEHOLDER. `#report-loading-subtext` is updated in place by
+ * handleSessionFilesLoadProgress() as the background scan streams processed/total counts —
+ * unlike the old plain-text LOADING_MESSAGE, this always reflects real progress instead of
+ * sitting static until the whole report is ready. handleDiagnosticReport() wipes this out
+ * (via .textContent =) the moment the real report arrives, so there's nothing to clean up.
+ */
+const LOADING_MESSAGE = `<div class="analyzer-loading" style="flex-direction:column;align-items:flex-start;gap:6px;">
+<div style="display:flex;align-items:center;gap:10px;">
+<span class="spinner" style="width:18px;height:18px;border:2px solid var(--link-color);border-top-color:transparent;border-radius:50%;display:inline-block;animation:spin 0.7s linear infinite;"></span>
+<span>⏳ Loading diagnostic data…</span>
+</div>
+<div id="report-loading-subtext" style="font-size:12px;color:var(--text-muted);">Scanning session files…</div>
+</div>`;
 
 import {
   ContextReferenceUsage,
@@ -40,8 +57,21 @@ type SessionFileDetails = {
   parentInfo?: { uuid: string; name: string; sessionFile?: string } | null;
   childInfo?: Array<{ uuid: string; name: string; sessionFile?: string }>;
   totalChildCount?: number;
+  /** Sub-agent/delegation tool calls detected in this session (from cache). Absent when zero/unknown. */
+  subAgentCalls?: number;
   /** Per-model input/output token breakdown (when model attribution data is available). */
   modelUsage?: { [model: string]: { inputTokens: number; outputTokens: number } };
+};
+
+type ModelUsageRow = {
+  model: string;
+  sessionCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedReadTokens: number;
+  cacheCreationTokens: number;
+  cacheCreation1hTokens: number;
+  estimatedCost: number;
 };
 
 type CacheInfo = {
@@ -87,6 +117,7 @@ type GlobalStateCounters = {
   unknownMcpOpenCount: number;
   fluencyBannerDismissed: boolean;
   unknownMcpDismissedVersion: string;
+  efficiencyTabBannerDismissed: boolean;
 };
 
 type GitHubAuthStatus = {
@@ -113,6 +144,28 @@ type QuotaEntitlements = {
   completions?: number;
 };
 
+type CopilotCliOtelComparisonSession = {
+  file: string;
+  sessionId: string;
+  baselineTokens: number;
+  otelTokens: number;
+  delta: number;
+  models: string[];
+  lastActivity: string | null;
+};
+
+type CopilotCliOtelComparison = {
+  otelDirExists: boolean;
+  otelFileCount: number;
+  otelSessionsIndexed: number;
+  sessionsChecked: number;
+  sessionsMatched: number;
+  totalBaselineTokens: number;
+  totalOtelTokens: number;
+  deltaTokens: number;
+  sessions: CopilotCliOtelComparisonSession[];
+};
+
 type DiagnosticsData = {
   report: string;
   sessionFiles: { file: string; size: number; modified: string }[];
@@ -127,7 +180,13 @@ type DiagnosticsData = {
   displaySettings?: DisplaySettings;
   quotaEntitlements?: QuotaEntitlements;
   toolCallStats?: { total: number; byTool: { [key: string]: number }; outputTokensByTool?: { [key: string]: number } } | null;
+  skillCallStats?: { total: number; byName: { [key: string]: number } } | null;
+  /** Per-skill, per-editor invocation counts (skillName -> editorSource -> count), for the Skill Usage tab's editor filter. */
+  skillCallsByEditor?: { [skillName: string]: { [editorSource: string]: number } } | null;
+  /** Skill name -> description, sourced from discovered SKILL.md frontmatter. */
+  skillDescriptions?: { [skillName: string]: string };
   toolFamilies?: ToolFamilyConfig[];
+  otelComparison?: CopilotCliOtelComparison | null;
 };
 
 type ToolFamilyConfig = {
@@ -138,9 +197,18 @@ type ToolFamilyConfig = {
   description?: string;
 };
 
+type OtelDeltaPeriod = "all" | "today" | "yesterday" | "week" | "month";
+type TtftGranularity = "day" | "week" | "month";
+type TtftScanRange = "14d" | "30d" | "90d" | "180d" | "365d" | "all";
+
 type DiagnosticsViewState = {
   activeTab?: string;
   activeSubtab?: string;
+  otelDeltaPeriod?: OtelDeltaPeriod;
+  shareCardPeriod?: Period;
+  skillUsageEditorFilter?: string;
+  ttftGranularity?: TtftGranularity;
+  ttftScanRange?: TtftScanRange;
 };
 
 type FolderFileResult = {
@@ -159,12 +227,33 @@ declare function acquireVsCodeApi<TState = DiagnosticsViewState>(): {
 };
 
 const vscode = acquireVsCodeApi<DiagnosticsViewState>();
-const initialData = getWindowData<DiagnosticsData>('__INITIAL_DIAGNOSTICS__');
+const initialData = getWindowData<DiagnosticsData & { localization?: Record<string, string> }>('__INITIAL_DIAGNOSTICS__');
+
+// Initialize localization for webview
+if (initialData?.localization) {
+	initializeWebviewLocalization(initialData.localization);
+	const language = initialData.localization['__language__'] || 'en';
+	setCurrentLanguage(language);
+}
 
 const diagState = createViewStateManager<DiagnosticsViewState>(vscode, {
   activeTab: undefined,
   activeSubtab: undefined,
+  otelDeltaPeriod: "all",
+  shareCardPeriod: "last14",
+  skillUsageEditorFilter: "all",
+  ttftGranularity: "day",
+  ttftScanRange: "14d",
 });
+
+let currentOtelComparison: CopilotCliOtelComparison | null | undefined;
+let currentOtelDeltaPeriod: OtelDeltaPeriod = diagState.restore().otelDeltaPeriod ?? "all";
+let currentTtftGranularity: TtftGranularity = diagState.restore().ttftGranularity ?? "day";
+let currentTtftScanRange: TtftScanRange = diagState.restore().ttftScanRange ?? "14d";
+
+// Periods offered by the Share Card's period selector, in display order.
+const SHARE_CARD_PERIOD_ORDER: Period[] = ["last7", "last14", "last30", "last90", "allTime"];
+let currentShareCardPeriod: Period = diagState.restore().shareCardPeriod ?? "last14";
 
 // Sorting and filtering state
 let currentSortColumn: "lastInteraction" | "size" | "tokens" | "interactions" | "contextRefs" = "lastInteraction";
@@ -179,11 +268,18 @@ let toolSortColumn: "tool" | "calls" | "total" | "avg" = "avg";
 let toolSortDir: "asc" | "desc" = "desc";
 let storedToolFamilies: ToolFamilyConfig[] | undefined;
 
+// Skill usage tab state
+let currentSkillCallStats: DiagnosticsData['skillCallStats'];
+let currentSkillCallsByEditor: DiagnosticsData['skillCallsByEditor'];
+let currentSkillDescriptions: DiagnosticsData['skillDescriptions'];
+let skillUsageEditorFilter: string = diagState.restore().skillUsageEditorFilter ?? "all";
+
 // Render state (promoted to module level so all setup functions can be top-level)
 let storedDetailedFiles: SessionFileDetails[] = [];
 let isLoading = true;
 let currentBackendInfo: BackendStorageInfo | undefined;
 let currentGithubAuth: GitHubAuthStatus | undefined;
+let currentModelUsageTimeRange = "all";
 
 function removeSessionFilesSection(reportText: string): string {
   return reportText.replace(SESSION_FILES_SECTION_REGEX, "");
@@ -285,9 +381,12 @@ function buildCandidatePathsElement(
   description.style.cssText = "color: #999; font-size: 12px; margin: 4px 0 8px 0;";
   description.textContent = "These are all the paths the extension checks for session files. Paths marked with ✅ exist on this system.";
   container.appendChild(description);
+  const tableContainer = document.createElement("div");
+  tableContainer.className = "table-container";
+  container.appendChild(tableContainer);
   const table = document.createElement("table");
   table.className = "session-table";
-  container.appendChild(table);
+  tableContainer.appendChild(table);
   const thead = document.createElement("thead");
   const headerRow = document.createElement("tr");
   for (const text of ["Status", "Source", "Path"]) {
@@ -458,16 +557,20 @@ function getSortIndicator(column: typeof currentSortColumn): string {
 function getEditorStats(files: SessionFileDetails[]): {
   [key: string]: { count: number; interactions: number };
 } {
-  const stats: { [key: string]: { count: number; interactions: number } } = {};
+  // Use a Map keyed by (attacker-influenceable) editor name instead of a plain
+  // object, so a crafted session file with an editor name like "__proto__"
+  // can't pollute Object.prototype.
+  const stats = new Map<string, { count: number; interactions: number }>();
   for (const sf of files) {
-    const editor = sf.editorSource || "Unknown";
-    if (!stats[editor]) {
-      stats[editor] = { count: 0, interactions: 0 };
+    const editor = sf.editorName || sf.editorSource || "Unknown";
+    if (!stats.has(editor)) {
+      stats.set(editor, { count: 0, interactions: 0 });
     }
-    stats[editor].count++;
-    stats[editor].interactions += sf.interactions;
+    const entry = stats.get(editor)!;
+    entry.count++;
+    entry.interactions += sf.interactions;
   }
-  return stats;
+  return Object.fromEntries(stats);
 }
 
 function safeText(value: unknown): string {
@@ -490,7 +593,7 @@ function getUnattributedTokens(sf: SessionFileDetails): number {
 }
 
 function applySessionFilters(detailedFiles: SessionFileDetails[]): FilteredSessionResult {
-  let filteredFiles = currentEditorFilter ? detailedFiles.filter((sf) => sf.editorSource === currentEditorFilter) : detailedFiles;
+  let filteredFiles = currentEditorFilter ? detailedFiles.filter((sf) => (sf.editorName || sf.editorSource) === currentEditorFilter) : detailedFiles;
   if (currentContextRefFilter) {
     filteredFiles = filteredFiles.filter((sf) => { const value = sf.contextReferences[currentContextRefFilter!]; return typeof value === "number" && value > 0; });
   }
@@ -534,6 +637,13 @@ function buildSessionSummaryCardsHtml(filteredFiles: SessionFileDetails[], allFi
   <div class="filter-options"><label class="empty-sessions-toggle"><input type="checkbox" id="hide-empty-sessions" ${hideEmptySessions ? 'checked' : ''}>Hide sessions with 0 interactions${zeroInteractionCount > 0 ? `<span class="hidden-count">(${zeroInteractionCount} hidden)</span>` : ''}</label>${unattributedCheckbox}</div>`;
 }
 
+/** Badge for sessions with detected sub-agent tool calls. */
+function buildSubAgentBadgeHtml(sf: SessionFileDetails): string {
+  if (!sf.subAgentCalls || sf.subAgentCalls <= 0) { return ''; }
+  const label = sf.subAgentCalls === 1 ? '1 sub-agent tool call' : `${sf.subAgentCalls} sub-agent tool calls`;
+  return `<span class="session-hierarchy-badge" title="${label} detected in this session">🤖 ${sf.subAgentCalls} Sub-Agent${sf.subAgentCalls === 1 ? '' : 's'}</span>`;
+}
+
 function buildHierarchyBadgesHtml(sf: SessionFileDetails): string {
   let html = '';
   if (sf.parentInfo) {
@@ -548,6 +658,7 @@ function buildHierarchyBadgesHtml(sf: SessionFileDetails): string {
     const label = count === 1 ? '1 child session' : `${count} child sessions`;
     html += `<span class="session-hierarchy-badge hierarchy-children" title="${label}">↓ ${count} ${count === 1 ? 'Child' : 'Children'}</span>`;
   }
+  html += buildSubAgentBadgeHtml(sf);
   return html ? `<div class="session-hierarchy-badges">${html}</div>` : '';
 }
 
@@ -579,7 +690,7 @@ function renderSessionTable(
   detailedFiles: SessionFileDetails[],
   isLoading: boolean = false,
 ): string {
-  if (isLoading) { return `<div class="loading-state"><div class="loading-spinner">⏳</div><div class="loading-text">Loading session files...</div><div class="loading-subtext">Analyzing up to 500 files from the last 14 days</div></div>`; }
+  if (isLoading) { return `<div class="loading-state"><div class="loading-spinner">⏳</div><div class="loading-text">Loading session files...</div><div class="loading-subtext" id="session-loading-subtext">Analyzing up to 500 files from the last 14 days</div></div>`; }
   if (detailedFiles.length === 0) { return '<p style="color: #999;">No session files with activity in the last 14 days.</p>'; }
   const editorStats = getEditorStats(detailedFiles);
   const editors = Object.keys(editorStats).sort();
@@ -631,8 +742,112 @@ function flagRow(key: string, label: string, value: boolean): string {
     </tr>`;
 }
 
+/** Rolling lookback (in days) for each period the Share Card period selector offers. Periods absent from
+ * this map (e.g. "allTime") are treated as "no filtering". */
+const SHARE_CARD_PERIOD_DAYS: Partial<Record<Period, number>> = { last7: 7, last14: 14, last30: 30, last90: 90 };
+
+/** Returns the sessions from `detailedFiles` whose last interaction falls within `period` (allTime = no filtering). */
+function filterFilesByShareCardPeriod(detailedFiles: SessionFileDetails[], period: Period, now: Date = new Date()): SessionFileDetails[] {
+  const days = SHARE_CARD_PERIOD_DAYS[period];
+  if (days === undefined) { return detailedFiles; } // allTime (or any unmapped period): no filtering
+  const cutoff = new Date(now);
+  cutoff.setDate(cutoff.getDate() - days);
+  return detailedFiles.filter((sf) => {
+    if (!sf.lastInteraction) { return false; }
+    const activity = new Date(sf.lastInteraction);
+    return !Number.isNaN(activity.getTime()) && activity >= cutoff && activity <= now;
+  });
+}
+
+/** Lowercase, human-readable phrase describing a Share Card period, for use mid-sentence. */
+function shareCardPeriodPhrase(period: Period): string {
+  return period === "allTime" ? "of all time" : `in the ${PERIOD_LABELS[period].toLowerCase()}`;
+}
+
+/** Builds the plain-text version of the share summary, used by the "Copy Summary Text" button. */
+function buildShareSummaryText(
+  editors: string[],
+  editorStats: Record<string, { count: number; interactions: number }>,
+  totalSessions: number,
+  totalInteractions: number,
+  totalTokens: number,
+  period: Period,
+): string {
+  const editorList = editors
+    .map((editor) => `${getEditorIcon(editor)} ${editor} (${editorStats[editor].count})`)
+    .join(", ");
+  return `My AI Coding Toolbox — ${editors.length} editor${editors.length === 1 ? "" : "s"} detected: ${editorList}. ` +
+    `${totalSessions} sessions, ${totalInteractions} interactions, ${formatTokenCount(totalTokens)} tokens ${shareCardPeriodPhrase(period)}. #AIEngineeringFluency`;
+}
+
+/** Renders a screenshot-friendly "Share Card" tab summarizing the detected editors — meant to be
+ * shared in social media posts, mirroring the visual style of the startup loading screen. */
+function renderShareCardTab(detailedFiles: SessionFileDetails[], isLoadingSessions: boolean = false): string {
+  if (isLoadingSessions) {
+    return `<div id="tab-share" class="tab-content">
+      <div class="info-box">
+        <div class="info-box-title">📸 Share Card</div>
+        <div>A snapshot of your AI coding toolbox — screenshot this card to share your editor mix on social media.</div>
+      </div>
+      <div class="loading-state"><div class="loading-spinner">⏳</div><div class="loading-text">Loading session files...</div><div class="loading-subtext" id="share-loading-subtext">Analyzing up to 500 files from the last 14 days</div></div>
+    </div>`;
+  }
+  if (detailedFiles.length === 0) {
+    return `<div id="tab-share" class="tab-content">
+      <div class="info-box">
+        <div class="info-box-title">📸 Share Card</div>
+        <div>No session activity found yet. Once you have some AI coding sessions, a shareable summary card will appear here.</div>
+      </div>
+    </div>`;
+  }
+  const period = currentShareCardPeriod;
+  const filteredFiles = filterFilesByShareCardPeriod(detailedFiles, period);
+  const editorStats = getEditorStats(filteredFiles);
+  const editors = Object.keys(editorStats).sort((a, b) => editorStats[b].count - editorStats[a].count);
+  const totalSessions = filteredFiles.length;
+  const totalInteractions = filteredFiles.reduce((sum, sf) => sum + Number(sf.interactions || 0), 0);
+  const totalTokens = filteredFiles.reduce((sum, sf) => sum + Number(sf.tokens || 0), 0);
+  const pills = editors
+    .map((editor) => `<div class="share-pill"><span>${getEditorIcon(editor)}</span><span>${escapeHtml(editor)}</span><span class="share-pill-count">${editorStats[editor].count}</span></div>`)
+    .join("");
+  const emptyPeriodNotice = totalSessions === 0
+    ? `<div style="margin-top: 8px; font-size: 12px; color: var(--text-muted);">No session activity in this period. Try a wider range.</div>`
+    : "";
+  return `<div id="tab-share" class="tab-content">
+    <div class="info-box">
+      <div class="info-box-title">📸 Share Card</div>
+      <div>A snapshot of your AI coding toolbox — screenshot this card to share your editor mix on social media.</div>
+    </div>
+    <div class="share-card-controls" style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+      <span style="font-size: 12px; color: var(--text-muted);">Period:</span>
+      <span id="share-card-period-selector"></span>
+    </div>
+    <div class="share-card">
+      <div class="share-badge">🤖 AI Engineering Fluency</div>
+      <div class="share-title">My AI Coding Toolbox</div>
+      <div class="share-subtitle">${escapeHtml(PERIOD_LABELS[period])} · ${editors.length} editor${editors.length === 1 ? "" : "s"} detected</div>
+      <div class="share-pills">${pills}</div>
+      <div class="share-stats">
+        <div class="share-stat"><div class="share-stat-value">${totalSessions}</div><div class="share-stat-label">Sessions</div></div>
+        <div class="share-stat"><div class="share-stat-value">${totalInteractions}</div><div class="share-stat-label">Interactions</div></div>
+        <div class="share-stat"><div class="share-stat-value" title="${totalTokens.toLocaleString()} tokens">${formatTokenCount(totalTokens)}</div><div class="share-stat-label">Tokens</div></div>
+        <div class="share-stat"><div class="share-stat-value">${editors.length}</div><div class="share-stat-label">Editors</div></div>
+      </div>
+    </div>
+    ${emptyPeriodNotice}
+    <div class="button-group" style="margin-top: 12px;">
+      <button class="button secondary" id="btn-copy-share-summary"><span>📋</span><span>Copy Summary Text</span></button>
+    </div>
+    <div class="share-buttons" style="margin-top: 12px;">
+      <button id="btn-share-card-linkedin" class="share-btn share-btn-linkedin"><span class="share-btn-icon">💼</span><span>Share on LinkedIn</span></button>
+      <button id="btn-share-card-bluesky" class="share-btn share-btn-bluesky"><span class="share-btn-icon">🦋</span><span>Share on Bluesky</span></button>
+      <button id="btn-share-card-mastodon" class="share-btn share-btn-mastodon"><span class="share-btn-icon">🐘</span><span>Share on Mastodon</span></button>
+    </div>
+  </div>`;
+}
+
 function renderDebugTab(counters: GlobalStateCounters | undefined): string {
-  const c = counters ?? { openCount: 0, unknownMcpOpenCount: 0, fluencyBannerDismissed: false, unknownMcpDismissedVersion: '' };
+  const c = counters ?? { openCount: 0, unknownMcpOpenCount: 0, fluencyBannerDismissed: false, unknownMcpDismissedVersion: '', efficiencyTabBannerDismissed: false };
   return `
     <div id="tab-debug" class="tab-content">
       <div class="info-box">
@@ -649,6 +864,7 @@ function renderDebugTab(counters: GlobalStateCounters | undefined): string {
         <table><tbody>
           ${flagRow('news.fluencyScoreBanner.v1.dismissed', 'news.fluencyScoreBanner.v1.dismissed', c.fluencyBannerDismissed)}
           ${stringRow('news.unknownMcpTools.dismissedVersion', 'news.unknownMcpTools.dismissedVersion', c.unknownMcpDismissedVersion)}
+          ${flagRow('news.efficiencyTab.v1.dismissed', 'news.efficiencyTab.v1.dismissed', c.efficiencyTabBannerDismissed)}
         </tbody></table>
         <div style="margin-top: 16px;">
           <button class="button secondary" id="btn-reset-debug-counters"><span>🔄</span><span>Reset All Counters &amp; Dismissed Flags</span></button>
@@ -777,13 +993,7 @@ function renderBackendStoragePanel(
     return `
       <div class="info-box">
         <div class="info-box-title">☁️ Backend Storage</div>
-        <div>Backend storage information is not available. This may be a temporary issue.</div>
-        <div class="button-group" style="margin-top: 12px;">
-          <button class="button" id="btn-configure-backend">
-            <span>🔧</span>
-            <span>Configure Backend</span>
-          </button>
-        </div>
+        <div>⏳ Loading backend storage status...</div>
       </div>
     `;
   }
@@ -813,7 +1023,7 @@ function renderFolderAnalyzerTab(): string {
       </div>
     </div>
     <div class="section">
-      <div class="section-title">📁 Folder Selection</div>
+      <div class="section-title"><span class="codicon codicon-folder-opened"></span><span>Folder Selection</span></div>
       <div class="folder-input-row">
         <input
           type="text"
@@ -906,7 +1116,7 @@ function renderFolderAnalysisResults(
 
   return `
     <div class="section" style="margin-top: 0;">
-      <div class="section-title">📊 Analysis Results</div>
+      <div class="section-title"><span class="codicon codicon-graph"></span><span>Analysis Results</span></div>
       ${truncatedWarning}
       <div class="summary-cards">
         <div class="summary-card">
@@ -948,6 +1158,186 @@ function renderFolderAnalysisResults(
             <tbody>${tableRows}</tbody>
           </table>
         </div>`}
+    </div>`;
+}
+
+const MODEL_USAGE_PERIOD_ORDER: Period[] = ["allTime", "lastMonth", "currentMonth", "thisWeek", "today"];
+const MODEL_USAGE_PERIOD_TO_TIME_RANGE: Record<string, string> = {
+  today: "today",
+  thisWeek: "week",
+  currentMonth: "month",
+  lastMonth: "lastMonth",
+  allTime: "all",
+  yesterday: "yesterday",
+};
+const MODEL_USAGE_TIME_RANGE_TO_PERIOD: Record<string, string> = {
+  today: "today",
+  week: "thisWeek",
+  month: "currentMonth",
+  lastMonth: "lastMonth",
+  all: "allTime",
+  yesterday: "yesterday",
+};
+
+function renderModelUsageTab(detailedFiles: SessionFileDetails[], isLoadingSessions: boolean = false): string {
+  const editorStats = getEditorStats(detailedFiles);
+  const editorOptions = Object.keys(editorStats).sort()
+    .map((editor) => `<option value="${escapeHtml(editor)}">${escapeHtml(getEditorIcon(editor))} ${escapeHtml(editor)} (${editorStats[editor].count})</option>`)
+    .join("");
+  const statusText = isLoadingSessions ? "⏳ Loading sessions…" : "";
+  return `
+    <div class="info-box">
+      <div class="info-box-title">🧮 Model Usage Breakdown</div>
+      <div>
+        Aggregates the exact per-model token usage and estimated cost the dashboard uses,
+        for a single editor or across all of them. Handy for spotting model/pricing
+        mismatches behind an unexpected cost total (e.g. tokens attributed to the wrong model tier).
+        Updates automatically when you change the editor or time range below.
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">🎯 Select Editor &amp; Time Range</div>
+      <div class="folder-input-row">
+        <select id="model-usage-editor-select" class="tool-type-select" ${isLoadingSessions ? "disabled" : ""}>
+          <option value="all">🌐 All Editors</option>
+          ${editorOptions}
+        </select>
+        <span id="model-usage-time-selector"></span>
+        <span id="model-usage-status" style="font-size: 12px; color: var(--text-muted);">${escapeHtml(statusText)}</span>
+      </div>
+    </div>
+    <div id="model-usage-results"></div>
+  `;
+}
+
+function renderModelUsageTimeSelector(disabled: boolean = false): void {
+  const wrapper = document.getElementById("model-usage-time-selector");
+  if (!wrapper) { return; }
+  wrapper.replaceChildren();
+  const selectedPeriod = MODEL_USAGE_TIME_RANGE_TO_PERIOD[currentModelUsageTimeRange] ?? "allTime";
+  const { select } = createPeriodSelector({
+    id: "model-usage-time-select",
+    selected: selectedPeriod,
+    periods: MODEL_USAGE_PERIOD_ORDER,
+    extraOptions: [{ value: "yesterday", label: "Yesterday" }],
+    label: "",
+    onChange: (value) => {
+      const timeRange = MODEL_USAGE_PERIOD_TO_TIME_RANGE[value];
+      if (!timeRange) { return; }
+      currentModelUsageTimeRange = timeRange;
+      triggerModelUsageAnalysis();
+    },
+  });
+  select.disabled = disabled;
+  wrapper.append(select);
+}
+
+function buildModelUsageTableRow(row: ModelUsageRow, showCache1h: boolean): string {
+  const sessionCountTitle = escapeHtml(`${row.sessionCount} session(s)`);
+  const inputTokensTitle = escapeHtml(`${row.inputTokens.toLocaleString()} tokens`);
+  const outputTokensTitle = escapeHtml(`${row.outputTokens.toLocaleString()} tokens`);
+  const cacheCreationTokensTitle = escapeHtml(`${row.cacheCreationTokens.toLocaleString()} tokens`);
+  const cacheCreation1hTokensTitle = escapeHtml(`${row.cacheCreation1hTokens.toLocaleString()} tokens`);
+  const cachedReadTokensTitle = escapeHtml(`${row.cachedReadTokens.toLocaleString()} tokens`);
+
+  return `
+    <tr>
+      <td>${escapeHtml(row.model)}</td>
+      <td title="${sessionCountTitle}">${row.sessionCount.toLocaleString()}</td>
+      <td title="${inputTokensTitle}">${formatTokenCount(row.inputTokens)}</td>
+      <td title="${outputTokensTitle}">${formatTokenCount(row.outputTokens)}</td>
+      <td title="${cacheCreationTokensTitle}">${formatTokenCount(row.cacheCreationTokens)}</td>
+      ${showCache1h ? `<td title="${cacheCreation1hTokensTitle}">${formatTokenCount(row.cacheCreation1hTokens)}</td>` : ""}
+      <td title="${cachedReadTokensTitle}">${formatTokenCount(row.cachedReadTokens)}</td>
+      <td>$${row.estimatedCost.toFixed(2)}</td>
+    </tr>`;
+}
+
+function buildModelUsageExplanation(fileCount: number, filesWithUsage: number): string {
+  const missing = fileCount - filesWithUsage;
+  if (missing <= 0) { return ""; }
+  return `
+    <div class="info-box" style="margin-top: 12px;">
+      <div class="info-box-title">ℹ️ ${missing} session(s) have no per-model data</div>
+      <div>
+        This is often expected, not a bug. Common causes: chat-only sessions stored in a
+        database with no model/token columns (e.g. Copilot CLI's session-store.db), older
+        or truncated session logs written before an editor started recording per-model
+        attribution, or sessions that never made a model-backed request (e.g. empty/aborted
+        chats).
+      </div>
+    </div>`;
+}
+
+const TIME_RANGE_LABELS: Record<string, string> = {
+  all: "All Time",
+  lastMonth: "Last Month",
+  month: "Current Month",
+  week: "This Week",
+  today: "Today",
+  yesterday: "Yesterday",
+};
+
+function renderModelUsageResults(
+  editor: string,
+  fileCount: number,
+  filesWithUsage: number,
+  rows: ModelUsageRow[],
+  totalCost: number,
+  supportsCache1h: boolean = true,
+  timeRange: string = "all",
+): string {
+  const editorLabel = editor === "all" ? "All Editors" : editor;
+  const timeLabel = TIME_RANGE_LABELS[timeRange] || "All Time";
+  const scopeLabel = timeRange === "all" ? editorLabel : `${editorLabel} — ${timeLabel}`;
+  if (rows.length === 0) {
+    return `
+      <div class="section" style="margin-top: 0;">
+        <div style="padding: 32px; text-align: center; color: var(--text-muted);">
+          <div style="font-size: 36px; margin-bottom: 12px;">📭</div>
+          <div style="font-size: 14px;">No per-model usage data found for ${escapeHtml(scopeLabel)}.</div>
+          <div style="font-size: 12px; margin-top: 8px;">${fileCount} session file(s) matched, ${filesWithUsage} had model attribution data.</div>
+        </div>
+      </div>
+      ${buildModelUsageExplanation(fileCount, filesWithUsage)}`;
+  }
+  const tableRows = rows.map((r) => buildModelUsageTableRow(r, supportsCache1h)).join("");
+  return `
+    <div class="section" style="margin-top: 0;">
+      <div class="section-title">📊 Results — ${escapeHtml(scopeLabel)}</div>
+      <div class="summary-cards">
+        <div class="summary-card">
+          <div class="summary-label">📄 Session Files</div>
+          <div class="summary-value">${fileCount}</div>
+          <div style="font-size: 11px; color: var(--text-muted);">${filesWithUsage} with model data</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">🧩 Models</div>
+          <div class="summary-value">${rows.length}</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">💰 Est. Total Cost</div>
+          <div class="summary-value">$${totalCost.toFixed(2)}</div>
+        </div>
+      </div>
+      <div class="table-container" style="margin-top: 12px; max-height: 420px;">
+        <table class="session-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Sessions</th>
+              <th>Input</th>
+              <th>Output</th>
+              <th>Cache Create</th>
+              ${supportsCache1h ? "<th>Cache Create (1h)</th>" : ""}
+              <th>Cache Read</th>
+              <th>Est. Cost</th>
+            </tr>
+          </thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      </div>
+      ${buildModelUsageExplanation(fileCount, filesWithUsage)}
     </div>`;
 }
 
@@ -1045,9 +1435,13 @@ function buildSessionFoldersElement(folders: SessionFolder[]): HTMLElement {
   heading.textContent = "Main Session Folders (by editor root):";
   container.appendChild(heading);
 
+  const tableContainer = document.createElement("div");
+  tableContainer.className = "table-container";
+  container.appendChild(tableContainer);
+
   const table = document.createElement("table");
   table.className = "session-table";
-  container.appendChild(table);
+  tableContainer.appendChild(table);
 
   const thead = document.createElement("thead");
   table.appendChild(thead);
@@ -1142,9 +1536,62 @@ function activateTab(tabId: string): boolean {
 
     tabButton.classList.add("active");
     tabContent.classList.add("active");
+    // Let the host record the subview so the what's-new announcer can skip tabs
+    // the user already found for themselves. Fire-and-forget.
+    vscode.postMessage({ command: "viewTabOpened", view: "diagnostics", tab: tabId });
     return true;
   }
   return false;
+}
+
+/** Which group tab (Diagnostics / Research / Settings) each leaf tab lives under. */
+const TAB_GROUPS: Record<string, string[]> = {
+  diagnostics: ["report", "sessions", "cache", "path-analyzer"],
+  research: ["model-usage", "tool-analysis", "skill-usage", "otel-delta", "ttft"],
+  settings: ["display", "backend", "github", "debug"],
+};
+
+function groupOfTab(tabId: string): string {
+  for (const [group, tabs] of Object.entries(TAB_GROUPS)) {
+    if (tabs.includes(tabId)) { return group; }
+  }
+  return "diagnostics";
+}
+
+/** The first leaf tab in a group that actually has a rendered button (handles the conditional Debug tab). */
+function firstAvailableTabInGroup(groupId: string): string | undefined {
+  return TAB_GROUPS[groupId]?.find((id) => document.querySelector(`.tab[data-tab="${id}"]`));
+}
+
+/** Shows the leaf tab bar for the given group and hides the others; does not change which leaf tab is active. */
+function activateGroup(groupId: string): boolean {
+  const groupButton = document.querySelector(`.group-tab[data-group="${groupId}"]`);
+  const leafBar = document.querySelector(`.leaf-tabs[data-group="${groupId}"]`);
+  if (!groupButton || !leafBar) { return false; }
+
+  document.querySelectorAll(".group-tab").forEach((b) => b.classList.remove("active"));
+  document.querySelectorAll<HTMLElement>(".leaf-tabs").forEach((b) => { b.style.display = "none"; });
+
+  groupButton.classList.add("active");
+  (leafBar as HTMLElement).style.display = "flex";
+  return true;
+}
+
+function setupGroupHandlers(): void {
+  document.querySelectorAll(".group-tab").forEach((button) => {
+    button.addEventListener("click", () => {
+      const groupId = (button as HTMLElement).getAttribute("data-group");
+      if (!groupId || !activateGroup(groupId)) { return; }
+
+      const activeTabInGroup = document.querySelector(`.leaf-tabs[data-group="${groupId}"] .tab.active`);
+      if (!activeTabInGroup) {
+        const nextTab = firstAvailableTabInGroup(groupId);
+        if (nextTab && activateTab(nextTab)) {
+          diagState.patch({ activeTab: nextTab });
+        }
+      }
+    });
+  });
 }
 
 function setupSortHandlers(): void {
@@ -1295,7 +1742,7 @@ function setupSubtabHandlers(): void {
 function reRenderTable(): void {
   const container = document.getElementById("session-table-container");
   if (container) {
-    container.innerHTML = renderSessionTable(storedDetailedFiles, isLoading);
+    setHtml(container, renderSessionTable(storedDetailedFiles, isLoading));
     if (!isLoading) {
       setupSortHandlers();
       setupEditorFilterHandlers();
@@ -1315,9 +1762,9 @@ function reRenderToolAnalysisTable(): void {
     const baselineRaw = table.getAttribute("data-baseline");
     const baseline = baselineRaw ? parseFloat(baselineRaw) : NaN;
     const tbody = table.querySelector("tbody");
-    if (tbody) { tbody.innerHTML = renderToolAnalysisRows(rows, baseline); }
+    if (tbody) { setHtml(tbody, renderToolAnalysisRows(rows, baseline)); }
     const thead = table.querySelector("thead");
-    if (thead) { thead.innerHTML = toolAnalysisTheadHtml(); }
+    if (thead) { setHtml(thead, toolAnalysisTheadHtml()); }
   });
   setupToolAnalysisSortHandlers();
 }
@@ -1436,16 +1883,16 @@ function setupFolderAnalyzerHandlers(): void {
     const btn = document.getElementById("btn-analyze-folder") as HTMLButtonElement | null;
     if (btn) {
       btn.disabled = true;
-      btn.innerHTML = "<span>⏳</span><span>Analyzing…</span>";
+      setHtml(btn, "<span>⏳</span><span>Analyzing…</span>");
     }
 
     const resultsDiv = document.getElementById("folder-analysis-results");
     if (resultsDiv) {
-      resultsDiv.innerHTML = `
+      setHtml(resultsDiv, `
           <div class="analyzer-loading">
             <span class="spinner" style="width:18px;height:18px;border:2px solid var(--link-color);border-top-color:transparent;border-radius:50%;display:inline-block;animation:spin 0.7s linear infinite;"></span>
             <span>Scanning files…</span>
-          </div>`;
+          </div>`);
     }
 
     vscode.postMessage({
@@ -1456,6 +1903,56 @@ function setupFolderAnalyzerHandlers(): void {
   });
 }
 
+function triggerModelUsageAnalysis(): void {
+  const select = document.getElementById("model-usage-editor-select") as HTMLSelectElement | null;
+  if (!select || select.disabled) { return; }
+  const editor = select.value || "all";
+  const timeRange = currentModelUsageTimeRange || "all";
+
+  const resultsDiv = document.getElementById("model-usage-results");
+  if (resultsDiv) {
+    setHtml(resultsDiv, `
+        <div class="analyzer-loading">
+          <span class="spinner" style="width:18px;height:18px;border:2px solid var(--link-color);border-top-color:transparent;border-radius:50%;display:inline-block;animation:spin 0.7s linear infinite;"></span>
+          <span>Aggregating model usage…</span>
+        </div>`);
+  }
+
+  vscode.postMessage({ command: "analyzeModelUsage", editor, timeRange });
+}
+
+function setupModelUsageHandlers(): void {
+  document.getElementById("model-usage-editor-select")?.addEventListener("change", () => {
+    triggerModelUsageAnalysis();
+  });
+}
+
+function handleModelUsageResult(message: DiagMessage): void {
+  const resultsDiv = document.getElementById("model-usage-results");
+  if (!resultsDiv) { return; }
+  if (typeof message.timeRange === "string" && message.timeRange) {
+    currentModelUsageTimeRange = message.timeRange;
+    renderModelUsageTimeSelector(false);
+  }
+  if (message.stillLoading) {
+    setHtml(resultsDiv, `
+      <div class="info-box" style="margin-top: 12px;">
+        <div class="info-box-title">⏳ Still loading session files</div>
+        <div>Session files are still being scanned in the background. Wait a moment (watch the "Session Files" tab count) and try again.</div>
+      </div>`);
+    return;
+  }
+  setHtml(resultsDiv, renderModelUsageResults(
+    String(message.editor || "all"),
+    Number(message.fileCount || 0),
+    Number(message.filesWithUsage || 0),
+    (message.rows || []) as ModelUsageRow[],
+    Number(message.totalCost || 0),
+    message.supportsCache1h !== false,
+    String(message.timeRange || "all"),
+  ));
+}
+
 function setupTabHandlers(): void {
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -1463,6 +1960,13 @@ function setupTabHandlers(): void {
 
       if (tabId && activateTab(tabId)) {
         diagState.patch({ activeTab: tabId });
+        if (tabId === "model-usage") {
+          const resultsDiv = document.getElementById("model-usage-results");
+          if (resultsDiv && !resultsDiv.innerHTML.trim()) { triggerModelUsageAnalysis(); }
+        } else if (tabId === "ttft") {
+          const resultsDiv = document.getElementById("ttft-results");
+          if (resultsDiv && !resultsDiv.innerHTML.trim()) { triggerTtftAnalysis(); }
+        }
       }
     });
   });
@@ -1470,7 +1974,7 @@ function setupTabHandlers(): void {
 
 function handleClearCacheClick(target: HTMLElement): void {
   target.style.background = "#d97706";
-  target.innerHTML = "<span>⏳</span><span>Clearing...</span>";
+  setHtml(target, "<span>⏳</span><span>Clearing...</span>");
   if (target instanceof HTMLButtonElement) {
     target.disabled = true;
   }
@@ -1510,6 +2014,9 @@ function handleGlobalClickEvent(event: MouseEvent): void {
   }
   if (target.id === "btn-reset-debug-counters") {
     vscode.postMessage({ command: "resetDebugCounters" });
+  }
+  if (target.id === "btn-reset-discovered-editors") {
+    vscode.postMessage({ command: "resetDiscoveredEditors" });
   }
   if (target.classList.contains("debug-counter-set")) {
     handleDebugCounterSetClick(target);
@@ -1560,13 +2067,77 @@ function wireNavButtons(): void {
     ?.addEventListener("click", () =>
       vscode.postMessage({ command: "showEnvironmental" }),
     );
+  document
+    .getElementById("btn-efficiency")
+    ?.addEventListener("click", () =>
+      vscode.postMessage({ command: "showEfficiency" }),
+    );
   wireExtensionPointButtons(vscode);
+}
+
+/** Renders the Share Card's period dropdown into its placeholder span, reusing the shared period-selector
+ * component for visual/state consistency with the other period selectors in this webview (e.g. Model Usage). */
+function renderShareCardPeriodSelector(): void {
+  const wrapper = document.getElementById("share-card-period-selector");
+  if (!wrapper) { return; }
+  wrapper.replaceChildren();
+  const { select } = createPeriodSelector({
+    id: "share-card-period-select",
+    selected: currentShareCardPeriod,
+    periods: SHARE_CARD_PERIOD_ORDER,
+    label: "",
+    onChange: (value) => {
+      currentShareCardPeriod = value as Period;
+      diagState.patch({ shareCardPeriod: currentShareCardPeriod });
+      reRenderShareCard();
+    },
+  });
+  wrapper.append(select);
+}
+
+/** Builds the current Share Card's plain-text summary from live filtered session data, for both
+ * the "Copy Summary Text" button and the social share buttons. */
+function buildCurrentShareSummaryText(): string {
+  const filteredFiles = filterFilesByShareCardPeriod(storedDetailedFiles, currentShareCardPeriod);
+  const editorStats = getEditorStats(filteredFiles);
+  const editors = Object.keys(editorStats).sort((a, b) => editorStats[b].count - editorStats[a].count);
+  const totalSessions = filteredFiles.length;
+  const totalInteractions = filteredFiles.reduce((sum, sf) => sum + Number(sf.interactions || 0), 0);
+  const totalTokens = filteredFiles.reduce((sum, sf) => sum + Number(sf.tokens || 0), 0);
+  return buildShareSummaryText(editors, editorStats, totalSessions, totalInteractions, totalTokens, currentShareCardPeriod);
+}
+
+/** Wires the "Copy Summary Text" button, social share buttons, and period selector on the Share
+ * Card tab. Re-run after `reRenderShareCard()` replaces the tab's markup, since these elements are recreated. */
+function setupShareSummaryButtonHandler(): void {
+  renderShareCardPeriodSelector();
+  document.getElementById("btn-copy-share-summary")?.addEventListener("click", () => {
+    vscode.postMessage({ command: "copyText", text: buildCurrentShareSummaryText() });
+  });
+  const socialPlatforms: Array<{ id: string; platform: "linkedin" | "bluesky" | "mastodon" }> = [
+    { id: "btn-share-card-linkedin", platform: "linkedin" },
+    { id: "btn-share-card-bluesky", platform: "bluesky" },
+    { id: "btn-share-card-mastodon", platform: "mastodon" },
+  ];
+  for (const { id, platform } of socialPlatforms) {
+    document.getElementById(id)?.addEventListener("click", () => {
+      vscode.postMessage({ command: "shareCardToSocial", platform, text: buildCurrentShareSummaryText() });
+    });
+  }
+}
+
+/** Re-renders the Share Card tab once session files have finished loading, since it is
+ * initially rendered with an empty file list before the async load completes. */
+function reRenderShareCard(): void {
+  replaceTabContent("share", renderShareCardTab(storedDetailedFiles), setupShareSummaryButtonHandler);
 }
 
 function setupButtonHandlers(): void {
   document.getElementById("btn-copy")?.addEventListener("click", () => {
     vscode.postMessage({ command: "copyReport" });
   });
+
+  setupShareSummaryButtonHandler();
 
   document.getElementById("btn-issue")?.addEventListener("click", () => {
     vscode.postMessage({ command: "openIssue" });
@@ -1578,7 +2149,7 @@ function setupButtonHandlers(): void {
     ) as HTMLButtonElement | null;
     if (btn) {
       btn.style.background = "#d97706";
-      btn.innerHTML = "<span>⏳</span><span>Clearing...</span>";
+      setHtml(btn, "<span>⏳</span><span>Clearing...</span>");
       btn.disabled = true;
     }
     updateCacheNumbers();
@@ -1593,7 +2164,7 @@ function setupButtonHandlers(): void {
       ) as HTMLButtonElement | null;
       if (btn) {
         btn.style.background = "#d97706";
-        btn.innerHTML = "<span>⏳</span><span>Clearing...</span>";
+        setHtml(btn, "<span>⏳</span><span>Clearing...</span>");
         btn.disabled = true;
       }
       updateCacheNumbers();
@@ -1627,7 +2198,7 @@ function handleBackendStorageSection(message: DiagMessage): void {
   if (!backendTabContent) { return; }
   const activeSubtabEl = backendTabContent.querySelector(".subtab.active") as HTMLElement | null;
   const previousSubtab = activeSubtabEl?.getAttribute("data-subtab") ?? diagState.restore().activeSubtab;
-  backendTabContent.innerHTML = renderBackendStoragePanel(currentBackendInfo, currentGithubAuth);
+  setHtml(backendTabContent, renderBackendStoragePanel(currentBackendInfo, currentGithubAuth));
   setupBackendButtonHandlers();
   setupSubtabHandlers();
   if (previousSubtab) {
@@ -1669,48 +2240,116 @@ function handleCandidatePathsSection(message: DiagMessage): void {
   }
 }
 
+/**
+ * Replaces a tab's content element with freshly rendered HTML, preserving its active state.
+ * Security contract: `newContent` is built entirely by this file's own render*() functions
+ * from structured (non-HTML) data sent by the extension host over postMessage — every
+ * interpolated string field is passed through escapeHtml(), and every numeric field through
+ * an explicit Number() cast, before being placed into a template literal. Never pass raw
+ * message field values into this function directly.
+ */
+function replaceTabContent(tabId: string, newContent: string, onReplaced?: () => void): void {
+  const tabContent = document.getElementById(`tab-${tabId}`);
+  if (!tabContent) { return; }
+  const wasActive = tabContent.classList.contains("active");
+  const temp = document.createElement('div');
+  setHtml(temp, newContent);
+  const newTab = temp.firstElementChild as HTMLElement | null;
+  if (!newTab) { return; }
+  if (wasActive) { newTab.classList.add("active"); }
+  tabContent.replaceWith(newTab);
+  onReplaced?.();
+}
+
+function handleGithubAuthSection(message: DiagMessage): void {
+  if (message.githubAuth === undefined) { return; }
+  const githubTabContent = document.getElementById("tab-github");
+  if (githubTabContent) {
+    setHtml(githubTabContent, renderGitHubAuthPanel(message.githubAuth));
+    setupGitHubAuthHandlers();
+  }
+}
+
+function handleToolAnalysisSection(message: DiagMessage): void {
+  if (message.toolFamilies) { storedToolFamilies = message.toolFamilies as ToolFamilyConfig[]; }
+  if (message.toolCallStats === undefined) { return; }
+  const newContent = renderToolAnalysisTab(message.toolCallStats as DiagnosticsData['toolCallStats'], storedToolFamilies);
+  replaceTabContent("tool-analysis", newContent, setupToolAnalysisSortHandlers);
+}
+
+/** Re-renders the Skill Usage tab body from the cached data + current editor filter, preserving active/tab state. */
+function rerenderSkillUsageTab(): void {
+  replaceTabContent(
+    "skill-usage",
+    renderSkillUsageTab(currentSkillCallStats, currentSkillCallsByEditor, currentSkillDescriptions, skillUsageEditorFilter),
+    setupSkillUsageFilterHandler
+  );
+}
+
+function setupSkillUsageFilterHandler(): void {
+  document.querySelectorAll<HTMLElement>(".skill-usage-chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      const editor = chip.getAttribute("data-editor");
+      if (!editor) { return; }
+      skillUsageEditorFilter = editor;
+      diagState.patch({ skillUsageEditorFilter: editor });
+      rerenderSkillUsageTab();
+    });
+  });
+}
+
+function handleSkillUsageSection(message: DiagMessage): void {
+  if (message.skillCallStats !== undefined) { currentSkillCallStats = message.skillCallStats as DiagnosticsData['skillCallStats']; }
+  if (message.skillCallsByEditor !== undefined) { currentSkillCallsByEditor = message.skillCallsByEditor as DiagnosticsData['skillCallsByEditor']; }
+  if (message.skillDescriptions !== undefined) { currentSkillDescriptions = message.skillDescriptions as DiagnosticsData['skillDescriptions']; }
+  if (message.skillCallStats === undefined) { return; }
+  rerenderSkillUsageTab();
+}
+
+/** Re-renders the OTel Delta tab body from currentOtelComparison + currentOtelDeltaPeriod, preserving active/tab state. */
+function rerenderOtelDeltaTab(): void {
+  replaceTabContent("otel-delta", renderOtelDeltaTab(currentOtelComparison, currentOtelDeltaPeriod), setupOtelDeltaPeriodHandler);
+}
+
+function setupOtelDeltaPeriodHandler(): void {
+  const select = document.getElementById("otel-delta-period") as HTMLSelectElement | null;
+  if (!select) { return; }
+  select.addEventListener("change", () => {
+    currentOtelDeltaPeriod = select.value as OtelDeltaPeriod;
+    diagState.patch({ otelDeltaPeriod: currentOtelDeltaPeriod });
+    rerenderOtelDeltaTab();
+  });
+}
+
+function handleOtelComparisonSection(message: DiagMessage): void {
+  if (message.otelComparison === undefined) { return; }
+  currentOtelComparison = message.otelComparison as DiagnosticsData['otelComparison'];
+  rerenderOtelDeltaTab();
+}
+
 function handleDiagnosticDataLoaded(message: DiagMessage): void {
   handleDiagnosticReport(message);
   handleBackendStorageSection(message);
   handleSessionFoldersSection(message);
   handleCandidatePathsSection(message);
-  if (message.githubAuth !== undefined) {
-    const githubTabContent = document.getElementById("tab-github");
-    if (githubTabContent) {
-      githubTabContent.innerHTML = renderGitHubAuthPanel(message.githubAuth);
-      setupGitHubAuthHandlers();
-    }
-  }
-  if (message.toolFamilies) { storedToolFamilies = message.toolFamilies as ToolFamilyConfig[]; }
-  if (message.toolCallStats !== undefined) {
-    const toolAnalysisTab = document.getElementById("tab-tool-analysis");
-    if (toolAnalysisTab) {
-      const wasActive = toolAnalysisTab.classList.contains("active");
-      const newContent = renderToolAnalysisTab(message.toolCallStats as DiagnosticsData['toolCallStats'], storedToolFamilies);
-      const temp = document.createElement('div');
-      temp.innerHTML = newContent;
-      const newTab = temp.firstElementChild as HTMLElement | null;
-      if (newTab) {
-        if (wasActive) { newTab.classList.add("active"); }
-        toolAnalysisTab.replaceWith(newTab);
-        setupToolAnalysisSortHandlers();
-      }
-    }
-  }
+  handleGithubAuthSection(message);
+  handleToolAnalysisSection(message);
+  handleSkillUsageSection(message);
+  handleOtelComparisonSection(message);
 }
 
 function handleGithubAuthUpdated(message: DiagMessage): void {
   currentGithubAuth = message.githubAuth;
   const githubTabContent = document.getElementById("tab-github");
   if (githubTabContent) {
-    githubTabContent.innerHTML = renderGitHubAuthPanel(currentGithubAuth);
+    setHtml(githubTabContent, renderGitHubAuthPanel(currentGithubAuth));
     setupGitHubAuthHandlers();
   }
   const backendTabContent = document.getElementById("tab-backend");
   if (backendTabContent && currentBackendInfo) {
     const activeSubtabEl = backendTabContent.querySelector(".subtab.active") as HTMLElement | null;
     const previousSubtab = activeSubtabEl?.getAttribute("data-subtab");
-    backendTabContent.innerHTML = renderBackendStoragePanel(currentBackendInfo, currentGithubAuth);
+    setHtml(backendTabContent, renderBackendStoragePanel(currentBackendInfo, currentGithubAuth));
     setupBackendButtonHandlers();
     setupSubtabHandlers();
     if (previousSubtab) {
@@ -1726,10 +2365,10 @@ function handleDiagnosticDataError(message: DiagMessage): void {
     const errorDiv = document.createElement("div");
     errorDiv.style.cssText =
       "color: #ff6b6b; padding: 20px; text-align: center;";
-    errorDiv.innerHTML = `
-<h3>⚠️ Error Loading Diagnostic Data</h3>
+    setHtml(errorDiv, `
+<h3><span class="codicon codicon-warning"></span> Error Loading Diagnostic Data</h3>
 <p>${escapeHtml(message.error || "Unknown error")}</p>
-`;
+`);
     rootEl.insertBefore(errorDiv, rootEl.firstChild);
   }
 }
@@ -1812,6 +2451,7 @@ function sanitizeSessionFileItem(item: unknown): SessionFileDetails {
     parentInfo: sanitizeParentInfo(sf),
     childInfo: sanitizeChildInfo(sf),
     totalChildCount: sf.totalChildCount === null || sf.totalChildCount === undefined ? undefined : Number(sf.totalChildCount),
+    subAgentCalls: sf.subAgentCalls === null || sf.subAgentCalls === undefined ? undefined : Number(sf.subAgentCalls),
   } as SessionFileDetails;
 }
 
@@ -1820,6 +2460,29 @@ function sanitizeDetailedSessionFiles(input: unknown): SessionFileDetails[] {
     return [];
   }
   return input.map(sanitizeSessionFileItem);
+}
+
+function handleSessionFilesLoadProgress(message: DiagMessage): void {
+  const processed = Number(message.processed || 0);
+  const total = Number(message.total || 0);
+  const progressText = total > 0 ? `Analyzing files… (${processed} / ${total})` : "Analyzing files…";
+
+  const sessionSubtext = document.getElementById("session-loading-subtext");
+  if (sessionSubtext) { sessionSubtext.textContent = progressText; }
+
+  const shareSubtext = document.getElementById("share-loading-subtext");
+  if (shareSubtext) { shareSubtext.textContent = progressText; }
+
+  const reportSubtext = document.getElementById("report-loading-subtext");
+  if (reportSubtext) { reportSubtext.textContent = progressText; }
+
+  const ttftLoadingStatus = document.getElementById("ttft-loading-status");
+  if (ttftLoadingStatus) { ttftLoadingStatus.textContent = progressText; }
+
+  const modelUsageStatus = document.getElementById("model-usage-status");
+  if (modelUsageStatus) {
+    modelUsageStatus.textContent = total > 0 ? `⏳ Loading sessions… (${processed}/${total})` : "⏳ Loading sessions…";
+  }
 }
 
 function handleSessionFilesLoaded(message: DiagMessage): void {
@@ -1831,7 +2494,30 @@ function handleSessionFilesLoaded(message: DiagMessage): void {
     sessionsTab.textContent = `📁 Session Files (${storedDetailedFiles.length})`;
   }
 
+  const modelUsageSelect = document.getElementById("model-usage-editor-select") as HTMLSelectElement | null;
+  if (modelUsageSelect) {
+    const editorStats = getEditorStats(storedDetailedFiles);
+    const editorOptions = Object.keys(editorStats).sort()
+      .map((editor) => `<option value="${escapeHtml(editor)}">${escapeHtml(getEditorIcon(editor))} ${escapeHtml(editor)} (${editorStats[editor].count})</option>`)
+      .join("");
+    setHtml(modelUsageSelect, `<option value="all">🌐 All Editors</option>${editorOptions}`);
+    modelUsageSelect.disabled = false;
+  }
+  renderModelUsageTimeSelector(false);
+  const modelUsageStatus = document.getElementById("model-usage-status");
+  if (modelUsageStatus) { modelUsageStatus.textContent = ""; }
+
+  triggerModelUsageAnalysis();
+
+  // Only re-run TTFT if the user already opened that tab (or changed granularity) while
+  // files were still loading — its results div would be non-empty in that case (holding
+  // either the initial spinner or the "still loading" notice). A user who never opened the
+  // tab has an empty div here, and TTFT stays lazy for them as designed.
+  const ttftResultsDiv = document.getElementById("ttft-results");
+  if (ttftResultsDiv && ttftResultsDiv.innerHTML.trim()) { triggerTtftAnalysis(); }
+
   reRenderTable();
+  reRenderShareCard();
 }
 
 function handleCacheCleared(): void {
@@ -1843,23 +2529,23 @@ function handleCacheCleared(): void {
   ) as HTMLButtonElement | null;
   if (btnReport) {
     btnReport.style.background = "#2d6a4f";
-    btnReport.innerHTML = "<span>✅</span><span>Cache Cleared</span>";
+    setHtml(btnReport, "<span>✅</span><span>Cache Cleared</span>");
     btnReport.disabled = false;
   }
   if (btnTab) {
     btnTab.style.background = "#2d6a4f";
-    btnTab.innerHTML = "<span>✅</span><span>Cache Cleared</span>";
+    setHtml(btnTab, "<span>✅</span><span>Cache Cleared</span>");
     btnTab.disabled = false;
   }
 
   setTimeout(() => {
     if (btnReport) {
       btnReport.style.background = "";
-      btnReport.innerHTML = "<span>🗑️</span><span>Clear Cache</span>";
+      setHtml(btnReport, "<span>🗑️</span><span>Clear Cache</span>");
     }
     if (btnTab) {
       btnTab.style.background = "";
-      btnTab.innerHTML = "<span>🗑️</span><span>Clear Cache</span>";
+      setHtml(btnTab, "<span>🗑️</span><span>Clear Cache</span>");
     }
   }, 2000);
 }
@@ -1895,39 +2581,42 @@ function handleFolderAnalysisResult(message: DiagMessage): void {
   const btn = document.getElementById("btn-analyze-folder") as HTMLButtonElement | null;
   if (btn) {
     btn.disabled = false;
-    btn.innerHTML = "<span>🔍</span><span>Analyze</span>";
+    setHtml(btn, "<span>🔍</span><span>Analyze</span>");
   }
   const resultsDiv = document.getElementById("folder-analysis-results");
   if (resultsDiv) {
     if (message.error) {
-      resultsDiv.innerHTML = `
+      setHtml(resultsDiv, `
         <div class="info-box" style="border-color: #d97706; background: rgba(217,119,6,0.08); margin-top: 12px;">
           <div class="info-box-title">⚠️ Analysis Error</div>
           <div>${escapeHtml(message.error)}</div>
-        </div>`;
+        </div>`);
     } else {
-      resultsDiv.innerHTML = renderFolderAnalysisResults(
+      setHtml(resultsDiv, renderFolderAnalysisResults(
         message.files || [],
         message.totalScanned || 0,
         message.parseErrors || 0,
         message.truncated || false,
         escapeHtml(String(message.folderPath || "")),
-      );
+      ));
     }
   }
 }
 
 function setupMessageHandlers(): void {
-  window.addEventListener("message", (event) => {
-    const message = event.data as DiagMessage;
+  registerMessageHandler((message: DiagMessage) => {
     if (message.command === "diagnosticDataLoaded") {
       handleDiagnosticDataLoaded(message);
+    } else if (message.command === "backendStorageInfoLoaded") {
+      handleBackendStorageSection(message);
     } else if (message.command === "githubAuthUpdated") {
       handleGithubAuthUpdated(message);
     } else if (message.command === "diagnosticDataError") {
       handleDiagnosticDataError(message);
     } else if (message.command === "sessionFilesLoaded" && message.detailedSessionFiles) {
       handleSessionFilesLoaded(message);
+    } else if (message.command === "sessionFilesLoadProgress") {
+      handleSessionFilesLoadProgress(message);
     } else if (message.command === "cacheCleared") {
       handleCacheCleared();
     } else if (message.command === "cacheRefreshed") {
@@ -1936,6 +2625,10 @@ function setupMessageHandlers(): void {
       handleFolderPicked(message);
     } else if (message.command === "folderAnalysisResult") {
       handleFolderAnalysisResult(message);
+    } else if (message.command === "modelUsageResult") {
+      handleModelUsageResult(message);
+    } else if (message.command === "ttftResult") {
+      handleTtftResult(message);
     }
   });
 }
@@ -2025,6 +2718,22 @@ ${quotaContent}
 </div>`;
 }
 
+function renderEditorDiscoveryCardHtml(): string {
+  return `<div class="backend-card">
+<h4>🆕 Editor Discovery Notifications</h4>
+<p>
+The extension remembers which editors it has already seen so each editor triggers a discovery notification only once.
+Use this reset to clear that memory and start tracking from scratch.
+</p>
+<div class="button-group">
+<button class="button secondary" id="btn-reset-discovered-editors">
+<span>♻️</span>
+<span>Reset Discovered Editors</span>
+</button>
+</div>
+</div>`;
+}
+
 function renderDiagDisplayTabHtml(data: DiagnosticsData): string {
   const showTokens = data.displaySettings?.showTokens ?? 'both';
   const showCost = data.displaySettings?.showCost ?? 'none';
@@ -2083,6 +2792,7 @@ ${
 }
 </div>
 ${renderQuotaCardHtml(data)}
+${renderEditorDiscoveryCardHtml()}
 <div class="backend-card">
 <h4>🔢 Number Formatting</h4>
 <p>
@@ -2134,7 +2844,7 @@ function renderToolRow(r: ToolAnalysisRow, builtInBaseline: number): string {
   let ratioHtml = '<td class="tool-ratio">—</td>';
   if (!r.isBuiltIn && !isNaN(builtInBaseline) && builtInBaseline > 0 && r.calls > 0) {
     const ratio = (r.totalTokens / r.calls) / builtInBaseline;
-    const pct = Math.round(ratio * 100);
+    const pct = Number(Math.round(ratio * 100)) || 0;
     const cls = ratio < 0.85 ? 'ratio-better' : ratio > 1.15 ? 'ratio-worse' : 'ratio-neutral';
     ratioHtml = `<td class="tool-ratio ${cls}" title="${pct}% of built-in average">${pct}%</td>`;
   } else if (r.isBuiltIn) {
@@ -2236,6 +2946,494 @@ ${sectionsHtml}
 </div>`;
 }
 
+/** Sum every editor's count for one skill's byEditor map. */
+function _sumSkillEditorCounts(byEditor: { [editorSource: string]: number } | undefined): number {
+  return Object.values(byEditor ?? {}).reduce((s, n) => s + n, 0);
+}
+
+/** Build the "All" + per-editor filter chip row, with each chip's own total invocation count. */
+function _renderSkillUsageFilterPanel(
+  skillCallsByEditor: DiagnosticsData['skillCallsByEditor'],
+  totalAll: number,
+  activeFilter: string
+): string {
+  const editorTotals = new Map<string, number>();
+  for (const byEditor of Object.values(skillCallsByEditor ?? {})) {
+    for (const [editor, count] of Object.entries(byEditor)) {
+      editorTotals.set(editor, (editorTotals.get(editor) ?? 0) + count);
+    }
+  }
+  const editors = [...editorTotals.entries()].sort((a, b) => b[1] - a[1]);
+  if (editors.length === 0) { return ''; }
+  const allChip = `<button class="skill-usage-chip${activeFilter === 'all' ? ' active' : ''}" data-editor="all">All <span class="skill-usage-chip-count">${formatTokenCount(totalAll)}</span></button>`;
+  const editorChips = editors.map(([editor, count]) =>
+    `<button class="skill-usage-chip${activeFilter === editor ? ' active' : ''}" data-editor="${escapeHtml(editor)}">${escapeHtml(editor)} <span class="skill-usage-chip-count">${formatTokenCount(count)}</span></button>`
+  ).join('');
+  return `<div class="skill-usage-filter-panel">${allChip}${editorChips}</div>`;
+}
+
+/**
+ * Renders per-skill invocation counts (e.g. Claude Code's `/graphify`, custom SKILL.md
+ * workflows) over the last 30 days, filterable by editor. Adapter-agnostic by design —
+ * populated only for editors whose session logs expose a distinguishable skill name
+ * (currently Claude Code, Claude Desktop, and Copilot CLI); other editors show the empty
+ * state until their format is mapped.
+ */
+function renderSkillUsageTab(
+  skillCallStats: DiagnosticsData['skillCallStats'],
+  skillCallsByEditor: DiagnosticsData['skillCallsByEditor'],
+  skillDescriptions: DiagnosticsData['skillDescriptions'],
+  editorFilter: string = 'all'
+): string {
+  const byName = skillCallStats?.byName ?? {};
+  if (Object.keys(byName).length === 0) {
+    return `<div id="tab-skill-usage" class="tab-content">
+<div class="info-box">
+<div class="info-box-title">🧩 Skill Usage</div>
+<div>Tracks how often each agent skill (e.g. a <code>/skill-name</code> invocation or another editor's <code>SKILL.md</code> workflow) was invoked over the last 30 days. No skill invocations have been recorded yet. Skill usage is currently detected for Claude Code, Claude Desktop, and Copilot CLI sessions — support for other editors depends on whether their session logs expose a distinguishable skill name.</div>
+</div>
+</div>`;
+  }
+  const totalAll = Object.values(byName).reduce((s, n) => s + n, 0);
+  const filterPanel = _renderSkillUsageFilterPanel(skillCallsByEditor, totalAll, editorFilter);
+  const rows = Object.keys(byName)
+    .map(name => ({
+      name,
+      count: editorFilter === 'all' ? byName[name] : (skillCallsByEditor?.[name]?.[editorFilter] ?? 0),
+      description: skillDescriptions?.[name] ?? '',
+    }))
+    .filter(r => r.count > 0)
+    .sort((a, b) => b.count - a.count);
+  const shownTotal = rows.reduce((s, r) => s + r.count, 0);
+  const bodyRows = rows
+    .map(r => `<tr><td>${escapeHtml(r.name)}</td><td class="skill-usage-description">${r.description ? escapeHtml(r.description) : '<span class="hint">—</span>'}</td><td>${formatTokenCount(r.count)}</td></tr>`)
+    .join('');
+  const scopeLabel = editorFilter === 'all' ? 'across all editors' : `for ${escapeHtml(editorFilter)}`;
+  return `<div id="tab-skill-usage" class="tab-content">
+<div class="info-box">
+<div class="info-box-title">🧩 Skill Usage</div>
+<div>${formatTokenCount(shownTotal)} skill invocation(s) across ${rows.length} skill(s) ${scopeLabel} in the last 30 days. Currently detected for Claude Code / Claude Desktop / Copilot CLI sessions.</div>
+</div>
+${filterPanel}
+<table class="session-table skill-usage-table">
+<thead><tr><th>Skill</th><th>Description</th><th>Invocations</th></tr></thead>
+<tbody>${bodyRows}</tbody>
+</table>
+</div>`;
+}
+
+function renderOtelDeltaSetupNotice(comparison: CopilotCliOtelComparison | null | undefined): string {
+  if (comparison === undefined) {
+    return `<div class="info-box">
+<div class="info-box-title">📡 Copilot CLI OpenTelemetry Detection Running</div>
+<div>
+Detecting Copilot CLI OpenTelemetry export data…<br/><br/>
+This check compares this extension's estimated token counts against exact counts from local OTel export files.
+</div>
+</div>`;
+  }
+  if (comparison && comparison.otelSessionsIndexed > 0) { return ''; }
+  const dirStatus = comparison?.otelDirExists
+    ? `The export directory exists but no session data has been indexed from it yet (${Number(comparison.otelFileCount)} file(s) found).`
+    : `No <code>~/.copilot/otel</code> directory was found — the export isn't enabled yet.`;
+  return `<div class="info-box">
+<div class="info-box-title">📡 Copilot CLI OpenTelemetry Export Not Detected</div>
+<div>
+${dirStatus} Enabling it lets this extension read <strong>exact</strong> token counts (input, output, cache) straight from Copilot CLI instead of estimating them from ratios.<br/><br/>
+Set these three environment variables before starting a Copilot CLI session, then run a session and reopen this tab:
+<pre style="margin-top:8px;">COPILOT_OTEL_ENABLED=true
+COPILOT_OTEL_EXPORTER_TYPE=file
+COPILOT_OTEL_FILE_EXPORTER_PATH=~/.copilot/otel/copilot-otel.jsonl</pre>
+See <code>docs/COPILOT-CLI-OTEL-EXPORT.md</code> in the repo for full setup steps (Windows/PowerShell and Unix shells) and how to verify it's working.
+</div>
+</div>`;
+}
+
+/** Formats a signed token delta as e.g. "+12.3K" / "-4.0K" / "0", with a class for coloring. */
+function formatTokenDelta(rawDelta: number): { text: string; cssClass: string } {
+  const delta = Number(rawDelta) || 0;
+  if (delta === 0) { return { text: '0', cssClass: '' }; }
+  const sign = delta > 0 ? '+' : '-';
+  const cssClass = delta > 0 ? 'otel-delta-positive' : 'otel-delta-negative';
+  return { text: `${sign}${formatTokenCount(Math.abs(delta))}`, cssClass };
+}
+
+/** Local (not UTC) start-of-day, for comparing a session's lastActivity against "today"/"yesterday". */
+function startOfLocalDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function otelSessionMatchesPeriod(lastActivity: string | null, period: OtelDeltaPeriod, now: Date): boolean {
+  if (period === "all") { return true; }
+  if (!lastActivity) { return false; }
+  const activity = new Date(lastActivity);
+  if (Number.isNaN(activity.getTime())) { return false; }
+  const today = startOfLocalDay(now);
+  const activityDay = startOfLocalDay(activity);
+  if (period === "today") { return activityDay.getTime() === today.getTime(); }
+  if (period === "yesterday") {
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    return activityDay.getTime() === yesterday.getTime();
+  }
+  if (period === "week") {
+    const weekStart = new Date(today);
+    weekStart.setDate(weekStart.getDate() - 6); // rolling 7 days including today
+    return activity >= weekStart && activity <= now;
+  }
+  // month: current calendar month to date
+  return activity.getFullYear() === now.getFullYear() && activity.getMonth() === now.getMonth() && activity <= now;
+}
+
+/** Filters an OTel comparison to sessions matching the given period, recomputing the aggregate totals from the subset. */
+function filterOtelComparisonByPeriod(comparison: CopilotCliOtelComparison, period: OtelDeltaPeriod): CopilotCliOtelComparison {
+  if (period === "all") { return comparison; }
+  const now = new Date();
+  const sessions = comparison.sessions.filter(s => otelSessionMatchesPeriod(s.lastActivity, period, now));
+  const totalBaselineTokens = sessions.reduce((sum, s) => sum + s.baselineTokens, 0);
+  const totalOtelTokens = sessions.reduce((sum, s) => sum + s.otelTokens, 0);
+  return {
+    ...comparison,
+    sessions,
+    sessionsMatched: sessions.length,
+    totalBaselineTokens,
+    totalOtelTokens,
+    deltaTokens: totalOtelTokens - totalBaselineTokens,
+  };
+}
+
+const OTEL_DELTA_PERIOD_LABELS: Record<OtelDeltaPeriod, string> = {
+  all: "All Time", today: "Today", yesterday: "Yesterday", week: "This Week", month: "This Month",
+};
+
+function renderOtelDeltaPeriodSelector(period: OtelDeltaPeriod): string {
+  const options = (Object.keys(OTEL_DELTA_PERIOD_LABELS) as OtelDeltaPeriod[])
+    .map(p => `<option value="${p}"${p === period ? ' selected' : ''}>${OTEL_DELTA_PERIOD_LABELS[p]}</option>`)
+    .join('');
+  return `<div class="otel-delta-period-row">
+<label for="otel-delta-period">Show:</label>
+<select id="otel-delta-period" class="otel-delta-period-select">${options}</select>
+</div>`;
+}
+
+function renderOtelDeltaSummaryCards(comparison: CopilotCliOtelComparison): string {
+  const delta = formatTokenDelta(comparison.deltaTokens);
+  const sessionsMatched = Number(comparison.sessionsMatched) || 0;
+  const totalBaselineTokens = Number(comparison.totalBaselineTokens) || 0;
+  const totalOtelTokens = Number(comparison.totalOtelTokens) || 0;
+  const deltaTokens = Number(comparison.deltaTokens) || 0;
+  return `<div class="summary-cards">
+<div class="summary-card">
+<div class="summary-label">📡 Sessions With OTel Data</div>
+<div class="summary-value">${sessionsMatched.toLocaleString()}</div>
+</div>
+<div class="summary-card">
+<div class="summary-label">📊 Previous Estimate (Total)</div>
+<div class="summary-value" title="${totalBaselineTokens.toLocaleString()} tokens">${formatTokenCount(totalBaselineTokens)}</div>
+</div>
+<div class="summary-card">
+<div class="summary-label">🎯 OTel Exact (Total)</div>
+<div class="summary-value" title="${totalOtelTokens.toLocaleString()} tokens">${formatTokenCount(totalOtelTokens)}</div>
+</div>
+<div class="summary-card">
+<div class="summary-label">Δ Delta</div>
+<div class="summary-value ${delta.cssClass}" title="${deltaTokens.toLocaleString()} tokens">${delta.text}</div>
+</div>
+</div>`;
+}
+
+function renderOtelDeltaSessionRows(sessions: CopilotCliOtelComparisonSession[]): string {
+  return sessions.map(s => {
+    const delta = formatTokenDelta(s.delta);
+    const shortId = escapeHtml(String(s.sessionId ?? '').slice(0, 8));
+    const models = escapeHtml((Array.isArray(s.models) ? s.models : []).map(m => String(m)).join(', ') || '—');
+    const baselineTokens = Number(s.baselineTokens) || 0;
+    const otelTokens = Number(s.otelTokens) || 0;
+    return `<tr>
+<td title="${escapeHtml(String(s.sessionId ?? ''))}"><code>${shortId}</code></td>
+<td>${models}</td>
+<td title="${baselineTokens.toLocaleString()} tokens">${formatTokenCount(baselineTokens)}</td>
+<td title="${otelTokens.toLocaleString()} tokens">${formatTokenCount(otelTokens)}</td>
+<td class="${delta.cssClass}" title="${(Number(s.delta) || 0).toLocaleString()} tokens">${delta.text}</td>
+</tr>`;
+  }).join('');
+}
+
+function renderOtelDeltaTab(comparison: CopilotCliOtelComparison | null | undefined, period: OtelDeltaPeriod = currentOtelDeltaPeriod): string {
+  const setupNotice = renderOtelDeltaSetupNotice(comparison);
+  if (!comparison || comparison.sessionsMatched === 0) {
+    return `<div id="tab-otel-delta" class="tab-content">
+<div class="info-box">
+<div class="info-box-title">📡 OTel vs. Estimated Token Counts</div>
+<div>Compares the token counts this extension estimates for Copilot CLI sessions against exact counts read from Copilot CLI's OpenTelemetry export, when available.</div>
+</div>
+${setupNotice}
+</div>`;
+  }
+  const filtered = filterOtelComparisonByPeriod(comparison, period);
+  const tableOrEmpty = filtered.sessions.length > 0
+    ? `<table class="session-table">
+<thead><tr><th>Session</th><th>Model(s)</th><th>Previous Estimate</th><th>OTel Exact</th><th>Delta</th></tr></thead>
+<tbody>${renderOtelDeltaSessionRows(filtered.sessions)}</tbody>
+</table>`
+    : `<div class="info-box">No Copilot CLI sessions with OTel data in this period. Try a wider range.</div>`;
+  return `<div id="tab-otel-delta" class="tab-content">
+<div class="info-box">
+<div class="info-box-title">📡 OTel vs. Estimated Token Counts</div>
+<div>
+Compares the token counts this extension would normally estimate for each Copilot CLI session against the exact counts read from Copilot CLI's OpenTelemetry file export. A positive delta means OTel revealed usage the estimate missed entirely (e.g. chat-only sessions, which previously reported 0 tokens); near-zero deltas mean the estimate already had exact numbers from a session.shutdown event.<br/>
+Checked ${(Number(comparison.sessionsChecked) || 0).toLocaleString()} Copilot CLI session(s) found locally; ${(Number(comparison.otelSessionsIndexed) || 0).toLocaleString()} session(s) are present in the OTel export.
+</div>
+</div>
+${setupNotice}
+${renderOtelDeltaPeriodSelector(period)}
+${renderOtelDeltaSummaryCards(filtered)}
+${tableOrEmpty}
+</div>`;
+}
+
+// --- TTFT (time to first token) tab -----------------------------------------------------
+
+type TtftBucketView = { key: string; label: string; avgSeconds: number; count: number };
+type TtftModelSeriesView = { model: string; data: (number | null)[] };
+
+const TTFT_GRANULARITY_LABELS: Record<TtftGranularity, string> = { day: "Day", week: "Week", month: "Month" };
+const TTFT_SCAN_RANGE_LABELS: Record<TtftScanRange, string> = {
+  "14d": "Last 14 days",
+  "30d": "Last 30 days",
+  "90d": "Last 90 days",
+  "180d": "Last 6 months",
+  "365d": "Last year",
+  "all": "All time",
+};
+
+/** Values arrive already normalized to seconds (see extractTtftSamplesFromDebugLog); this only picks the more readable unit for display. */
+function formatTtftSeconds(seconds: number): string {
+  return seconds >= 10 ? `${seconds.toFixed(1)}s` : `${Math.round(seconds * 1000)}ms`;
+}
+
+function renderTtftGranularitySelector(granularity: TtftGranularity): string {
+  const options = (Object.keys(TTFT_GRANULARITY_LABELS) as TtftGranularity[])
+    .map(g => `<option value="${g}"${g === granularity ? ' selected' : ''}>${TTFT_GRANULARITY_LABELS[g]}</option>`)
+    .join('');
+  return `<div class="otel-delta-period-row">
+<label for="ttft-granularity">Bucket by:</label>
+<select id="ttft-granularity" class="otel-delta-period-select">${options}</select>
+</div>`;
+}
+
+function renderTtftScanRangeSelector(range: TtftScanRange): string {
+  const options = (Object.keys(TTFT_SCAN_RANGE_LABELS) as TtftScanRange[])
+    .map(r => `<option value="${r}"${r === range ? ' selected' : ''}>${TTFT_SCAN_RANGE_LABELS[r]}</option>`)
+    .join('');
+  return `<div class="otel-delta-period-row">
+<label for="ttft-scan-range">Scan session files from:</label>
+<select id="ttft-scan-range" class="otel-delta-period-select">${options}</select>
+</div>`;
+}
+
+const TTFT_CHART_WIDTH = 760;
+const TTFT_CHART_HEIGHT = 220;
+const TTFT_CHART_PAD_LEFT = 48;
+const TTFT_CHART_PAD_RIGHT = 32;
+const TTFT_CHART_PAD_TOP = 12;
+const TTFT_CHART_PAD_BOTTOM = 28;
+
+/** Renders one SVG line chart with one path per model series, breaking the line across buckets where a model has no samples (null) rather than interpolating over the gap. */
+function renderTtftChartSvg(buckets: TtftBucketView[], series: TtftModelSeriesView[]): string {
+  if (buckets.length === 0 || series.length === 0) { return ''; }
+  const innerW = TTFT_CHART_WIDTH - TTFT_CHART_PAD_LEFT - TTFT_CHART_PAD_RIGHT;
+  const innerH = TTFT_CHART_HEIGHT - TTFT_CHART_PAD_TOP - TTFT_CHART_PAD_BOTTOM;
+  const allValues = series.flatMap(s => s.data.filter((v): v is number => v !== null));
+  const maxValue = allValues.length > 0 ? Math.max(...allValues) : 1;
+  const yMax = (maxValue || 1) * 1.15;
+  const xStep = buckets.length > 1 ? innerW / (buckets.length - 1) : 0;
+  const xAt = (i: number) => TTFT_CHART_PAD_LEFT + i * xStep;
+  const yAt = (v: number) => TTFT_CHART_PAD_TOP + innerH - (v / yMax) * innerH;
+
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map(f => {
+    const value = yMax * f;
+    const y = yAt(value);
+    return `<line x1="${TTFT_CHART_PAD_LEFT}" y1="${y.toFixed(1)}" x2="${TTFT_CHART_WIDTH - TTFT_CHART_PAD_RIGHT}" y2="${y.toFixed(1)}" class="ttft-gridline" />
+<text x="${TTFT_CHART_PAD_LEFT - 6}" y="${(y + 3).toFixed(1)}" class="ttft-axis-label" text-anchor="end">${escapeHtml(formatTtftSeconds(value))}</text>`;
+  }).join('');
+
+  // Thin out x-axis labels so they don't overlap when there are many buckets. The first/last
+  // labels are anchored inward (start/end instead of middle) so they render within the
+  // viewBox instead of overflowing past its edges and getting clipped.
+  const labelEvery = Math.max(1, Math.ceil(buckets.length / 8));
+  const xLabels = buckets.map((b, i) => {
+    if (i % labelEvery !== 0 && i !== buckets.length - 1) { return ''; }
+    const anchor = i === buckets.length - 1 ? 'end' : i === 0 ? 'start' : 'middle';
+    return `<text x="${xAt(i).toFixed(1)}" y="${TTFT_CHART_HEIGHT - 8}" class="ttft-axis-label" text-anchor="${anchor}">${escapeHtml(b.label)}</text>`;
+  }).join('');
+
+  const paths = series.map((s, idx) => {
+    const color = getModelColor(idx);
+    let d = '';
+    let drawing = false;
+    s.data.forEach((v, i) => {
+      if (v === null) { drawing = false; return; }
+      const x = xAt(i).toFixed(1);
+      const y = yAt(v).toFixed(1);
+      d += drawing ? ` L ${x} ${y}` : `${d ? ' ' : ''}M ${x} ${y}`;
+      drawing = true;
+    });
+    const dots = s.data.map((v, i) => v === null ? '' : `<circle cx="${xAt(i).toFixed(1)}" cy="${yAt(v).toFixed(1)}" r="2.5" fill="${color.border}" />`).join('');
+    return `<g class="ttft-series" data-model="${escapeHtml(s.model)}"><path d="${d}" fill="none" stroke="${color.border}" stroke-width="2" />${dots}</g>`;
+  }).join('');
+
+  const legend = series.map((s, idx) => {
+    const color = getModelColor(idx);
+    const name = escapeHtml(getModelDisplayName(s.model));
+    return `<span class="ttft-legend-item" data-model="${escapeHtml(s.model)}" role="button" tabindex="0" aria-pressed="false" title="Click to hide/show ${name}"><span class="ttft-legend-swatch" style="background:${color.border}"></span>${name}</span>`;
+  }).join('');
+
+  return `<div class="ttft-chart-wrap">
+<svg viewBox="0 0 ${TTFT_CHART_WIDTH} ${TTFT_CHART_HEIGHT}" class="ttft-chart" role="img" aria-label="Average time to first token per model over time">
+${yTicks}
+${xLabels}
+${paths}
+</svg>
+<div class="ttft-legend">${legend}</div>
+</div>`;
+}
+
+function renderTtftBucketTableRows(buckets: TtftBucketView[]): string {
+  return buckets.slice().reverse().map(b => `<tr>
+<td>${escapeHtml(b.label)}</td>
+<td>${escapeHtml(formatTtftSeconds(b.avgSeconds))}</td>
+<td>${b.count.toLocaleString()}</td>
+</tr>`).join('');
+}
+
+function renderTtftResults(granularity: TtftGranularity, buckets: TtftBucketView[], series: TtftModelSeriesView[], sampleCount: number, fileCount: number): string {
+  if (sampleCount === 0) {
+    return `<div class="info-box">
+<div class="info-box-title">📭 No TTFT data found</div>
+<div>
+Checked ${fileCount.toLocaleString()} session file(s) in the selected range; none had a debug log
+with a populated <code>attrs.ttft</code>. Try widening "Scan session files from" above, but also
+check VS Code's <b>GitHub › Copilot › Chat › Agent Debug Log › File Logging: Enabled</b> setting
+(Experimental) — it's off by default, and this data only exists for sessions that ran while it
+was on (a window reload is needed after enabling it).
+</div>
+</div>`;
+  }
+  const overallAvg = buckets.reduce((sum, b) => sum + b.avgSeconds * b.count, 0) / Math.max(1, sampleCount);
+  return `<div class="summary-cards">
+<div class="summary-card">
+<div class="summary-label">⏱️ Overall Avg TTFT</div>
+<div class="summary-value">${escapeHtml(formatTtftSeconds(overallAvg))}</div>
+</div>
+<div class="summary-card">
+<div class="summary-label">🧩 Models Shown</div>
+<div class="summary-value">${series.length}</div>
+</div>
+<div class="summary-card">
+<div class="summary-label">📊 Samples</div>
+<div class="summary-value">${sampleCount.toLocaleString()}</div>
+</div>
+<div class="summary-card">
+<div class="summary-label">📄 Session Files Checked</div>
+<div class="summary-value">${fileCount.toLocaleString()}</div>
+</div>
+</div>
+${renderTtftChartSvg(buckets, series)}
+<div class="table-container" style="margin-top: 12px; max-height: 320px;">
+<table class="session-table">
+<thead><tr><th>${TTFT_GRANULARITY_LABELS[granularity]}</th><th>Avg TTFT</th><th>Samples</th></tr></thead>
+<tbody>${renderTtftBucketTableRows(buckets)}</tbody>
+</table>
+</div>`;
+}
+
+function renderTtftTab(): string {
+  return `<div id="tab-ttft" class="tab-content">
+<div class="info-box">
+<div class="info-box-title">⏱️ Time to First Token</div>
+<div>
+How long a chat model takes to start streaming a response, averaged per model over time.
+Read from VS Code Copilot Chat's own debug log (<code>attrs.ttft</code> on <code>llm_request</code>
+events) — the same file this extension already reads for exact per-session billing. This only
+exists for sessions that ran while VS Code's experimental <b>GitHub › Copilot › Chat › Agent Debug
+Log › File Logging: Enabled</b> setting was on (off by default, requires a window reload after
+enabling) — nothing in this extension's own settings. The unit isn't documented upstream, so
+values are auto-detected as seconds or milliseconds by magnitude.
+</div>
+</div>
+${renderTtftGranularitySelector(currentTtftGranularity)}
+${renderTtftScanRangeSelector(currentTtftScanRange)}
+<div id="ttft-results"></div>
+</div>`;
+}
+
+function triggerTtftAnalysis(): void {
+  const resultsDiv = document.getElementById("ttft-results");
+  if (resultsDiv) {
+    setHtml(resultsDiv, `
+        <div class="analyzer-loading">
+          <span class="spinner" style="width:18px;height:18px;border:2px solid var(--link-color);border-top-color:transparent;border-radius:50%;display:inline-block;animation:spin 0.7s linear infinite;"></span>
+          <span>Scanning debug logs for TTFT…</span>
+        </div>`);
+  }
+  vscode.postMessage({ command: "analyzeTtft", granularity: currentTtftGranularity, scanRange: currentTtftScanRange });
+}
+
+function setupTtftHandlers(): void {
+  document.getElementById("ttft-granularity")?.addEventListener("change", (e) => {
+    currentTtftGranularity = (e.target as HTMLSelectElement).value as TtftGranularity;
+    diagState.patch({ ttftGranularity: currentTtftGranularity });
+    triggerTtftAnalysis();
+  });
+  document.getElementById("ttft-scan-range")?.addEventListener("change", (e) => {
+    currentTtftScanRange = (e.target as HTMLSelectElement).value as TtftScanRange;
+    diagState.patch({ ttftScanRange: currentTtftScanRange });
+    triggerTtftAnalysis();
+  });
+  const resultsDiv = document.getElementById("ttft-results");
+  const toggleTtftModel = (item: HTMLElement) => {
+    const model = item.dataset.model;
+    if (!model) { return; }
+    const hidden = item.classList.toggle("ttft-hidden");
+    item.setAttribute("aria-pressed", String(hidden));
+    document.querySelectorAll(".ttft-series").forEach((el) => {
+      if ((el as HTMLElement).dataset.model === model) { (el as HTMLElement).classList.toggle("ttft-hidden", hidden); }
+    });
+  };
+  resultsDiv?.addEventListener("click", (e) => {
+    const item = (e.target as HTMLElement)?.closest(".ttft-legend-item") as HTMLElement | null;
+    if (item) { toggleTtftModel(item); }
+  });
+  resultsDiv?.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") { return; }
+    const item = (e.target as HTMLElement)?.closest(".ttft-legend-item") as HTMLElement | null;
+    if (item) { e.preventDefault(); toggleTtftModel(item); }
+  });
+}
+
+function handleTtftResult(message: DiagMessage): void {
+  const resultsDiv = document.getElementById("ttft-results");
+  if (!resultsDiv) { return; }
+  if (message.stillLoading) {
+    setHtml(resultsDiv, `
+        <div class="analyzer-loading">
+          <span class="spinner" style="width:18px;height:18px;border:2px solid var(--link-color);border-top-color:transparent;border-radius:50%;display:inline-block;animation:spin 0.7s linear infinite;"></span>
+          <span id="ttft-loading-status">Waiting for session files to finish loading…</span>
+        </div>`);
+    // No manual retry needed: handleSessionFilesLoaded() re-triggers this analysis as soon
+    // as the background scan completes, since this results div is now non-empty.
+    return;
+  }
+  setHtml(resultsDiv, renderTtftResults(
+    (message.granularity || currentTtftGranularity) as TtftGranularity,
+    (message.buckets || []) as TtftBucketView[],
+    (message.series || []) as TtftModelSeriesView[],
+    Number(message.sampleCount || 0),
+    Number(message.fileCount || 0),
+  ));
+}
+
 function buildDiagReportTabHtml(escapedReport: string): string {
   return `<div id="tab-report" class="tab-content active">
 <div class="info-box">
@@ -2256,6 +3454,39 @@ code or conversation content. You can safely share this report when reporting is
 </div>`;
 }
 
+/** The three group-tab bars (Diagnostics / Research / Settings) atop the diagnostics panel. */
+function renderTabBars(data: DiagnosticsData, detailedFiles: SessionFileDetails[]): string {
+  return `
+<div class="tabs group-tabs">
+<button class="group-tab active" data-group="diagnostics">🩺 Diagnostics</button>
+<button class="group-tab" data-group="research">🔬 Research</button>
+<button class="group-tab" data-group="settings">⚙️ Settings</button>
+</div>
+
+<div class="tabs leaf-tabs" data-group="diagnostics" style="display: flex;">
+<button class="tab active" data-tab="report">📋 Report</button>
+<button class="tab" data-tab="sessions">📁 Session Files (${detailedFiles.length})</button>
+<button class="tab" data-tab="cache">💾 Cache</button>
+<button class="tab" data-tab="path-analyzer">🔬 Path Analyzer</button>
+<button class="tab" data-tab="share">📸 Share Card</button>
+</div>
+
+<div class="tabs leaf-tabs" data-group="research" style="display: none;">
+<button class="tab" data-tab="model-usage">🧮 Model Usage</button>
+<button class="tab" data-tab="tool-analysis">🔧 Tool Analysis</button>
+<button class="tab" data-tab="skill-usage">🧩 Skill Usage</button>
+<button class="tab" data-tab="otel-delta">📡 OTel Delta</button>
+<button class="tab" data-tab="ttft">⏱️ TTFT</button>
+</div>
+
+<div class="tabs leaf-tabs" data-group="settings" style="display: none;">
+<button class="tab" data-tab="display">⚙️ Display</button>
+<button class="tab" data-tab="backend">☁️ Backend Storage</button>
+<button class="tab" data-tab="github">🔑 GitHub Auth</button>
+${data.isDebugMode ? '<button class="tab" data-tab="debug">🐛 Debug</button>' : ''}
+</div>`;
+}
+
 function buildDiagRootHtml(
   data: DiagnosticsData,
   detailedFiles: SessionFileDetails[],
@@ -2271,38 +3502,19 @@ function buildDiagRootHtml(
 <span class="header-title">Diagnostic Report</span>
 </div>
 <div class="button-row">
-${buttonHtml("btn-refresh")}
-${buttonHtml("btn-details")}
-${buttonHtml("btn-chart")}
-${buttonHtml("btn-usage")}
-${buttonHtml("btn-environmental")}
-${buttonHtml("btn-maturity")}
-${data?.backendConfigured ? buttonHtml("btn-dashboard") : ""}
+${navButtonsHtml("btn-diagnostics", !!data?.backendConfigured)}
 </div>
 </div>
 
-<div class="tabs">
-<button class="tab active" data-tab="report">📋 Report</button>
-<button class="tab" data-tab="sessions">📁 Session Files (${detailedFiles.length})</button>
-<button class="tab" data-tab="cache">💾 Cache</button>
-<button class="tab" data-tab="backend">☁️ Backend Storage</button>
-<button class="tab" data-tab="github">🔑 GitHub Auth</button>
-<button class="tab" data-tab="display">⚙️ Settings</button>
-<button class="tab" data-tab="path-analyzer">🔬 Path Analyzer</button>
-<button class="tab" data-tab="tool-analysis">🔧 Tool Analysis</button>
-${data.isDebugMode ? '<button class="tab" data-tab="debug">🐛 Debug</button>' : ''}
-</div>
+${renderTabBars(data, detailedFiles)}
 
 ${buildDiagReportTabHtml(escapedReport)}
 
 <div id="tab-sessions" class="tab-content">
-<div class="info-box">
-<div class="info-box-title">📁 Session File Analysis</div>
-<div>
+<div class="info-box"><div class="info-box-title">📁 Session File Analysis</div><div>
 This tab shows session files with activity in the last 14 days from all detected editors. </br>
 Click on an editor panel to filter, click column headers to sort, and click a file name to open it.
-</div>
-</div>
+</div></div>
 <div id="session-table-container">${renderSessionTable(detailedFiles, detailedFiles.length === 0)}</div>
 </div>
 
@@ -2319,9 +3531,32 @@ ${data.isDebugMode ? renderDebugTab(data.globalStateCounters) : ''}
 <div id="tab-path-analyzer" class="tab-content">
 ${renderFolderAnalyzerTab()}
 </div>
+${renderShareCardTab(detailedFiles, isLoading)}
+<div id="tab-model-usage" class="tab-content">
+${renderModelUsageTab(detailedFiles, isLoading)}
+</div>
 ${renderToolAnalysisTab(data.toolCallStats, data.toolFamilies)}
+${renderSkillUsageTab(data.skillCallStats, data.skillCallsByEditor, data.skillDescriptions, skillUsageEditorFilter)}
+${renderOtelDeltaTab(data.otelComparison)}
+${renderTtftTab()}
 </div>
 `;
+}
+
+/**
+ * `backendStorageInfoLoaded` is sent by the host *before* diagnosticDataLoaded (see
+ * sendBackendStorageInfoEarly in extension.ts) so the Backend Storage tab can populate before
+ * the rest of diagnostics finishes loading. Since the message listener is registered before
+ * renderLayout() runs (see setupMessageHandlers() call site), that early message can legitimately
+ * arrive first and already have set currentBackendInfo/currentGithubAuth. Prefer that over the
+ * (possibly stale/placeholder) value baked into the initial bootstrap payload, so the first paint
+ * doesn't silently discard already-received state, and persist the resolved values back to the
+ * module-level state so later handlers keep seeing the same data.
+ */
+function resolveEarlyBackendState(data: DiagnosticsData): Pick<DiagnosticsData, "backendStorageInfo" | "githubAuth"> {
+  currentBackendInfo = currentBackendInfo ?? data.backendStorageInfo;
+  currentGithubAuth = currentGithubAuth ?? data.githubAuth;
+  return { backendStorageInfo: currentBackendInfo, githubAuth: currentGithubAuth };
 }
 
 function renderLayout(data: DiagnosticsData): void {
@@ -2334,16 +3569,19 @@ function renderLayout(data: DiagnosticsData): void {
   const detailedFiles = data.detailedSessionFiles || [];
   storedDetailedFiles = detailedFiles;
   isLoading = detailedFiles.length === 0;
-  currentBackendInfo = data.backendStorageInfo;
-  currentGithubAuth = data.githubAuth;
+  const earlyBackendState = resolveEarlyBackendState(data);
+  currentOtelComparison = data.otelComparison;
   if (data.toolFamilies) { storedToolFamilies = data.toolFamilies; }
+  currentSkillCallStats = data.skillCallStats;
+  currentSkillCallsByEditor = data.skillCallsByEditor;
+  currentSkillDescriptions = data.skillDescriptions;
 
   const reportIsLoading = data.report === LOADING_PLACEHOLDER;
   const escapedReport = reportIsLoading
     ? LOADING_MESSAGE.trim()
     : removeSessionFilesSection(escapeHtml(data.report));
 
-  root.innerHTML = buildDiagRootHtml(data, detailedFiles, escapedReport);
+  setHtml(root, buildDiagRootHtml({ ...data, ...earlyBackendState }, detailedFiles, escapedReport));
 
   // Render session folders via DOM API (XSS-safe, no innerHTML)
   const sessionFolders = groupSessionFolders(data.sessionFolders || []);
@@ -2355,8 +3593,8 @@ function renderLayout(data: DiagnosticsData): void {
     }
   }
 
-  setupMessageHandlers();
   setupTabHandlers();
+  setupGroupHandlers();
   setupSortHandlers();
   setupEditorFilterHandlers();
   setupContextRefFilterHandlers();
@@ -2368,14 +3606,23 @@ function renderLayout(data: DiagnosticsData): void {
   setupStorageLinkHandlers();
   setupGitHubAuthHandlers();
   setupFolderAnalyzerHandlers();
+  setupModelUsageHandlers();
+  renderModelUsageTimeSelector(isLoading);
   setupButtonHandlers();
   setupDisplaySettingHandlers();
   setupToolAnalysisSortHandlers();
+  setupSkillUsageFilterHandler();
+  setupOtelDeltaPeriodHandler();
+  setupTtftHandlers();
 
   const savedState = diagState.restore();
-  if (savedState?.activeTab && !activateTab(savedState.activeTab)) {
+  let restoredTab = "report";
+  if (savedState?.activeTab && activateTab(savedState.activeTab)) {
+    restoredTab = savedState.activeTab;
+  } else {
     activateTab("report");
   }
+  activateGroup(groupOfTab(restoredTab));
 
   if (savedState?.activeSubtab) {
     activateSubtab(savedState.activeSubtab);
@@ -2393,5 +3640,13 @@ async function bootstrap(): Promise<void> {
   }
   renderLayout(initialData);
 }
+
+// Registered synchronously at module load — NOT inside renderLayout() — so the listener is
+// live before bootstrap()'s dynamic import resolves. The host sends `backendStorageInfoLoaded`
+// as early as possible (see sendBackendStorageInfoEarly in extension.ts) specifically to beat
+// the slower `diagnosticDataLoaded` message; if that early message arrived before the listener
+// existed it would be silently dropped (individual handlers are already defensive about a
+// missing container/tab, so registering early adds no risk).
+setupMessageHandlers();
 
 void bootstrap();

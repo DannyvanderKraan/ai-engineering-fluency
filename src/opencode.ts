@@ -7,8 +7,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import initSqlJs from 'sql.js';
-import type { ModelUsage } from './types';
+import type { ModelUsage, ModelId } from './types';
 import { normalizePathForComparison } from './workspaceHelpers';
+import { isUnsafeObjectKey } from './utils/protoGuard';
+import { readTextFileWithSizeGuardSync } from './utils/safeFileRead';
+import { readDbBufferWithWalFingerprint, getWalStat, type WalReadResult } from './utils/sqliteWal';
 
 // Access SqlJsStatic and Database via the globally declared initSqlJs namespace.
 type SqlJsStatic = initSqlJs.SqlJsStatic;
@@ -21,9 +24,12 @@ export interface UriLike {
 	readonly scheme: string;
 }
 
-type OpenCodeDbCache = { db: SqlDatabase; mtimeMs: number; size: number; path: string; walMtimeMs: number };
+// walSize (not just walMtimeMs) is part of the cache identity: mtime granularity is coarse on
+// some filesystems, so two WAL appends inside one tick can leave the mtime unchanged while the
+// WAL still grows — see getWalStat's doc comment and #2036 review notes (Fix 1b).
+type OpenCodeDbCache = { db: SqlDatabase; mtimeMs: number; size: number; path: string; walMtimeMs: number; walSize: number };
 type OpenCodeModelUsageWithInteractions = {
-	[modelName: string]: ModelUsage[string] & { interactions?: number };
+	[modelName: ModelId]: ModelUsage[ModelId] & { interactions?: number };
 };
 
 export class OpenCodeDataAccess {
@@ -31,6 +37,12 @@ export class OpenCodeDataAccess {
 	private _sqlJsInitPromise: Promise<SqlJsStatic> | null = null;
 	private _dbCache: OpenCodeDbCache | null = null;
 	private _dbCacheInflight: Map<string, Promise<SqlDatabase | null>> = new Map();
+	// A single trailing slot for the most recent WAL-blind (`walIncluded: false`) parsed Database —
+	// still usable for the call that just produced it, but deliberately NOT installed as `_dbCache`
+	// (see `refreshOpenCodeDb`'s doc comment on why a WAL-blind read must not be treated as
+	// settled). Held here — rather than closed immediately — only so its underlying WASM memory is
+	// still reclaimed (on the next read, or on `dispose()`) instead of leaking.
+	private _pendingTransientDb: SqlDatabase | null = null;
 	private readonly extensionUri: UriLike;
 
 	constructor(extensionUri: UriLike) {
@@ -100,6 +112,7 @@ export class OpenCodeDataAccess {
 
 	dispose(): void {
 		this.closeDbCache();
+		this.releasePendingTransientDb();
 		this._dbCacheInflight.clear();
 		this._sqlJsInitPromise = null;
 	}
@@ -112,6 +125,13 @@ export class OpenCodeDataAccess {
 		if (this._dbCache) {
 			this.closeDb(this._dbCache.db);
 			this._dbCache = null;
+		}
+	}
+
+	private releasePendingTransientDb(): void {
+		if (this._pendingTransientDb) {
+			this.closeDb(this._pendingTransientDb);
+			this._pendingTransientDb = null;
 		}
 	}
 
@@ -135,81 +155,59 @@ export class OpenCodeDataAccess {
 		}
 	}
 
-	/** Returns the WAL file's mtime in milliseconds, or 0 if no WAL file exists. */
-	private getWalMtimeMs(dbPath: string): number {
-		try {
-			return fs.statSync(dbPath + '-wal').mtimeMs;
-		} catch {
-			return 0;
-		}
-	}
-
 	private isCachedDbCurrent(dbPath: string, stats: fs.Stats): boolean {
+		const wal = getWalStat(dbPath);
 		return this._dbCache?.path === dbPath
 			&& this._dbCache.mtimeMs === stats.mtimeMs
 			&& this._dbCache.size === stats.size
-			&& this._dbCache.walMtimeMs === this.getWalMtimeMs(dbPath);
+			&& this._dbCache.walMtimeMs === wal.mtimeMs
+			&& this._dbCache.walSize === wal.size;
 	}
 
 	private getDbCacheKey(dbPath: string, stats: fs.Stats): string {
-		return `${dbPath}:${stats.mtimeMs}:${stats.size}:wal${this.getWalMtimeMs(dbPath)}`;
+		const wal = getWalStat(dbPath);
+		return `${dbPath}:${stats.mtimeMs}:${stats.size}:wal${wal.mtimeMs}:${wal.size}`;
 	}
 
 	private sameDbStats(left: fs.Stats, right: fs.Stats): boolean {
 		return left.mtimeMs === right.mtimeMs && left.size === right.size;
 	}
 
-	/**
-	 * When an active WAL file is present, sql.js cannot see uncommitted WAL frames because
-	 * it reads only the raw `.db` bytes. This method copies the DB + WAL to a temp location,
-	 * opens the copy with Node's built-in SQLite (available in Node.js 22+), forces a WAL
-	 * checkpoint to merge all frames into the temp DB file, and returns the resulting buffer
-	 * so that sql.js can load a fully up-to-date snapshot.
-	 *
-	 * Returns null when no WAL is present, when the WAL is empty, or when node:sqlite is
-	 * unavailable — in all those cases the caller falls back to reading the DB file directly.
-	 */
-	private async tryReadDbWithWal(dbPath: string): Promise<Buffer | null> {
-		const walPath = dbPath + '-wal';
-		let walSize: number;
-		try {
-			walSize = fs.statSync(walPath).size;
-		} catch {
-			return null; // No WAL file — no merge needed
-		}
-		if (walSize === 0) { return null; }
-
-		try {
-			const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
-			const tmpDir = os.tmpdir();
-			const tmpDb = path.join(tmpDir, `opencode-wal-${Date.now()}.db`);
-			const tmpWal = tmpDb + '-wal';
-			const tmpShm = tmpDb + '-shm';
-			const shmPath = dbPath + '-shm';
-
-			fs.copyFileSync(dbPath, tmpDb);
-			fs.copyFileSync(walPath, tmpWal);
-			if (fs.existsSync(shmPath)) { fs.copyFileSync(shmPath, tmpShm); }
-
-			const nativeDb = new DatabaseSync(tmpDb);
-			nativeDb.exec('PRAGMA wal_checkpoint(TRUNCATE);');
-			nativeDb.close();
-
-			const buffer = fs.readFileSync(tmpDb);
-			for (const f of [tmpDb, tmpWal, tmpShm]) { try { fs.unlinkSync(f); } catch { /* ignore */ } }
-			return buffer;
-		} catch {
-			return null; // node:sqlite unavailable or copy failed — fall back to direct read
-		}
+	/** True when `_dbCache` was built from a read that reported this exact fingerprint. */
+	private isCachedDbCurrentForFingerprint(dbPath: string, result: WalReadResult): boolean {
+		return this._dbCache?.path === dbPath
+			&& this._dbCache.mtimeMs === result.dbMtimeMs
+			&& this._dbCache.size === result.dbSize
+			&& this._dbCache.walMtimeMs === result.walMtimeMs
+			&& this._dbCache.walSize === result.walSize;
 	}
 
 	private async refreshOpenCodeDb(dbPath: string, stats: fs.Stats): Promise<SqlDatabase | null> {
+		let result: WalReadResult;
+		try {
+			// Use the fingerprint the read itself reports rather than a fresh getWalStat(dbPath)
+			// call afterwards: a throttled sqliteWal read can serve a buffer older than "now", and
+			// stamping it with the current WAL state would make a stale cache entry look current —
+			// permanently hiding any WAL writes that land after this read but before the throttle
+			// window lapses (see #2036 review notes on src/utils/sqliteWal.ts).
+			result = await readDbBufferWithWalFingerprint(dbPath);
+		} catch {
+			return this.getCachedDbForPath(dbPath);
+		}
+
+		// The cheap pre-check in getOpenCodeDb() that led here used a fresh WAL stat and found a
+		// possible change, but the read above may have been served from sqliteWal's own throttle
+		// under the buffer's ORIGINAL fingerprint — i.e. nothing actually changed since the db
+		// already cached here was built. Reuse it rather than paying to reparse bytes we already
+		// have parsed — see #2036 review notes (Fix 1).
+		if (this.isCachedDbCurrentForFingerprint(dbPath, result)) {
+			return this._dbCache?.db ?? null;
+		}
+
 		let db: SqlDatabase;
 		try {
 			const SQL = await this.initSqlJs();
-			const walBuffer = await this.tryReadDbWithWal(dbPath);
-			const buffer = walBuffer ?? fs.readFileSync(dbPath);
-			db = new SQL.Database(buffer);
+			db = new SQL.Database(result.buffer);
 		} catch {
 			return this.getCachedDbForPath(dbPath);
 		}
@@ -223,8 +221,20 @@ export class OpenCodeDataAccess {
 			return this.getCachedDbForPath(dbPath);
 		}
 
+		if (!result.walIncluded) {
+			// A WAL-blind plain read (see sqliteWal.ts) — usable for this one call, but not safe to
+			// treat as "caught up": persisting it into `_dbCache` would let a later WAL-quiet moment
+			// look identical to a genuinely caught-up read, hiding committed rows never checkpointed
+			// into the main file — see #2036 review notes (Fix 3). Keep it only in the single
+			// trailing transient slot instead.
+			this.releasePendingTransientDb();
+			this._pendingTransientDb = db;
+			return db;
+		}
+
 		this.closeDbCache();
-		this._dbCache = { db, path: dbPath, mtimeMs: stats.mtimeMs, size: stats.size, walMtimeMs: this.getWalMtimeMs(dbPath) };
+		this.releasePendingTransientDb();
+		this._dbCache = { db, path: dbPath, mtimeMs: result.dbMtimeMs, size: result.dbSize, walMtimeMs: result.walMtimeMs, walSize: result.walSize };
 		return db;
 	}
 
@@ -370,7 +380,8 @@ export class OpenCodeDataAccess {
 			for (const entry of entries) {
 				if (!entry.isFile() || !entry.name.endsWith('.json')) { continue; }
 				try {
-					const content = fs.readFileSync(path.join(messageDir, entry.name), 'utf8');
+					const content = readTextFileWithSizeGuardSync(path.join(messageDir, entry.name), 'opencode');
+					if (content === undefined) { continue; }
 					const msg = JSON.parse(content);
 					messages.push(msg);
 				} catch {
@@ -400,7 +411,8 @@ export class OpenCodeDataAccess {
 			for (const entry of entries) {
 				if (!entry.isFile() || !entry.name.endsWith('.json')) { continue; }
 				try {
-					const content = fs.readFileSync(path.join(partDir, entry.name), 'utf8');
+					const content = readTextFileWithSizeGuardSync(path.join(partDir, entry.name), 'opencode');
+					if (content === undefined) { continue; }
 					const part = JSON.parse(content);
 					parts.push(part);
 				} catch {
@@ -537,7 +549,9 @@ export class OpenCodeDataAccess {
 			const turnTokens = turnCumTotal - prevTotal;
 			if (turnTokens <= 0) { prevTotal = turnCumTotal; continue; }
 			const model = turnAssistantMsgs[0].modelID || turnAssistantMsgs[0].model?.modelID || 'unknown';
-			if (!modelUsage[model]) { modelUsage[model] = { inputTokens: 0, outputTokens: 0 }; }
+			// Untrusted `model` string from parsed session JSON — see protoGuard.ts.
+			if (isUnsafeObjectKey(model)) { prevTotal = turnCumTotal; continue; }
+			if (!modelUsage[model]) { modelUsage[model] = { inputTokens: 0, outputTokens: 0, sessions: 0 }; }
 			const turnOutput = turnAssistantMsgs.reduce((sum, m) => sum + (m.tokens?.output || 0) + (m.tokens?.reasoning || 0), 0);
 			modelUsage[model].inputTokens += Math.max(0, turnTokens - turnOutput);
 			modelUsage[model].outputTokens += turnOutput;
@@ -579,10 +593,13 @@ export class OpenCodeDataAccess {
 			if (turnAssistantMsgs.length === 0) { continue; }
 
 			const model = turnAssistantMsgs[0].modelID || turnAssistantMsgs[0].model?.modelID || 'unknown';
+			// Untrusted `model` string from parsed session JSON — see protoGuard.ts.
+			if (isUnsafeObjectKey(model)) { continue; }
 			modelInteractions[model] = (modelInteractions[model] || 0) + 1;
 		}
 
-		// Merge interaction counts into model usage
+		// Merge interaction counts into model usage. baseModelUsage's own keys are already
+		// guarded (see getOpenCodeModelUsageFromMessages), so Object.entries only yields safe keys.
 		const modelUsage: OpenCodeModelUsageWithInteractions = {};
 		for (const [model, usage] of Object.entries(baseModelUsage)) {
 			modelUsage[model] = {

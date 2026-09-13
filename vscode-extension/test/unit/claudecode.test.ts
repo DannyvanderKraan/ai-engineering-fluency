@@ -82,7 +82,9 @@ test('getProjectPathFromHash: Windows path reversal', async () => {
 // ----- Token counting with synthetic data -----
 
 function createTempSession(events: any[]): string {
-	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-test-'));
+	// Keep synthetic session files outside the OS temp directory so the secure file-read guard
+	// in src/utils/safeFileRead.ts still permits the parser to exercise actual session logic.
+	const tmpDir = fs.mkdtempSync(path.join(process.cwd(), 'claude-test-'));
 	const projectDir = path.join(tmpDir, '.claude', 'projects', 'test-project');
 	fs.mkdirSync(projectDir, { recursive: true });
 	const filePath = path.join(projectDir, 'test-session.jsonl');
@@ -258,6 +260,55 @@ test('getClaudeCodeModelUsage: aggregates per-model token usage', async () => {
 		// opus: input = 5+50+0 = 55, output = 200
 		assert.equal(modelUsage['claude-opus-4.6'].inputTokens, 55);
 		assert.equal(modelUsage['claude-opus-4.6'].outputTokens, 200);
+	} finally {
+		cleanup(filePath);
+	}
+});
+
+test('getClaudeCodeModelUsage: tracks 1-hour cache TTL tokens separately from 5-minute TTL (issue #1589)', async () => {
+	// Claude Code defaults to Anthropic's 1-hour prompt-cache TTL, which is billed at a
+	// higher rate than the default 5-minute TTL. The breakdown lives under
+	// message.usage.cache_creation.ephemeral_1h_input_tokens / ephemeral_5m_input_tokens.
+	const events = [
+		{
+			type: 'assistant',
+			message: {
+				id: 'msg_1h',
+				model: 'claude-sonnet-4-6',
+				stop_reason: 'end_turn',
+				usage: {
+					input_tokens: 1,
+					output_tokens: 100,
+					cache_creation_input_tokens: 1000,
+					cache_read_input_tokens: 0,
+					cache_creation: { ephemeral_1h_input_tokens: 1000, ephemeral_5m_input_tokens: 0 }
+				}
+			}
+		},
+		{
+			type: 'assistant',
+			message: {
+				id: 'msg_5m',
+				model: 'claude-sonnet-4-6',
+				stop_reason: 'end_turn',
+				usage: {
+					input_tokens: 1,
+					output_tokens: 50,
+					cache_creation_input_tokens: 400,
+					cache_read_input_tokens: 0,
+					cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 400 }
+				}
+			}
+		}
+	];
+
+	const filePath = createTempSession(events);
+	try {
+		const modelUsage = await claudeCode.getClaudeCodeModelUsage(filePath);
+		const usage = modelUsage['claude-sonnet-4.6'];
+		assert.ok(usage);
+		assert.equal(usage.cacheCreationTokens, 1400); // total cache-write tokens (1000 + 400)
+		assert.equal(usage.cacheCreation1hTokens, 1000); // only the 1h-TTL portion
 	} finally {
 		cleanup(filePath);
 	}
@@ -831,4 +882,491 @@ assert.equal(result.toolCalls.total, 0);
 } finally {
 cleanup(filePath);
 }
+});
+
+// ----- ClaudeCodeAdapter.analyzeUsage: Skill tool_use -> skillCalls (agnostic skill-usage tracking) -----
+
+test('ClaudeCodeAdapter.analyzeUsage: unwraps Skill tool_use into skillCalls.byName', async () => {
+const events = [
+{
+type: 'assistant',
+message: {
+id: 'msg_skill_1',
+model: 'claude-sonnet-4-6',
+role: 'assistant',
+stop_reason: 'tool_use',
+content: [{ type: 'tool_use', id: 'toolu_1', name: 'Skill', input: { skill: 'graphify' } }]
+}
+}
+];
+const filePath = createTempSession(events);
+try {
+const result = await claudeCodeAdapter.analyzeUsage(filePath, adapterCtx);
+assert.equal(result.skillCalls?.byName['graphify'], 1);
+assert.equal(result.skillCalls?.total, 1);
+// Additive (Option C): the raw "Skill" wrapper tool call is still counted as-is, unchanged.
+assert.equal(result.toolCalls.byTool['Skill'], 1);
+assert.equal(result.toolCalls.total, 1);
+} finally {
+cleanup(filePath);
+}
+});
+
+test('ClaudeCodeAdapter.analyzeUsage: accumulates multiple invocations of the same and different skills', async () => {
+const events = [
+{ type: 'assistant', message: { id: 'm1', model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: 'tool_use',
+content: [{ type: 'tool_use', id: 't1', name: 'Skill', input: { skill: 'graphify' } }] } },
+{ type: 'assistant', message: { id: 'm2', model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: 'tool_use',
+content: [{ type: 'tool_use', id: 't2', name: 'Skill', input: { skill: 'graphify' } }] } },
+{ type: 'assistant', message: { id: 'm3', model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: 'tool_use',
+content: [{ type: 'tool_use', id: 't3', name: 'Skill', input: { skill: 'sync-host-views' } }] } },
+];
+const filePath = createTempSession(events);
+try {
+const result = await claudeCodeAdapter.analyzeUsage(filePath, adapterCtx);
+assert.equal(result.skillCalls?.byName['graphify'], 2);
+assert.equal(result.skillCalls?.byName['sync-host-views'], 1);
+assert.equal(result.skillCalls?.total, 3);
+} finally {
+cleanup(filePath);
+}
+});
+
+test('ClaudeCodeAdapter.analyzeUsage: does not record skillCalls for non-Skill tool calls', async () => {
+const events = [
+{ type: 'assistant', message: { id: 'm1', model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: 'tool_use',
+content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }] } },
+];
+const filePath = createTempSession(events);
+try {
+const result = await claudeCodeAdapter.analyzeUsage(filePath, adapterCtx);
+assert.equal(result.skillCalls?.total ?? 0, 0);
+assert.equal(result.toolCalls.byTool['Bash'], 1);
+} finally {
+cleanup(filePath);
+}
+});
+
+test('ClaudeCodeAdapter.analyzeUsage: ignores Skill tool_use with missing/malformed input.skill', async () => {
+const events = [
+{ type: 'assistant', message: { id: 'm1', model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: 'tool_use',
+content: [{ type: 'tool_use', id: 't1', name: 'Skill', input: {} }] } },
+];
+const filePath = createTempSession(events);
+try {
+const result = await claudeCodeAdapter.analyzeUsage(filePath, adapterCtx);
+assert.equal(result.skillCalls?.total ?? 0, 0);
+assert.equal(result.toolCalls.byTool['Skill'], 1);
+} finally {
+cleanup(filePath);
+}
+});
+
+test('ClaudeCodeAdapter.analyzeUsage: a user-typed slash invocation (<command-name>) also populates skillCalls', async () => {
+	// Regression test for the real /graphify session: when a user directly types a
+	// registered skill/command, Claude Code expands it into a plain USER message
+	// carrying <command-message>/<command-name> tags - it is never a Skill tool_use
+	// block, so this is a completely separate detection path from extractSkillName.
+	const events = [
+		{
+			type: 'user', isSidechain: false,
+			message: { role: 'user', content: '<command-message>graphify</command-message>\n<command-name>/graphify</command-name>' },
+		},
+	];
+	const filePath = createTempSession(events);
+	try {
+		const result = await claudeCodeAdapter.analyzeUsage(filePath, adapterCtx);
+		assert.equal(result.skillCalls?.byName['graphify'], 1);
+		assert.equal(result.skillCalls?.total, 1);
+	} finally {
+		cleanup(filePath);
+	}
+});
+
+// ----- ClaudeCodeAdapter.analyzeUsage: modeUsage bucketing by entrypoint variant -----
+
+test('ClaudeCodeAdapter.analyzeUsage: entrypoint "cli" counts toward modeUsage.cli', async () => {
+	const events = [
+		{ type: 'user', isSidechain: false, entrypoint: 'cli', message: { role: 'user', content: 'hello' } },
+	];
+	const filePath = createTempSession(events);
+	try {
+		const result = await claudeCodeAdapter.analyzeUsage(filePath, adapterCtx);
+		assert.equal(result.modeUsage.cli, 1);
+		assert.equal(result.modeUsage.claudeDesktop ?? 0, 0);
+		assert.equal(result.modeUsage.claudeVsCode ?? 0, 0);
+	} finally {
+		cleanup(filePath);
+	}
+});
+
+test('ClaudeCodeAdapter.analyzeUsage: entrypoint "claude-desktop" counts toward modeUsage.claudeDesktop, not cli', async () => {
+	const events = [
+		{ type: 'user', isSidechain: false, entrypoint: 'claude-desktop', message: { role: 'user', content: 'hello' } },
+	];
+	const filePath = createTempSession(events);
+	try {
+		const result = await claudeCodeAdapter.analyzeUsage(filePath, adapterCtx);
+		assert.equal(result.modeUsage.claudeDesktop, 1);
+		assert.equal(result.modeUsage.cli, 0);
+		assert.equal(result.modeUsage.claudeVsCode ?? 0, 0);
+	} finally {
+		cleanup(filePath);
+	}
+});
+
+test('ClaudeCodeAdapter.analyzeUsage: entrypoint "claude-vscode" counts toward modeUsage.claudeVsCode, not cli', async () => {
+	const events = [
+		{ type: 'user', isSidechain: false, entrypoint: 'claude-vscode', message: { role: 'user', content: 'hello' } },
+	];
+	const filePath = createTempSession(events);
+	try {
+		const result = await claudeCodeAdapter.analyzeUsage(filePath, adapterCtx);
+		assert.equal(result.modeUsage.claudeVsCode, 1);
+		assert.equal(result.modeUsage.cli, 0);
+		assert.equal(result.modeUsage.claudeDesktop ?? 0, 0);
+	} finally {
+		cleanup(filePath);
+	}
+});
+
+test('ClaudeCodeAdapter.analyzeUsage: multiple user turns in a claude-desktop session all count under claudeDesktop', async () => {
+	const events = [
+		{ type: 'user', isSidechain: false, entrypoint: 'claude-desktop', message: { role: 'user', content: 'first' } },
+		{ type: 'assistant', message: { id: 'm1', model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'ok' }] } },
+		{ type: 'user', isSidechain: false, message: { role: 'user', content: 'second' } },
+	];
+	const filePath = createTempSession(events);
+	try {
+		const result = await claudeCodeAdapter.analyzeUsage(filePath, adapterCtx);
+		assert.equal(result.modeUsage.claudeDesktop, 2);
+		assert.equal(result.modeUsage.cli, 0);
+	} finally {
+		cleanup(filePath);
+	}
+});
+
+// ----- ClaudeCodeAdapter.analyzeUsage: every event in the session is processed -----
+//
+// analyzeUsage's for-loop must run to completion and return once, after the loop —
+// not return from inside it. A regression that closed the loop early would still
+// type-check (a `return` inside a `for` is legal JS), so this is asserted directly
+// on aggregate counts that only add up correctly if every event was visited.
+
+test('ClaudeCodeAdapter.analyzeUsage: processes every event, not just the first — user turns, tool calls and models all accumulate past event 1', async () => {
+	const events = [
+		{ type: 'user', isSidechain: false, entrypoint: 'cli', message: { role: 'user', content: 'first' } },
+		{
+			type: 'assistant',
+			message: {
+				id: 'm1', model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: 'tool_use',
+				content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/a.ts' } }],
+			},
+		},
+		{ type: 'user', isSidechain: false, message: { role: 'user', content: 'second' } },
+		{
+			type: 'assistant',
+			message: {
+				id: 'm2', model: 'claude-opus-4-6', role: 'assistant', stop_reason: 'tool_use',
+				content: [{ type: 'tool_use', name: 'Write', input: { file_path: '/b.ts' } }],
+			},
+		},
+		{ type: 'user', isSidechain: false, message: { role: 'user', content: 'third' } },
+		{
+			type: 'assistant',
+			message: {
+				id: 'm3', model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: 'end_turn',
+				content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/c.ts' } }],
+			},
+		},
+	];
+	const filePath = createTempSession(events);
+	try {
+		const result = await claudeCodeAdapter.analyzeUsage(filePath, adapterCtx);
+		// 3 user turns — only reachable if the loop visited events past index 0.
+		assert.equal(result.modeUsage.cli, 3);
+		// 3 tool calls across 3 separate assistant events.
+		assert.equal(result.toolCalls.total, 3);
+		assert.deepEqual(result.toolCalls.byTool, { Read: 1, Write: 1, Edit: 1 });
+		// Model-switching stats are computed once, after the loop, from all 3 models seen.
+		assert.equal(result.modelSwitching.totalRequests, 3);
+		assert.equal(result.modelSwitching.modelCount, 2);
+		assert.equal(result.modelSwitching.switchCount, 2);
+	} finally {
+		cleanup(filePath);
+	}
+});
+
+// ----- ClaudeCodeAdapter.analyzeUsage: cacheBreakage (see src/cacheBreakage.ts) -----
+
+test('ClaudeCodeAdapter.analyzeUsage: populates cacheBreakage from a multi-turn session with a TTL-expiry break', async () => {
+	const bigPrefix = 60_000;
+	const events = [
+		{
+			type: 'assistant',
+			message: {
+				id: 'c1', model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: 'end_turn',
+				content: [{ type: 'text', text: 'warm the cache' }],
+				usage: { input_tokens: 2, output_tokens: 10, cache_creation_input_tokens: bigPrefix, cache_read_input_tokens: 0 },
+			},
+			timestamp: '2026-05-06T10:00:00.000Z',
+		},
+		{
+			// Idle well past the 5-minute default TTL, same model, no compaction —
+			// the whole prefix has to be written again.
+			type: 'assistant',
+			message: {
+				id: 'c2', model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: 'end_turn',
+				content: [{ type: 'text', text: 're-warm' }],
+				usage: { input_tokens: 2, output_tokens: 10, cache_creation_input_tokens: bigPrefix, cache_read_input_tokens: 0 },
+			},
+			timestamp: '2026-05-06T10:30:00.000Z',
+		},
+	];
+	const filePath = createTempSession(events);
+	try {
+		const result = await claudeCodeAdapter.analyzeUsage(filePath, adapterCtx);
+		assert.ok(result.cacheBreakage, 'cacheBreakage should be populated when assistant events carry usage');
+		assert.equal(result.cacheBreakage!.breaks.length, 1);
+		assert.equal(result.cacheBreakage!.breaks[0].cause, 'ttl-expiry');
+		assert.equal(result.cacheBreakage!.tokensWritten, bigPrefix * 2);
+	} finally {
+		cleanup(filePath);
+	}
+});
+
+test('ClaudeCodeAdapter.analyzeUsage: leaves cacheBreakage undefined when no assistant event carries usage', async () => {
+	const events = [
+		{ type: 'user', isSidechain: false, message: { role: 'user', content: 'hi' } },
+	];
+	const filePath = createTempSession(events);
+	try {
+		const result = await claudeCodeAdapter.analyzeUsage(filePath, adapterCtx);
+		assert.equal(result.cacheBreakage, undefined);
+	} finally {
+		cleanup(filePath);
+	}
+});
+
+// ----- getClaudeCodeDailyFractions (issue #1608, root cause A) -----
+
+test('getClaudeCodeDailyFractions: splits usage by each assistant event day, weighted by tokens', async () => {
+const events = [
+{
+type: 'assistant',
+message: {
+model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: 'end_turn',
+id: 'msg_day1', usage: { input_tokens: 100, output_tokens: 200 }
+},
+timestamp: '2026-07-11T12:00:00.000Z'
+},
+{
+type: 'assistant',
+message: {
+model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: 'end_turn',
+id: 'msg_day2', usage: { input_tokens: 100, output_tokens: 100 }
+},
+// 19h later — a different local day in every timezone from UTC-10 to UTC+14
+timestamp: '2026-07-12T07:00:00.000Z'
+}
+];
+const filePath = createTempSession(events);
+try {
+const fractions = await claudeCode.getClaudeCodeDailyFractions(filePath);
+const keys = Object.keys(fractions).sort();
+assert.equal(keys.length, 2, 'should have exactly 2 local day keys');
+// day1: 300 tokens, day2: 200 tokens, total 500
+const values = keys.map(k => fractions[k]).sort((a, b) => a - b);
+assert.ok(Math.abs(values[0] - 0.4) < 1e-9, `expected 0.4, got ${values[0]}`);
+assert.ok(Math.abs(values[1] - 0.6) < 1e-9, `expected 0.6, got ${values[1]}`);
+const total = Object.values(fractions).reduce((a, b) => a + b, 0);
+assert.ok(Math.abs(total - 1.0) < 1e-9, 'fractions should sum to 1.0');
+} finally {
+cleanup(filePath);
+}
+});
+
+test('getClaudeCodeDailyFractions: de-duplicates streaming fragments by message.id before bucketing', async () => {
+const events = [
+{
+type: 'assistant',
+message: { model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: null, id: 'msg_1', usage: { input_tokens: 10, output_tokens: 20 } },
+timestamp: '2026-07-11T12:00:00.000Z'
+},
+{
+type: 'assistant',
+message: { model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: 'end_turn', id: 'msg_1', usage: { input_tokens: 10, output_tokens: 50 } },
+timestamp: '2026-07-11T12:00:05.000Z'
+}
+];
+const filePath = createTempSession(events);
+try {
+const fractions = await claudeCode.getClaudeCodeDailyFractions(filePath);
+const keys = Object.keys(fractions);
+assert.equal(keys.length, 1);
+assert.ok(Math.abs(fractions[keys[0]] - 1.0) < 1e-9);
+} finally {
+cleanup(filePath);
+}
+});
+
+test('getClaudeCodeDailyFractions: falls back to firstInteraction day when there is no usage data', async () => {
+const events = [
+{
+type: 'user',
+isSidechain: false,
+message: { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+timestamp: '2026-07-11T12:00:00.000Z'
+}
+];
+const filePath = createTempSession(events);
+try {
+const fractions = await claudeCode.getClaudeCodeDailyFractions(filePath);
+const keys = Object.keys(fractions);
+assert.equal(keys.length, 1);
+assert.equal(fractions[keys[0]], 1.0);
+} finally {
+cleanup(filePath);
+}
+});
+
+test('ClaudeCodeAdapter.getDailyFractions: delegates to ClaudeCodeDataAccess', async () => {
+const events = [
+{
+type: 'assistant',
+message: { model: 'claude-sonnet-4-6', role: 'assistant', stop_reason: 'end_turn', id: 'msg_1', usage: { input_tokens: 10, output_tokens: 20 } },
+timestamp: '2026-07-11T12:00:00.000Z'
+}
+];
+const filePath = createTempSession(events);
+try {
+const fractions = await claudeCodeAdapter.getDailyFractions(filePath);
+const keys = Object.keys(fractions);
+assert.equal(keys.length, 1);
+assert.equal(fractions[keys[0]], 1.0);
+} finally {
+cleanup(filePath);
+}
+});
+
+// ----- getClaudeCodeSessionFiles recursion into subagent transcripts (issue #1608, root cause B) -----
+
+class TestableClaudeCodeDataAccess extends ClaudeCodeDataAccess {
+constructor(private readonly testDataDir: string) { super(); }
+override getClaudeCodeDataDir(): string { return this.testDataDir; }
+}
+
+test('getClaudeCodeSessionFiles: discovers subagent transcripts nested under <sessionId>/subagents/**', async () => {
+const tmpDir = fs.mkdtempSync(path.join(process.cwd(), 'claude-discovery-test-'));
+try {
+const dataDir = path.join(tmpDir, '.claude');
+const projectDir = path.join(dataDir, 'projects', 'test-project');
+const topLevelFile = path.join(projectDir, 'session-1.jsonl');
+const subagentDir = path.join(projectDir, 'session-1', 'subagents', 'workflows', 'wf-1');
+const subagentFile = path.join(subagentDir, 'agent-1.jsonl');
+
+fs.mkdirSync(projectDir, { recursive: true });
+fs.writeFileSync(topLevelFile, JSON.stringify({ type: 'user' }), 'utf8');
+fs.mkdirSync(subagentDir, { recursive: true });
+fs.writeFileSync(subagentFile, JSON.stringify({ type: 'assistant' }), 'utf8');
+
+const cc = new TestableClaudeCodeDataAccess(dataDir);
+const files = (await cc.getClaudeCodeSessionFiles()).map(f => path.normalize(f)).sort();
+assert.deepEqual(files, [path.normalize(subagentFile), path.normalize(topLevelFile)].sort());
+} finally {
+fs.rmSync(tmpDir, { recursive: true, force: true });
+}
+});
+
+test('getClaudeCodeSessionFiles: ignores empty files at any depth', async () => {
+const tmpDir = fs.mkdtempSync(path.join(process.cwd(), 'claude-discovery-test-'));
+try {
+const dataDir = path.join(tmpDir, '.claude');
+const projectDir = path.join(dataDir, 'projects', 'test-project');
+const subagentDir = path.join(projectDir, 'session-1', 'subagents');
+const emptyTopLevel = path.join(projectDir, 'empty.jsonl');
+const emptySubagent = path.join(subagentDir, 'empty-agent.jsonl');
+
+fs.mkdirSync(subagentDir, { recursive: true });
+fs.writeFileSync(emptyTopLevel, '', 'utf8');
+fs.writeFileSync(emptySubagent, '', 'utf8');
+
+const cc = new TestableClaudeCodeDataAccess(dataDir);
+const files = await cc.getClaudeCodeSessionFiles();
+assert.deepEqual(files, []);
+} finally {
+fs.rmSync(tmpDir, { recursive: true, force: true });
+}
+});
+
+// ----- Cross-file dedup between a top-level session and its subagent transcripts -----
+//
+// Reproduces the scenario ccusage's dedup guards against ("sidechain logs can replay
+// parent messages with new request IDs"): the same message.id appears in both the
+// top-level session file and a nested <sessionId>/subagents/*.jsonl file. Since #1627
+// made subagent files independently discoverable, and getTokensFromClaudeCodeSession /
+// getClaudeCodeModelUsage only dedupe *within* a single file, the shared message's
+// tokens get summed once per file instead of once total (issue #1570 investigation).
+
+function createSessionFamily(topLevelEvents: any[], subagentEvents: any[]): { topLevelFile: string; subagentFile: string; tmpDir: string } {
+	const tmpDir = fs.mkdtempSync(path.join(process.cwd(), 'claude-family-test-'));
+	const projectDir = path.join(tmpDir, '.claude', 'projects', 'test-project');
+	const sessionId = 'session-family-1';
+	const topLevelFile = path.join(projectDir, `${sessionId}.jsonl`);
+	const subagentDir = path.join(projectDir, sessionId, 'subagents');
+	const subagentFile = path.join(subagentDir, 'agent-1.jsonl');
+	fs.mkdirSync(subagentDir, { recursive: true });
+	fs.writeFileSync(topLevelFile, topLevelEvents.map(e => JSON.stringify(e)).join('\n'), 'utf8');
+	fs.writeFileSync(subagentFile, subagentEvents.map(e => JSON.stringify(e)).join('\n'), 'utf8');
+	return { topLevelFile, subagentFile, tmpDir };
+}
+
+const SHARED_MESSAGE_USAGE = { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }; // 150 tokens
+const SUBAGENT_OWN_USAGE = { input_tokens: 20, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }; // 30 tokens
+
+test('getTokensFromClaudeCodeSession: does not double-count a message.id replayed in a sibling subagent file', async () => {
+	const topLevelEvents = [
+		{ type: 'assistant', isSidechain: false, requestId: 'req_parent', message: { id: 'msg_shared', model: 'claude-sonnet-4-6', stop_reason: 'end_turn', usage: SHARED_MESSAGE_USAGE } }
+	];
+	const subagentEvents = [
+		// The parent message replayed under a new requestId inside the subagent transcript.
+		{ type: 'assistant', isSidechain: true, requestId: 'req_sidechain_replay', message: { id: 'msg_shared', model: 'claude-sonnet-4-6', stop_reason: 'end_turn', usage: SHARED_MESSAGE_USAGE } },
+		// A genuinely unique message produced by the subagent itself.
+		{ type: 'assistant', isSidechain: true, requestId: 'req_subagent_own', message: { id: 'msg_subagent_own', model: 'claude-sonnet-4-6', stop_reason: 'end_turn', usage: SUBAGENT_OWN_USAGE } }
+	];
+	const { topLevelFile, subagentFile, tmpDir } = createSessionFamily(topLevelEvents, subagentEvents);
+	try {
+		const parentTokens = await claudeCode.getTokensFromClaudeCodeSession(topLevelFile);
+		const subagentTokens = await claudeCode.getTokensFromClaudeCodeSession(subagentFile);
+		// True family total: 150 (shared, counted once) + 30 (subagent-only) = 180.
+		// The generic per-file pipeline sums each file's independent result, so that sum
+		// must equal the true total — the subagent file must NOT re-contribute the shared message.
+		assert.equal(parentTokens.tokens, 150, 'parent file should count its own message once');
+		assert.equal(subagentTokens.tokens, 30, 'subagent file should exclude the message already counted in the parent');
+		assert.equal(parentTokens.tokens + subagentTokens.tokens, 180, 'summed family total must not double-count the shared message');
+	} finally {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	}
+});
+
+test('getClaudeCodeModelUsage: does not double-count a message.id replayed in a sibling subagent file', async () => {
+	const topLevelEvents = [
+		{ type: 'assistant', isSidechain: false, requestId: 'req_parent', message: { id: 'msg_shared', model: 'claude-sonnet-4-6', stop_reason: 'end_turn', usage: SHARED_MESSAGE_USAGE } }
+	];
+	const subagentEvents = [
+		{ type: 'assistant', isSidechain: true, requestId: 'req_sidechain_replay', message: { id: 'msg_shared', model: 'claude-sonnet-4-6', stop_reason: 'end_turn', usage: SHARED_MESSAGE_USAGE } },
+		{ type: 'assistant', isSidechain: true, requestId: 'req_subagent_own', message: { id: 'msg_subagent_own', model: 'claude-sonnet-4-6', stop_reason: 'end_turn', usage: SUBAGENT_OWN_USAGE } }
+	];
+	const { topLevelFile, subagentFile, tmpDir } = createSessionFamily(topLevelEvents, subagentEvents);
+	try {
+		const parentUsage = await claudeCode.getClaudeCodeModelUsage(topLevelFile);
+		const subagentUsage = await claudeCode.getClaudeCodeModelUsage(subagentFile);
+		const totalInput = (parentUsage['claude-sonnet-4.6']?.inputTokens ?? 0) + (subagentUsage['claude-sonnet-4.6']?.inputTokens ?? 0);
+		const totalOutput = (parentUsage['claude-sonnet-4.6']?.outputTokens ?? 0) + (subagentUsage['claude-sonnet-4.6']?.outputTokens ?? 0);
+		// Family total: input 100+20=120, output 50+10=60 — the shared message must only appear once.
+		assert.equal(totalInput, 120, 'summed input tokens must not double-count the shared message');
+		assert.equal(totalOutput, 60, 'summed output tokens must not double-count the shared message');
+	} finally {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	}
 });

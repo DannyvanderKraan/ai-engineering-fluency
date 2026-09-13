@@ -1,6 +1,7 @@
 export { buildAdapterRegistry, createDataAccessInstances } from './adapterRegistry';
 export type { AdapterRegistryDeps, DataAccessInstances } from './adapterRegistry';
 export { OpenCodeAdapter } from './openCodeAdapter';
+export { KiloAdapter } from './kiloAdapter';
 export { CrushAdapter } from './crushAdapter';
 export { ContinueAdapter } from './continueAdapter';
 export { ClaudeDesktopAdapter } from './claudeDesktopAdapter';
@@ -15,4 +16,5 @@ export { JetBrainsAdapter } from './jetbrainsAdapter';
 export { PiAdapter } from './piAdapter';
 export { KiroAdapter } from './kiroAdapter';
 export { KiroCliAdapter } from './kiroCliAdapter';
+export { CodexCliAdapter } from './codexCliAdapter';
 

@@ -19,11 +19,16 @@ updates:
     labels:
       - "dependencies"
       - "npm"
-    # Group minor and patch updates to reduce PR noise
+    # Group minor and patch updates to reduce PR noise.
+    # @types/vscode is excluded so its minor/patch bumps always land as their
+    # own PR — grouping it with everything else let a bump silently outrun
+    # engines.vscode and break the nightly VS Code packaging check.
     groups:
       minor-and-patch-updates:
         patterns:
           - "*"
+        exclude-patterns:
+          - "@types/vscode"
         update-types:
           - "minor"
           - "patch"
@@ -133,13 +138,46 @@ updates:
     directory: /.github/scripts
     schedule:
       interval: daily
+    groups:
+      minor-and-patch-updates:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: npm
     directory: /.github/skills/azure-storage-loader
     schedule:
       interval: daily
+    groups:
+      minor-and-patch-updates:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: npm
     directory: /cli
     schedule:
       interval: daily
+    groups:
+      minor-and-patch-updates:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: npm
+    directory: /desktop
+    schedule:
+      interval: daily
+    groups:
+      minor-and-patch-updates:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

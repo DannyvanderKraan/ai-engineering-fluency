@@ -49,19 +49,19 @@ jobs:
     
     steps:
     - name: Harden the runner (Audit all outbound calls)
-      uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+      uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
       with:
         egress-policy: audit
 
     - name: Checkout code
-      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Setup pnpm
       uses: pnpm/action-setup@v4
       with:
         version: '11.2.2'
     - name: Setup Node.js
-      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version-file: '.nvmrc'
         cache: 'pnpm'
@@ -232,7 +232,7 @@ jobs:
     - name: Install dependencies
       if: inputs.vs_only != true
       working-directory: vscode-extension
-      run: pnpm install --frozen-lockfile
+      run: pnpm install --frozen-lockfile --ignore-scripts
       
     - name: Run linting
       if: inputs.vs_only != true
@@ -396,12 +396,12 @@ jobs:
     
     steps:
     - name: Harden the runner (Audit all outbound calls)
-      uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+      uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
       with:
         egress-policy: audit
 
     - name: Checkout code
-      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Setup pnpm
       uses: pnpm/action-setup@v4
@@ -436,7 +436,7 @@ jobs:
         echo "✅ Version check passed: $LOCAL_VERSION is newer than marketplace $MARKETPLACE_VERSION"
 
     - name: Setup Node.js
-      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version-file: '.nvmrc'
         cache: 'pnpm'
@@ -444,7 +444,7 @@ jobs:
 
     - name: Install dependencies
       working-directory: vscode-extension
-      run: pnpm install --frozen-lockfile
+      run: pnpm install --frozen-lockfile --ignore-scripts
 
     - name: Download VSIXs from release
       id: download_vsix
@@ -591,30 +591,30 @@ jobs:
 
     steps:
     - name: Harden the runner (Audit all outbound calls)
-      uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+      uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
       with:
         egress-policy: audit
 
     - name: Checkout code
-      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Setup pnpm
       uses: pnpm/action-setup@v4
       with:
         version: '11.2.2'
     - name: Setup Node.js
-      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version-file: '.nvmrc'
 
     # ── Install dependencies ────────────────────────────────────────────────
 
     - name: Install vscode-extension dependencies
-      run: pnpm install --frozen-lockfile
+      run: pnpm install --frozen-lockfile --ignore-scripts
       working-directory: vscode-extension
 
     - name: Install CLI dependencies
-      run: pnpm install --frozen-lockfile
+      run: pnpm install --frozen-lockfile --ignore-scripts
       working-directory: cli
 
     # ── Build CLI (production bundle + Windows .exe) ───────────────────────

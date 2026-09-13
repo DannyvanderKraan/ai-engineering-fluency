@@ -1,38 +1,133 @@
 import test from 'node:test';
 import * as assert from 'node:assert/strict';
-import { detectAiType, fetchRepoPrs, fetchCopilotPlanInfo, fetchCopilotTokenEndpointInfo, fetchUserEnterprises, fetchEnterprisePremiumBudgets, type CopilotPlanInfo, type CopilotTokenEndpointInfo, type EnterpriseInfo, type EnterpriseBudgetEntry } from '../../src/githubPrService';
+import * as os from 'node:os';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as childProcess from 'node:child_process';
+import type * as http from 'node:http';
+import { EventEmitter } from 'node:events';
+import { detectAiType, detectCoAuthorAiType, fetchPrCommitMessages, fetchRepoPrs, fetchRepoPrsPage, fetchCopilotPlanInfo, fetchCopilotTokenEndpointInfo, fetchUserEnterprises, fetchEnterprisePremiumBudgets, discoverGitHubRepos, type CopilotPlanInfo, type CopilotTokenEndpointInfo, type EnterpriseInfo, type EnterpriseBudgetEntry } from '../../src/githubPrService';
+
+/**
+ * Minimal stand-in for `http.ClientRequest`, exercising exactly the surface
+ * `attachRequestFailureHandling` (see `src/githubApiConfig.ts`) touches. Lets a test drive the
+ * real request-creation code path in `githubPrService.ts` end-to-end without a live network call.
+ * `fetchRepoPrsPage` accepts an injectable `requestFn` (defaulting to the real `https.request`) for
+ * exactly this purpose — Node's built-in module exports are non-configurable in current versions,
+ * so monkey-patching `https.request` directly is not viable here.
+ */
+class FakeClientRequest extends EventEmitter {
+	private timeoutCallback?: () => void;
+	setTimeout(_ms: number, cb: () => void): this {
+		this.timeoutCallback = cb;
+		return this;
+	}
+	destroy(err?: Error): this {
+		if (err) { this.emit('error', err); }
+		return this;
+	}
+	end(): this { return this; }
+	fireTimeout(): void { this.timeoutCallback?.(); }
+}
 
 // ---------------------------------------------------------------------------
 // detectAiType — pure function, no I/O
 // ---------------------------------------------------------------------------
 
-test('detectAiType: returns copilot for login containing "copilot"', () => {
-	assert.equal(detectAiType('copilot-swe-agent'), 'copilot');
-	assert.equal(detectAiType('github-copilot-bot'), 'copilot');
-	assert.equal(detectAiType('COPILOT-agent'), 'copilot');
+test('detectAiType: returns copilot for a Bot-typed login containing "copilot"', () => {
+	assert.equal(detectAiType({ login: 'copilot-swe-agent', type: 'Bot' }), 'copilot');
+	assert.equal(detectAiType({ login: 'github-copilot-bot', type: 'Bot' }), 'copilot');
+	assert.equal(detectAiType({ login: 'COPILOT-agent', type: 'Bot' }), 'copilot');
 });
 
-test('detectAiType: returns claude for login containing "claude" or "anthropic"', () => {
-	assert.equal(detectAiType('claude-code-action'), 'claude');
-	assert.equal(detectAiType('anthropic-bot'), 'claude');
-	assert.equal(detectAiType('Claude-Agent'), 'claude');
+test('detectAiType: returns claude for a Bot-typed login containing "claude" or "anthropic"', () => {
+	assert.equal(detectAiType({ login: 'claude-code-action', type: 'Bot' }), 'claude');
+	assert.equal(detectAiType({ login: 'anthropic-bot', type: 'Bot' }), 'claude');
+	assert.equal(detectAiType({ login: 'Claude-Agent', type: 'Bot' }), 'claude');
 });
 
-test('detectAiType: returns openai for login containing "openai" or "codex"', () => {
-	assert.equal(detectAiType('openai-code-agent'), 'openai');
-	assert.equal(detectAiType('codex-bot'), 'openai');
-	assert.equal(detectAiType('OPENAI-agent'), 'openai');
+test('detectAiType: returns openai for a Bot-typed login containing "openai" or "codex"', () => {
+	assert.equal(detectAiType({ login: 'openai-code-agent', type: 'Bot' }), 'openai');
+	assert.equal(detectAiType({ login: 'codex-bot', type: 'Bot' }), 'openai');
+	assert.equal(detectAiType({ login: 'OPENAI-agent', type: 'Bot' }), 'openai');
 });
 
 test('detectAiType: returns null for a regular human login', () => {
-	assert.equal(detectAiType('octocat'), null);
-	assert.equal(detectAiType('jane-doe'), null);
-	assert.equal(detectAiType(''), null);
+	assert.equal(detectAiType({ login: 'octocat', type: 'User' }), null);
+	assert.equal(detectAiType({ login: 'jane-doe', type: 'User' }), null);
+	assert.equal(detectAiType({ login: '', type: 'User' }), null);
+	assert.equal(detectAiType(undefined), null);
+	assert.equal(detectAiType(null), null);
 });
 
 test('detectAiType: copilot match takes priority over other patterns', () => {
 	// A login that technically contains both; copilot check comes first
-	assert.equal(detectAiType('copilot-openai-test'), 'copilot');
+	assert.equal(detectAiType({ login: 'copilot-openai-test', type: 'Bot' }), 'copilot');
+});
+
+test('detectAiType: gates on user.type === "Bot" rather than the login string alone', () => {
+	// Same logins as the recognized-pattern tests above, but type: 'User' — must not classify as AI.
+	assert.equal(detectAiType({ login: 'copilot-swe-agent', type: 'User' }), null);
+	assert.equal(detectAiType({ login: 'claude-code-action', type: 'User' }), null);
+	assert.equal(detectAiType({ login: 'openai-code-agent', type: 'User' }), null);
+});
+
+test('detectAiType: recognizes the "[bot]" login suffix as a secondary bot signal when type is absent', () => {
+	assert.equal(detectAiType({ login: 'copilot-swe-agent[bot]' }), 'copilot');
+	assert.equal(detectAiType({ login: 'dependabot[bot]' }), 'other-ai');
+});
+
+test('detectAiType: false positives — a human login containing an AI substring is not classified as AI', () => {
+	assert.equal(detectAiType({ login: 'copilotpilot', type: 'User' }), null);
+	assert.equal(detectAiType({ login: 'claudia-dev', type: 'User' }), null);
+	assert.equal(detectAiType({ login: 'openai-research-partner', type: 'User' }), null);
+	assert.equal(detectAiType({ login: 'codexterous', type: 'User' }), null);
+});
+
+test('detectAiType: an unrecognized Bot-typed account (e.g. a custom enterprise GitHub App) is classified as other-ai, not human', () => {
+	assert.equal(detectAiType({ login: 'acme-devbot[bot]', type: 'Bot' }), 'other-ai');
+	assert.equal(detectAiType({ login: 'internal-release-bot', type: 'Bot' }), 'other-ai');
+});
+
+// ---------------------------------------------------------------------------
+// detectCoAuthorAiType — pure function, no I/O
+// ---------------------------------------------------------------------------
+
+test('detectCoAuthorAiType: detects Claude Code from its noreply@anthropic.com trailer', () => {
+	const messages = ['Fix bug\n\nCo-Authored-By: Claude <noreply@anthropic.com>'];
+	assert.equal(detectCoAuthorAiType(messages), 'claude');
+});
+
+test('detectCoAuthorAiType: detects Copilot coding agent from its bot trailer', () => {
+	const messages = ['Add feature\n\nCo-authored-by: copilot-swe-agent[bot] <123+copilot-swe-agent[bot]@users.noreply.github.com>'];
+	assert.equal(detectCoAuthorAiType(messages), 'copilot');
+});
+
+test('detectCoAuthorAiType: returns null when no commit has a recognized AI trailer', () => {
+	const messages = ['Fix bug\n\nCo-authored-by: Jane Doe <jane@example.com>', 'Unrelated commit'];
+	assert.equal(detectCoAuthorAiType(messages), null);
+});
+
+test('detectCoAuthorAiType: returns null for an empty message list', () => {
+	assert.equal(detectCoAuthorAiType([]), null);
+});
+
+// ---------------------------------------------------------------------------
+// fetchPrCommitMessages — uses injectable fetcher
+// ---------------------------------------------------------------------------
+
+test('fetchPrCommitMessages: returns commit messages on success', async () => {
+	const mockFetcher = async () => ({ messages: ['first commit', 'second commit'], statusCode: 200 });
+	const { messages, error } = await fetchPrCommitMessages('owner', 'repo', 42, 'token', mockFetcher);
+	assert.deepEqual(messages, ['first commit', 'second commit']);
+	assert.equal(error, undefined);
+});
+
+test('fetchPrCommitMessages: propagates error from fetcher', async () => {
+	const mockFetcher = async () => ({ messages: [], statusCode: 404, error: 'Not Found' });
+	const { messages, error } = await fetchPrCommitMessages('owner', 'repo', 42, 'token', mockFetcher);
+	assert.deepEqual(messages, []);
+	assert.equal(error, 'Not Found');
 });
 
 // ---------------------------------------------------------------------------
@@ -144,6 +239,43 @@ test('fetchRepoPrs: propagates generic error from fetchPage', async () => {
 	const { prs, error } = await fetchRepoPrs('owner', 'repo', 'token', since, mockFetchPage);
 	assert.equal(prs.length, 0);
 	assert.equal(error, 'Network error');
+});
+
+test('fetchRepoPrs: stops waiting when a page fetch never settles', async () => {
+	const hangingFetchPage = async (): Promise<{ prs: any[] }> => new Promise(() => {});
+	const since = new Date('2024-01-01T00:00:00Z');
+	const { prs, error } = await fetchRepoPrs('owner', 'repo', 'token', since, hangingFetchPage, 5);
+	assert.deepEqual(prs, []);
+	assert.match(error ?? '', /Fetching PRs for owner\/repo page 1 timed out/);
+});
+
+// ---------------------------------------------------------------------------
+// fetchRepoPrsPage — end-to-end through the real `https.request` wiring,
+// verifying it reports a genuine transport failure distinctly from a
+// socket-inactivity timeout (PR #1919 follow-up item 1: the mislabelled
+// GitHub request timeout).
+// ---------------------------------------------------------------------------
+
+test('fetchRepoPrsPage: a genuine connection error is reported with its real code, not as a timeout', async () => {
+	const req = new FakeClientRequest();
+	const fakeRequestFn = (() => req) as unknown as typeof http.request;
+	const promise = fetchRepoPrsPage('owner', 'repo', 'token', 1, fakeRequestFn);
+	req.emit('error', Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }));
+	const { prs, error } = await promise;
+	assert.deepEqual(prs, []);
+	assert.match(error ?? '', /^Connection failed after \d+(\.\d+)?s \(ECONNRESET\): read ECONNRESET$/);
+	assert.doesNotMatch(error ?? '', /timed out|inactivity/i);
+});
+
+test('fetchRepoPrsPage: a socket-inactivity timeout is reported with the real elapsed time, not the configured limit', async () => {
+	const req = new FakeClientRequest();
+	const fakeRequestFn = (() => req) as unknown as typeof http.request;
+	const promise = fetchRepoPrsPage('owner', 'repo', 'token', 1, fakeRequestFn);
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	req.fireTimeout();
+	const { prs, error } = await promise;
+	assert.deepEqual(prs, []);
+	assert.match(error ?? '', /^No response for \d+(\.\d+)?s \(socket inactivity limit 15s\)$/);
 });
 
 // ---------------------------------------------------------------------------
@@ -322,4 +454,108 @@ test('fetchEnterprisePremiumBudgets: returns empty array when no budgets configu
 	const { budgets, error } = await fetchEnterprisePremiumBudgets('acme-corp', 'rajbos', 'token', mockFetcher);
 	assert.equal(error, undefined);
 	assert.deepEqual(budgets, []);
+});
+
+// ---------------------------------------------------------------------------
+// discoverGitHubRepos — reads real git remotes from temp repos
+// ---------------------------------------------------------------------------
+
+/** Create a temp dir with a git repo whose `origin` remote is `remoteUrl`. */
+function makeGitRepoWithRemote(remoteUrl: string): string {
+	const dir = fs.mkdtempSync(path.join(process.cwd(), 'discover-gh-repos-'));
+	childProcess.execSync('git init -q', { cwd: dir });
+	childProcess.execSync(`git remote add origin ${remoteUrl}`, { cwd: dir });
+	return dir;
+}
+
+test('discoverGitHubRepos: matches a github.com remote', async () => {
+	const dir = makeGitRepoWithRemote('https://github.com/rajbos/ai-engineering-fluency.git');
+	try {
+		const repos = await discoverGitHubRepos([dir]);
+		assert.deepEqual(repos, [{ owner: 'rajbos', repo: 'ai-engineering-fluency' }]);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('discoverGitHubRepos: ignores a non-github.com remote when no enterprise URI is configured', async () => {
+	const dir = makeGitRepoWithRemote('https://customer.ghe.com/rajbos/private-repo.git');
+	try {
+		const repos = await discoverGitHubRepos([dir]);
+		assert.deepEqual(repos, []);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('discoverGitHubRepos: matches a GHE.com remote when the enterprise URI is configured', async () => {
+	const dir = makeGitRepoWithRemote('https://customer.ghe.com/rajbos/private-repo.git');
+	try {
+		const repos = await discoverGitHubRepos([dir], 'https://customer.ghe.com');
+		assert.deepEqual(repos, [{ owner: 'rajbos', repo: 'private-repo' }]);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('discoverGitHubRepos: still matches github.com remotes when an enterprise URI is also configured', async () => {
+	const dir = makeGitRepoWithRemote('https://github.com/rajbos/ai-engineering-fluency.git');
+	try {
+		const repos = await discoverGitHubRepos([dir], 'https://customer.ghe.com');
+		assert.deepEqual(repos, [{ owner: 'rajbos', repo: 'ai-engineering-fluency' }]);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('discoverGitHubRepos: matches an on-prem GitHub Enterprise Server remote via SSH form', async () => {
+	const dir = makeGitRepoWithRemote('git@github.acme-corp.com:rajbos/internal-tool.git');
+	try {
+		const repos = await discoverGitHubRepos([dir], 'https://github.acme-corp.com');
+		assert.deepEqual(repos, [{ owner: 'rajbos', repo: 'internal-tool' }]);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('discoverGitHubRepos: skips non-git and missing paths without throwing', async () => {
+	const dir = makeGitRepoWithRemote('https://github.com/rajbos/ai-engineering-fluency.git');
+	const notARepo = fs.mkdtempSync(path.join(process.cwd(), 'discover-gh-notrepo-'));
+	try {
+		const repos = await discoverGitHubRepos([notARepo, path.join(process.cwd(), 'does-not-exist-xyz'), dir]);
+		assert.deepEqual(repos, [{ owner: 'rajbos', repo: 'ai-engineering-fluency' }]);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+		fs.rmSync(notARepo, { recursive: true, force: true });
+	}
+});
+
+test('discoverGitHubRepos: deduplicates repos reachable from multiple workspace paths', async () => {
+	const dir = makeGitRepoWithRemote('https://github.com/rajbos/ai-engineering-fluency.git');
+	try {
+		const repos = await discoverGitHubRepos([dir, dir]);
+		assert.deepEqual(repos, [{ owner: 'rajbos', repo: 'ai-engineering-fluency' }]);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('discoverGitHubRepos: does not match a github.com mention inside another host\'s URL', async () => {
+	const dir = makeGitRepoWithRemote('https://evil.example.com/github.com/rajbos/not-a-match.git');
+	try {
+		const repos = await discoverGitHubRepos([dir]);
+		assert.deepEqual(repos, []);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('discoverGitHubRepos: matches an ssh://git@ remote', async () => {
+	const dir = makeGitRepoWithRemote('ssh://git@github.com/rajbos/ai-engineering-fluency.git');
+	try {
+		const repos = await discoverGitHubRepos([dir]);
+		assert.deepEqual(repos, [{ owner: 'rajbos', repo: 'ai-engineering-fluency' }]);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });

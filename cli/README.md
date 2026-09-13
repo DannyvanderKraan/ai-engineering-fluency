@@ -1,4 +1,4 @@
-# Copilot Token Tracker CLI
+# AI Engineering Fluency CLI
 
 ![AI Engineering Fluency](../assets/AI%20Engineering%20Fluency%20-%20Transparent.png)
 
@@ -26,9 +26,10 @@ The `segment` command outputs a compact token usage string designed for use in s
 See [`../omp-segment/README.md`](../omp-segment/README.md) for full setup instructions.
 
 ```bash
-node dist/cli.js segment            # Use 15-minute cache (default)
-node dist/cli.js segment --refresh  # Force refresh, bypass cache
+node dist/cli.js segment              # Use 5-minute cache (default)
+node dist/cli.js segment --refresh    # Force refresh, bypass cache
 node dist/cli.js segment --hide-zero  # Output nothing when both counts are zero
+node dist/cli.js segment --json       # Structured JSON (today/month/30d) instead of the formatted string
 ```
 
 ## Requirements
@@ -44,6 +45,15 @@ The CLI reads the same local session sources as the extension, including:
 - OpenCode, Claude Code, and Gemini CLI sessions
 - Kiro IDE and Kiro CLI sessions
 - Other supported editor integrations wired through the shared adapter pipeline
+
+### Auto routing cost estimates
+
+VS Code Chat JSON and JSONL sessions retain request-level Auto routing attribution
+through daily, period, editor and billing-group aggregation. Copilot pricing applies
+the shared 10% discount only to the Auto-routed token subset; manual requests and
+provider pricing remain undiscounted. Debug-log token replacements retain the
+estimated Auto share per model, rather than treating the whole session as Auto.
+Older parsed-session caches are invalidated automatically to populate this metadata.
 
 ## License
 

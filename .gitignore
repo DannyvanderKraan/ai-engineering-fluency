@@ -1,6 +1,11 @@
 ﻿out
 dist
 node_modules
+.cache/
+desktop/.dev-profile
+desktop/electron-stdout.log
+desktop/electron-stderr.log
+desktop/release
 .impeccable/
 .vscode-test/
 *.vsix
@@ -10,6 +15,7 @@ reports/mutation/
 .github/scripts/models.txt
 .github/scripts/scraper.log
 .github/scripts/scraped-models.json
+.github/scripts/__pycache__/
 example.json
 log-example.txt
 eslint-all.txt
@@ -17,6 +23,11 @@ visualstudio-extension/.vs/
 visualstudio-extension/src/AIEngineeringFluency/bin/
 visualstudio-extension/src/AIEngineeringFluency/obj/
 visualstudio-extension/src/AIEngineeringFluency/cli-bundle/
+# Generated webview bundles (esbuild output copied from vscode-extension/dist/webview
+# at build time by CopyWebviewBundles in AIEngineeringFluency.csproj). Scoped to the
+# generated file types only — see docs/adr/VS-WEBVIEW-BUNDLE-SOURCING.md.
+visualstudio-extension/src/AIEngineeringFluency/webview/*.js
+visualstudio-extension/src/AIEngineeringFluency/webview/*.json
 visualstudio-extension/src/AIEngineeringFluencyRunner/bin/
 visualstudio-extension/src/AIEngineeringFluencyRunner/obj/
 visualstudio-extension/src/AIEngineeringFluencyRunner/cli-bundle/
@@ -40,3 +51,38 @@ jetbrains-plugin/.gradle/
 **/idea-sandbox/
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
+
+# Terraform (local runs only — CI uses ephemeral runners and a remote backend,
+# but local bootstrap runs like sharing-server/infra/bootstrap leave these
+# behind; state files can contain plaintext secrets, never commit them)
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+crash.log
+crash.*.log
+
+# Graphify output. manifest.json + cache/ ARE committed so a fresh clone or cloud
+# agent can run `graphify --update` from a warm cache instead of a full rescan.
+# Everything else (graph.json/html, GRAPH_REPORT.md, cost.json) is regenerable, and
+# .graphify_python/.graphify_root are absolute machine-specific paths — never commit those.
+graphify-out/*
+!graphify-out/manifest.json
+!graphify-out/cache/
+!graphify-out/cache/**
+
+# Stray/misplaced graphify cache (wrong working directory on a past run)
+src/graphify-out/
+
+# Visual view-diff output (screenshots, diff images and reports produced by
+# .github/skills/visual-view-diff). Regenerable from any checkout — the fixtures
+# that drive the renders are committed, the rendered PNGs are not.
+visual-output/
+
+# pr-risk-review skill scratch output (changeset facts, verdict, rendered
+# comment). Regenerated on every run by collect-changeset.js — never committed.
+pr-risk/
+
+# Generated cloud-agent session cache from copilot-setup-steps; contains only
+# ephemeral fetched timestamps/counts and is recreated on demand.
+usage-data/agent-sessions.json

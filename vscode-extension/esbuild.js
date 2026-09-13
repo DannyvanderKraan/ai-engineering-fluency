@@ -59,7 +59,11 @@ async function main() {
 			logviewer: 'src/webview/logviewer/main.ts',
 			maturity: 'src/webview/maturity/main.ts',
 			dashboard: 'src/webview/dashboard/main.ts',
-			'fluency-level-viewer': 'src/webview/fluency-level-viewer/main.ts',				environmental: 'src/webview/environmental/main.ts',		},
+			'fluency-level-viewer': 'src/webview/fluency-level-viewer/main.ts',
+			environmental: 'src/webview/environmental/main.ts',
+			efficiency: 'src/webview/efficiency/main.ts',
+			whatsnew: 'src/webview/whatsnew/main.ts',
+		},
 		bundle: true,
 		format: 'iife',
 		minify: production,
@@ -93,6 +97,22 @@ async function main() {
 		const jsonDst = path.join(webviewDistDir, file);
 		if (fs.existsSync(jsonSrc)) {
 			fs.copyFileSync(jsonSrc, jsonDst);
+		}
+	}
+
+	// Copy the codicon font (icon font VS Code itself uses) into dist/webview/codicons/ so
+	// webview panels can load it via webview.asWebviewUri() and render `.codicon-*` icons.
+	// Placed under dist/webview because most panels restrict localResourceRoots to that folder.
+	const codiconsSrcDir = path.join(__dirname, 'node_modules', '@vscode', 'codicons', 'dist');
+	const codiconsDstDir = path.join(webviewDistDir, 'codicons');
+	if (fs.existsSync(codiconsSrcDir)) {
+		fs.mkdirSync(codiconsDstDir, { recursive: true });
+		for (const file of ['codicon.css', 'codicon.ttf']) {
+			const codiconSrc = path.join(codiconsSrcDir, file);
+			const codiconDst = path.join(codiconsDstDir, file);
+			if (fs.existsSync(codiconSrc)) {
+				fs.copyFileSync(codiconSrc, codiconDst);
+			}
 		}
 	}
 

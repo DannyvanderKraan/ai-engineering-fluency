@@ -1,5 +1,8 @@
 import test from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
     mergeUsageAnalysis,
     analyzeContextReferences,
@@ -11,12 +14,16 @@ import {
     trackEnhancedMetrics,
     analyzeSessionUsage,
     getModelUsageFromSession,
+    mergeModelEfficiencyTokens,
     deriveConversationPatterns,
     isParsedSessionJson,
     createEmptySessionUsageAnalysis,
     applyModelTierClassification,
+    extractInvokedSkillNameFromPlainText,
     type UsageAnalysisDeps,
 } from '../../../src/usageAnalysis';
+import { createEmptyTaskClassificationResult } from '../../../src/taskClassification';
+import { calculateEstimatedCost } from '../../../src/tokenEstimation';
 import type {
     UsageAnalysisPeriod,
     SessionUsageAnalysis,
@@ -26,6 +33,52 @@ import type {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+test('Auto usage: JSON and delta sessions retain mixed per-request routing without discounting subagents', async () => {
+	const requests = [
+		{ requestId: 'auto', modelId: 'copilot/auto',
+			result: { promptTokens: 1_000_000, outputTokens: 500_000 },
+			response: [
+				{ kind: 'autoModeResolution', resolved: { id: 'gpt-4o', name: 'GPT-4o' } },
+				{ kind: 'toolInvocationSerialized', toolSpecificData: { kind: 'subagent', modelName: 'gpt-4o', prompt: 'abcd', result: 'efgh' } },
+			] },
+		{ requestId: 'manual', modelId: 'gpt-4o', result: { usage: { promptTokens: 2_000_000, completionTokens: 1_000_000 } } },
+		{ requestId: 'metadata-auto', modelId: 'auto', result: { metadata: { modelId: 'gpt-4o', promptTokens: 100, outputTokens: 50 } } },
+	];
+	const deps = { warn: (message: string) => assert.fail(message), ecosystems: [], tokenEstimators: { 'gpt-4o': 0.25 },
+		modelPricing: { 'gpt-4o': { inputCostPerMillion: 20, outputCostPerMillion: 40, copilotPricing: { inputCostPerMillion: 2, outputCostPerMillion: 4 } } } };
+	const session = { requests, selectedModel: { identifier: 'copilot/auto' } };
+	for (const [file, content] of [
+		['mixed.json', JSON.stringify(session)],
+		['mixed.jsonl', JSON.stringify({ kind: 0, v: session })],
+	]) {
+		const usage = await getModelUsageFromSession(deps, file, content);
+		assert.deepEqual(usage['gpt-4o'].autoRouting, { inputTokens: 1_000_100, outputTokens: 500_050 });
+		assert.equal(usage['gpt-4o'].inputTokens, 3_000_101);
+		assert.equal(usage['gpt-4o'].outputTokens, 1_500_051);
+		const provider = calculateEstimatedCost(usage, deps.modelPricing);
+		const copilot = calculateEstimatedCost(usage, deps.modelPricing, 'copilot');
+		assert.ok(Math.abs(copilot - (provider / 10 - 0.40004)) < 1e-10);
+	}
+});
+
+test('Auto usage: marker-only estimates work but session picker and CLI model changes do not imply discounts', async () => {
+	const deps = { warn: (message: string) => assert.fail(message), ecosystems: [], tokenEstimators: { 'gpt-4o': 0.25 }, modelPricing: {} };
+	const request = { requestId: '1', message: { text: 'abcd', parts: [{ text: 'abcd' }] },
+		response: [{ kind: 'autoModeResolution', resolved: { id: 'gpt-4o' } }, { kind: 'markdownContent', value: 'efgh' }] };
+	const usage = await getModelUsageFromSession(deps, 'estimate.json', JSON.stringify({ requests: [request] }));
+	assert.deepEqual(usage['gpt-4o'].autoRouting, { inputTokens: 1, outputTokens: 1 });
+	const manual = await getModelUsageFromSession(deps, 'manual.json', JSON.stringify({
+		selectedModel: { identifier: 'copilot/auto' }, requests: [{ modelId: 'gpt-4o', result: { promptTokens: 10, outputTokens: 5 } }],
+	}));
+	assert.equal(manual['gpt-4o'].autoRouting, undefined);
+	const cli = await getModelUsageFromSession(deps, 'cli.jsonl', [
+		{ type: 'session.start', data: { selectedModel: 'auto' } },
+		{ type: 'session.model_change', data: { newModel: 'gpt-4o' } },
+		{ type: 'session.shutdown', data: { modelMetrics: { 'gpt-4o': { usage: { inputTokens: 10, outputTokens: 5 } } } } },
+	].map(event => JSON.stringify(event)).join('\n'));
+	assert.equal(cli['gpt-4o'].autoRouting, undefined);
+});
 
 function emptyRefs(): ContextReferenceUsage {
     return {
@@ -42,6 +95,7 @@ function emptyAnalysis(): SessionUsageAnalysis {
         modeUsage: { ask: 0, edit: 0, agent: 0, plan: 0, customAgent: 0, cli: 0 },
         contextReferences: emptyRefs(),
         mcpTools: { total: 0, byServer: {}, byTool: {} },
+        taskClassification: createEmptyTaskClassificationResult(),
         modelSwitching: {
             uniqueModels: [], modelCount: 0, switchCount: 0,
             tiers: { standard: [], premium: [], unknown: [] },
@@ -79,13 +133,15 @@ function emptyPeriod(): UsageAnalysisPeriod {
         sessionDuration: { totalDurationMs: 0, avgDurationMs: 0, avgFirstProgressMs: 0, avgTotalElapsedMs: 0, avgWaitTimeMs: 0, activeDurationMs: 0 },
         conversationPatterns: { multiTurnSessions: 0, singleTurnSessions: 0, avgTurnsPerSession: 0, maxTurnsInSession: 0 },
         agentTypes: { editsAgent: 0, defaultAgent: 0, workspaceAgent: 0, other: 0 },
+        taskCategoryPrimarySessions: {},
+        taskCategoryWeightedSessions: {},
     };
 }
 
 // Minimal mock deps factory for file-based async functions
 function makeMockDeps(overrides: Partial<{
     openCodeIsMatch: boolean;
-    openCodeModelUsage: () => Promise<Record<string, { inputTokens: number; outputTokens: number }>>;
+    openCodeModelUsage: () => Promise<Record<string, { inputTokens: number; outputTokens: number, sessions: 0}>>;
 }> = {}): UsageAnalysisDeps {
     // Build a minimal ecosystem adapter for openCode if needed
     const ecosystems: any[] = [];
@@ -109,8 +165,8 @@ function makeMockDeps(overrides: Partial<{
         ecosystems,
         tokenEstimators: { 'gpt-4o': 0.25, 'claude-sonnet-4.5': 0.25 },
         modelPricing: {
-            'gpt-4o': { inputCostPerMillion: 2.5, outputCostPerMillion: 10, tier: 'standard', category: 'Standard', multiplier: 0 },
-            'claude-sonnet-4.5': { inputCostPerMillion: 3, outputCostPerMillion: 15, tier: 'premium', category: 'Premium', multiplier: 1 },
+            'gpt-4o': { inputCostPerMillion: 2.5, outputCostPerMillion: 10, tier: 'standard', category: 'Standard' },
+            'claude-sonnet-4.5': { inputCostPerMillion: 3, outputCostPerMillion: 15, tier: 'premium', category: 'Premium' },
         } as any,
         toolNameMap: {},
     };
@@ -143,6 +199,66 @@ test('mergeUsageAnalysis: accumulates tool call counts across sessions', () => {
     assert.equal(period.toolCalls.byTool['listFiles'], 1);
 });
 
+test('mergeUsageAnalysis: accumulates model efficiency counters per model', () => {
+    const period = emptyPeriod();
+    const a = emptyAnalysis();
+    a.modelEfficiency = {
+        'gpt-4o': {
+            calls: 3, editTurns: 2, oneShotEditTurns: 1, retries: 1, selfCorrections: 0,
+            editToolCalls: 3, inputTokens: 0, outputTokens: 0, cachedReadTokens: 0, cost: 0,
+        },
+    };
+    mergeUsageAnalysis(period, a);
+    mergeUsageAnalysis(period, a);
+
+    assert.equal(period.modelEfficiency?.['gpt-4o'].calls, 6);
+    assert.equal(period.modelEfficiency?.['gpt-4o'].editTurns, 4);
+    assert.equal(period.modelEfficiency?.['gpt-4o'].oneShotEditTurns, 2);
+    assert.equal(period.modelEfficiency?.['gpt-4o'].retries, 2);
+});
+
+test('mergeUsageAnalysis: leaves period.modelEfficiency absent when analysis has none', () => {
+    const period = emptyPeriod();
+    mergeUsageAnalysis(period, emptyAnalysis());
+    assert.equal(period.modelEfficiency, undefined);
+});
+
+test('mergeUsageAnalysis: uses uncapped correction counts and tracks user-correction sessions separately', () => {
+    const period = emptyPeriod();
+    const analysis = emptyAnalysis();
+    analysis.correctionMoments = [{
+        type: 'tool-error', turnNumber: 1, timestamp: null, snippet: 'Tool failed: edit', tool: 'edit',
+    }];
+    analysis.correctionCounts = {
+        userCorrections: 2, editRetries: 60, editSelfCorrections: 4,
+        toolErrors: 70, toolErrorsRetried: 50, agentSelfCorrections: 1, escalatedUserCorrections: 1,
+    };
+    mergeUsageAnalysis(period, analysis);
+    assert.equal(period.corrections?.editRetries, 60);
+    assert.equal(period.corrections?.toolErrors, 70);
+    assert.equal(period.corrections?.sessionsWithMoments, 1);
+    assert.equal(period.corrections?.sessionsWithUserCorrections, 1);
+    assert.equal(period.corrections?.sessionsWithEscalations, 1);
+});
+
+test('mergeModelEfficiencyTokens: folds per-session model usage tokens and cost into the period', () => {
+    const period = emptyPeriod();
+    mergeModelEfficiencyTokens(period, {
+        'gpt-4o': { inputTokens: 1_000_000, outputTokens: 100_000, cachedReadTokens: 250_000, sessions: 0},
+    }, { 'gpt-4o': { inputCostPerMillion: 2.5, outputCostPerMillion: 10 } } as any);
+
+    const c = period.modelEfficiency?.['gpt-4o'];
+    assert.ok(c);
+    assert.equal(c.inputTokens, 1_000_000);
+    assert.equal(c.outputTokens, 100_000);
+    assert.equal(c.cachedReadTokens, 250_000);
+    assert.ok(c.cost > 0);
+    // Empty usage is a no-op and does not create the aggregate
+    const untouched = emptyPeriod();
+    mergeModelEfficiencyTokens(untouched, {}, {});
+    assert.equal(untouched.modelEfficiency, undefined);
+});
+
 test('mergeUsageAnalysis: accumulates mode usage counts', () => {
     const period = emptyPeriod();
     const a = emptyAnalysis();
@@ -168,6 +284,48 @@ test('mergeUsageAnalysis: accumulates context reference counts', () => {
     assert.equal(period.contextReferences.file, 6);
     assert.equal(period.contextReferences.workspace, 4);
     assert.equal(period.contextReferences.codebase, 2);
+});
+
+test('mergeUsageAnalysis: aggregates task-category primary and weighted sessions', () => {
+    const period = emptyPeriod();
+    const a1 = emptyAnalysis();
+    a1.taskClassification.primaryCategory = 'Coding';
+    a1.taskClassification.categoryShares = {
+    	Coding: 0.75,
+    	Testing: 0.25,
+    	Debugging: 0,
+    	'Feature Dev': 0,
+    	Refactoring: 0,
+    	Exploration: 0,
+    	Planning: 0,
+    	Delegation: 0,
+    	'Git Ops': 0,
+    	'Build/Deploy': 0,
+    	Brainstorming: 0,
+    	Conversation: 0,
+    };
+    const a2 = emptyAnalysis();
+    a2.taskClassification.primaryCategory = 'Testing';
+    a2.taskClassification.categoryShares = {
+    	Coding: 0.2,
+    	Testing: 0.8,
+    	Debugging: 0,
+    	'Feature Dev': 0,
+    	Refactoring: 0,
+    	Exploration: 0,
+    	Planning: 0,
+    	Delegation: 0,
+    	'Git Ops': 0,
+    	'Build/Deploy': 0,
+    	Brainstorming: 0,
+    	Conversation: 0,
+    };
+    mergeUsageAnalysis(period, a1);
+    mergeUsageAnalysis(period, a2);
+    assert.equal(period.taskCategoryPrimarySessions?.Coding, 1);
+    assert.equal(period.taskCategoryPrimarySessions?.Testing, 1);
+    assert.ok(Math.abs((period.taskCategoryWeightedSessions?.Coding ?? 0) - 0.95) < 1e-9);
+    assert.ok(Math.abs((period.taskCategoryWeightedSessions?.Testing ?? 0) - 1.05) < 1e-9);
 });
 
 test('mergeUsageAnalysis: accumulates code context line counts', () => {
@@ -756,7 +914,7 @@ test('getModelUsageFromSession: delegates to openCode adapter for openCode sessi
         openCodeIsMatch: true,
         openCodeModelUsage: async () => {
             called = true;
-            return { 'gpt-4o': { inputTokens: 99, outputTokens: 11 } };
+            return { 'gpt-4o': { inputTokens: 99, outputTokens: 11, sessions: 0} };
         },
     });
     const result = await getModelUsageFromSession(deps, '/opencode/session.db', '');
@@ -806,7 +964,7 @@ test('getModelUsageFromSession: CLI session without cache fields leaves cachedRe
             shutdownType: 'routine',
             modelMetrics: {
                 'claude-sonnet-4.6': {
-                    usage: { inputTokens: 100000, outputTokens: 2000 },
+                    usage: { inputTokens: 100000, outputTokens: 2000, sessions: 0},
                     // no cacheReadTokens / cacheWriteTokens
                 },
             },
@@ -892,6 +1050,27 @@ test('getModelUsageFromSession: CLI live session gives far lower estimate than o
 // calculateModelSwitching
 // ---------------------------------------------------------------------------
 
+test('Auto model switching and usage buckets use resolved models in delta requests', async () => {
+	const deps = makeMockDeps();
+	const request = { requestId: 'auto-turn', modelId: 'auto', message: { text: 'hello' },
+		result: { promptTokens: 100, outputTokens: 40 },
+		response: [{ kind: 'autoModeResolution', resolved: { id: 'gpt-4o' } }] };
+	const content = [
+		{ kind: 0, v: { requests: [], selectedModel: { identifier: 'copilot/auto' } } },
+		{ kind: 2, k: ['requests'], v: [request] },
+	].map(event => JSON.stringify(event)).join('\n');
+	const analysis = emptyAnalysis();
+	await calculateModelSwitching(deps, 'auto-buckets.jsonl', analysis, content);
+	assert.equal(analysis.modelSwitching.standardRequests, 1);
+	assert.equal(analysis.modelSwitching.mediumCostRequests, 1);
+	assert.equal(analysis.modelSwitching.unknownRequests, 0);
+	const usage = await analyzeSessionUsage(deps, 'auto-buckets.jsonl', content);
+	assert.deepEqual(usage.modelSwitching.uniqueModels, ['gpt-4o']);
+	assert.equal(usage.modelSwitching.standardRequests, 1);
+	assert.equal(usage.modelSwitching.mediumCostRequests, 1);
+	assert.equal(usage.modelSwitching.unknownRequests, 0);
+});
+
 test('calculateModelSwitching: empty requests list leaves analysis unchanged', async () => {
     const content = JSON.stringify({ requests: [] });
     const deps = makeMockDeps();
@@ -931,6 +1110,13 @@ test('calculateModelSwitching: two models from different tiers sets hasMixedTier
         ]
     });
     const deps = makeMockDeps();
+    // Override with distinct cost tiers so the low/medium cost-bucket split is meaningful:
+    // gpt-4o priced under $2/M (low bucket), claude-sonnet-4.5 priced $2-5/M (medium bucket).
+    deps.modelPricing = {
+        ...deps.modelPricing,
+        'gpt-4o': { ...deps.modelPricing['gpt-4o'], inputCostPerMillion: 1.5 },
+        'claude-sonnet-4.5': { ...deps.modelPricing['claude-sonnet-4.5'], inputCostPerMillion: 3 },
+    };
     const analysis = emptyAnalysis();
     await calculateModelSwitching(deps, FAKE_JSON_PATH, analysis, content);
     assert.equal(analysis.modelSwitching.modelCount, 2);
@@ -1170,6 +1356,164 @@ test('analyzeSessionUsage: CLI JSONL session extracts LOC from successful edit t
     assert.equal(result.editScope?.totalEditedFiles, 1);
     assert.ok(result.editScope?.languageUsage?.['ts'], 'expected ts language usage');
     assert.equal(result.editScope?.languageUsage?.['ts']?.linesAdded, 4);
+});
+
+// ---------------------------------------------------------------------------
+// extractInvokedSkillNameFromPlainText — Copilot CLI's user-typed slash invocation
+// ---------------------------------------------------------------------------
+
+test('extractInvokedSkillNameFromPlainText: resolves the command name from a bare slash invocation', () => {
+    assert.equal(extractInvokedSkillNameFromPlainText('/graphify'), 'graphify');
+    assert.equal(extractInvokedSkillNameFromPlainText('/chronicle standup'), 'chronicle');
+    assert.equal(extractInvokedSkillNameFromPlainText('/code-review'), 'code-review');
+});
+
+test('extractInvokedSkillNameFromPlainText: returns null for non-slash or non-string content', () => {
+    assert.equal(extractInvokedSkillNameFromPlainText('can you help me fix this?'), null);
+    assert.equal(extractInvokedSkillNameFromPlainText(''), null);
+    assert.equal(extractInvokedSkillNameFromPlainText(null), null);
+    assert.equal(extractInvokedSkillNameFromPlainText(undefined), null);
+    assert.equal(extractInvokedSkillNameFromPlainText(123), null);
+});
+
+test('extractInvokedSkillNameFromPlainText: ignores slash commands not at the start', () => {
+    assert.equal(extractInvokedSkillNameFromPlainText('some text /graphify'), null);
+    assert.equal(extractInvokedSkillNameFromPlainText('check the path /usr/bin'), null);
+});
+
+test('analyzeSessionUsage: Copilot CLI autonomous "skill" tool call populates skillCalls', async () => {
+    // Copilot CLI wraps an autonomously-invoked skill behind a generic "skill" tool.execution_start
+    // (lowercase, unlike Claude Code's "Skill"), with the real name in data.arguments.skill.
+    const events = [
+        { type: 'session.start', data: { selectedModel: 'claude-sonnet-5' }, timestamp: '2026-05-01T10:00:00Z' },
+        { type: 'tool.execution_start', data: { toolCallId: 'c1', toolName: 'skill', arguments: { skill: 'sync-host-views' } } },
+    ];
+    const content = events.map(e => JSON.stringify(e)).join('\n');
+    const deps = makeMockDeps();
+    const result = await analyzeSessionUsage(deps, '/home/user/.copilot/session-state/abc/events.jsonl', content);
+    assert.equal(result.skillCalls?.byName['sync-host-views'], 1);
+    assert.equal(result.skillCalls?.total, 1);
+    // Additive: the raw "skill" wrapper tool call is still counted as-is, unchanged.
+    assert.equal(result.toolCalls.byTool['skill'], 1);
+});
+
+test('analyzeSessionUsage: Copilot CLI user-typed slash invocation (plain text, no wrapper) populates skillCalls', async () => {
+    // Unlike Claude Code's <command-message>/<command-name> tags, Copilot CLI's explicit
+    // slash invocation is just the literal user-typed text, e.g. "/graphify".
+    const events = [
+        { type: 'session.start', data: { selectedModel: 'claude-sonnet-5' }, timestamp: '2026-05-01T10:00:00Z' },
+        { type: 'user.message', data: { content: '/graphify' } },
+    ];
+    const content = events.map(e => JSON.stringify(e)).join('\n');
+    const deps = makeMockDeps();
+    const result = await analyzeSessionUsage(deps, '/home/user/.copilot/session-state/abc/events.jsonl', content);
+    assert.equal(result.skillCalls?.byName['graphify'], 1);
+    assert.equal(result.skillCalls?.total, 1);
+});
+
+test('analyzeSessionUsage: Copilot CLI regular user message (no slash) does not populate skillCalls', async () => {
+    const events = [
+        { type: 'session.start', data: { selectedModel: 'claude-sonnet-5' }, timestamp: '2026-05-01T10:00:00Z' },
+        { type: 'user.message', data: { content: 'can you fix the failing test?' } },
+    ];
+    const content = events.map(e => JSON.stringify(e)).join('\n');
+    const deps = makeMockDeps();
+    const result = await analyzeSessionUsage(deps, '/home/user/.copilot/session-state/abc/events.jsonl', content);
+    assert.equal(result.skillCalls?.total ?? 0, 0);
+});
+
+test('analyzeSessionUsage: generated CLI messages do not become user corrections', async () => {
+    const events = [
+        { type: 'session.start', data: { selectedModel: 'claude-sonnet-5' } },
+        { type: 'user.message', data: { content: 'Stop doing that', source: 'agent-parent-session', parentAgentTaskId: 'subagent-task' } },
+        { type: 'user.message', data: { content: '<skill-context>you deleted files</skill-context>', source: 'skill-test' } },
+        { type: 'user.message', data: { content: '<cross_session_message>No blocker remains</cross_session_message>' } },
+        { type: 'user.message', data: { content: 'please revert that', parentAgentTaskId: 'main-agent-task' } },
+    ];
+    const content = events.map(e => JSON.stringify(e)).join('\n');
+    const result = await analyzeSessionUsage(
+        makeMockDeps(),
+        '/home/user/.copilot/session-state/abc/events.jsonl',
+        content,
+    );
+    assert.equal(result.correctionCounts?.userCorrections, 1);
+    assert.equal(result.correctionMoments?.filter(m => m.type === 'user-correction').length, 1);
+    assert.match(result.correctionMoments?.find(m => m.type === 'user-correction')?.snippet ?? '', /revert/);
+});
+
+test('analyzeSessionUsage: CLI JSONL session produces model efficiency counters with retry detection', async () => {
+    const events = [
+        { type: 'session.start', data: { selectedModel: 'claude-sonnet-4.6' }, timestamp: '2026-05-01T10:00:00Z' },
+        { type: 'user.message', data: { text: 'fix the bug' } },
+        { type: 'tool.execution_start', data: { toolCallId: 'c1', toolName: 'edit', arguments: { path: '/repo/a.ts', old_str: 'x', new_str: 'y' } } },
+        { type: 'tool.execution_complete', data: { toolCallId: 'c1', success: false } },
+        // Immediate same-file retry after the failed edit
+        { type: 'tool.execution_start', data: { toolCallId: 'c2', toolName: 'edit', arguments: { path: '/repo/a.ts', old_str: 'x2', new_str: 'y' } } },
+        { type: 'tool.execution_complete', data: { toolCallId: 'c2', success: true } },
+        { type: 'user.message', data: { text: 'now the other file' } },
+        { type: 'tool.execution_start', data: { toolCallId: 'c3', toolName: 'create', arguments: { path: '/repo/b.ts', file_text: 'ok\n' } } },
+        { type: 'tool.execution_complete', data: { toolCallId: 'c3', success: true } },
+    ];
+    const content = events.map(e => JSON.stringify(e)).join('\n');
+    const deps = makeMockDeps();
+    const result = await analyzeSessionUsage(deps, '/home/user/.copilot/session-state/abc/events.jsonl', content);
+    const c = result.modelEfficiency?.['claude-sonnet-4.6'];
+    assert.ok(c, 'expected efficiency counters for the session model');
+    assert.equal(c.calls, 2);
+    assert.equal(c.editTurns, 2);
+    assert.equal(c.retries, 1);
+    assert.equal(c.selfCorrections, 0);
+    assert.equal(c.oneShotEditTurns, 1);
+    assert.equal(c.editToolCalls, 3);
+});
+
+test('analyzeSessionUsage: JSON session produces model efficiency counters from textEditGroup responses', async () => {
+    const content = JSON.stringify({
+        requests: [
+            {
+                modelId: 'copilot/gpt-4o',
+                message: { text: 'edit it' },
+                result: { promptTokens: 10, outputTokens: 5 },
+                response: [
+                    { kind: 'textEditGroup', uri: { path: '/src/a.ts' } },
+                    { kind: 'toolInvocationSerialized', toolId: 'run_in_terminal' },
+                    // Re-edit of the same file after a tool invocation → self-correction
+                    { kind: 'textEditGroup', uri: { path: '/src/a.ts' } },
+                ],
+            },
+            { modelId: 'copilot/gpt-4o', message: { text: 'just a question' }, result: { promptTokens: 10, outputTokens: 5 } },
+        ]
+    });
+    const deps = makeMockDeps();
+    const result = await analyzeSessionUsage(deps, FAKE_JSON_PATH, content);
+    const c = result.modelEfficiency?.['gpt-4o'];
+    assert.ok(c, 'expected efficiency counters for gpt-4o');
+    assert.equal(c.calls, 2);
+    assert.equal(c.editTurns, 1);
+    assert.equal(c.selfCorrections, 1);
+    assert.equal(c.retries, 0);
+    assert.equal(c.oneShotEditTurns, 0);
+});
+
+test('analyzeSessionUsage: delta JSONL session produces model efficiency counters', async () => {
+    const request = {
+        requestId: 'req-1',
+        modelId: 'copilot/gpt-4o',
+        timestamp: 1700000000000,
+        response: [
+            { kind: 'textEditGroup', uri: { path: '/src/foo.ts' }, edits: [[{ text: 'line1\n', range: { startLineNumber: 1, endLineNumber: 1 } }]] },
+        ]
+    };
+    const line0 = JSON.stringify({ kind: 0, v: { version: 3, creationDate: 1700000000000, requests: [] } });
+    const line1 = JSON.stringify({ kind: 2, k: ['requests'], v: request });
+    const content = [line0, line1].join('\n');
+    const deps = makeMockDeps();
+    const result = await analyzeSessionUsage(deps, '/tmp/test-session.jsonl', content);
+    const c = result.modelEfficiency?.['gpt-4o'];
+    assert.ok(c, 'expected efficiency counters for gpt-4o from delta JSONL');
+    assert.equal(c.calls, 1);
+    assert.equal(c.editTurns, 1);
+    assert.equal(c.oneShotEditTurns, 1);
 });
 
 test('analyzeSessionUsage: CLI JSONL session extracts LOC from successful create tool calls', async () => {
@@ -2237,6 +2581,53 @@ test('analyzeSessionUsage: CLI session.model_change event is processed without e
 });
 
 // ---------------------------------------------------------------------------
+// analyzeSessionUsage: Copilot desktop app CLI split (cliApp)
+// ---------------------------------------------------------------------------
+
+function writeCliSessionFixture(t: test.TestContext, clientName: string): string {
+    // The split only applies under ~/.copilot/session-state/, so mirror that layout.
+    const dir = fs.mkdtempSync(path.join(process.cwd(), 'cliapp-split-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const sessionDir = path.join(dir, '.copilot', 'session-state', 'cccccccc-cccc-cccc-cccc-cccccccccccc');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const sessionFile = path.join(sessionDir, 'events.jsonl');
+    const content = [
+        JSON.stringify({ type: 'session.start', data: { selectedModel: 'gpt-4o' } }),
+        JSON.stringify({ type: 'user.message', data: {} }),
+        JSON.stringify({ type: 'user.message', data: {} }),
+    ].join('\n');
+    fs.writeFileSync(sessionFile, content);
+    fs.writeFileSync(path.join(sessionDir, 'workspace.yaml'), `cwd: C:\\repo\nclient_name: ${clientName}\n`);
+    return sessionFile;
+}
+
+test('analyzeSessionUsage: Copilot App CLI session (client_name github/autopilot) splits cli into cliApp', async (t) => {
+    const sessionFile = writeCliSessionFixture(t, 'github/autopilot');
+    const deps = makeMockDeps();
+    const result = await analyzeSessionUsage(deps, sessionFile);
+    assert.equal(result.modeUsage.cli, 0, 'app-hosted session should not count as terminal CLI');
+    assert.equal(result.modeUsage.cliApp, 2, 'app-hosted session user messages should count as cliApp');
+});
+
+test('analyzeSessionUsage: terminal CLI session (client_name github/cli) stays in cli', async (t) => {
+    const sessionFile = writeCliSessionFixture(t, 'github/cli');
+    const deps = makeMockDeps();
+    const result = await analyzeSessionUsage(deps, sessionFile);
+    assert.equal(result.modeUsage.cli, 2, 'terminal CLI session should stay in cli');
+    assert.equal(result.modeUsage.cliApp, undefined, 'cliApp should not be set for terminal CLI sessions');
+});
+
+test('mergeUsageAnalysis: folds cliApp into the period aggregate', () => {
+    const period = emptyPeriod();
+    const a = emptyAnalysis();
+    a.modeUsage.cli = 3;
+    a.modeUsage.cliApp = 2;
+    mergeUsageAnalysis(period, a);
+    assert.equal(period.modeUsage.cli, 3);
+    assert.equal(period.modeUsage.cliApp, 2);
+});
+
+// ---------------------------------------------------------------------------
 // analyzeSessionUsage: JetBrains partition file path (agent/ask mode)
 // ---------------------------------------------------------------------------
 
@@ -3172,4 +3563,45 @@ test('calculateModelSwitching: delta JSONL kind=2 requests event with result.det
     await calculateModelSwitching(deps, '/tmp/test.jsonl', analysis, content);
     // getModelFromRequest falls back to 'gpt-4' when no display name match
     assert.ok(analysis.modelSwitching.totalRequests >= 1, 'request with result.details should be counted');
+});
+
+test('analyzeSessionUsage: non-delta JSONL classifies testing from shell command', async () => {
+    const content = [
+    	JSON.stringify({ type: 'user.message', data: { content: 'run tests' } }),
+    	JSON.stringify({ type: 'tool.execution_start', data: { toolName: 'bash', arguments: { command: 'npm test' }, toolCallId: '1' } }),
+    	JSON.stringify({ type: 'tool.execution_complete', data: { toolCallId: '1', success: true, result: { content: 'ok' } } }),
+    ].join('\n');
+    const deps = makeMockDeps();
+    const result = await analyzeSessionUsage(deps, '/tmp/test.jsonl', content);
+    assert.equal(result.taskClassification.primaryCategory, 'Testing');
+    assert.ok((result.taskClassification.categoryShares.Testing ?? 0) > 0);
+});
+
+test('analyzeSessionUsage: delta JSONL classifies coding from edit tool use', async () => {
+    const req = {
+    	requestId: 'r1',
+    	message: { text: 'implement this change' },
+    	response: [{ kind: 'toolInvocationSerialized', toolName: 'edit' }],
+    	result: { promptTokens: 10, outputTokens: 5 },
+    };
+    const line0 = JSON.stringify({ kind: 0, v: { version: 3, inputState: { mode: 'agent' }, requests: [req] } });
+    const deps = makeMockDeps();
+    const result = await analyzeSessionUsage(deps, '/tmp/test.jsonl', line0);
+    assert.equal(result.taskClassification.primaryCategory, 'Coding');
+    assert.equal(result.taskClassification.turnCount, 1);
+});
+
+test('analyzeSessionUsage: plan mode biases primary category to Planning', async () => {
+    const req = {
+    	requestId: 'r1',
+    	message: { text: 'create a plan' },
+    	result: { promptTokens: 10, outputTokens: 5 },
+    };
+    const line0 = JSON.stringify({
+    	kind: 0,
+    	v: { version: 3, inputState: { mode: { kind: 'agent', id: 'file:///workspace/plan-agent/Plan.agent.md' } }, requests: [req] }
+    });
+    const deps = makeMockDeps();
+    const result = await analyzeSessionUsage(deps, '/tmp/test.jsonl', line0);
+    assert.equal(result.taskClassification.primaryCategory, 'Planning');
 });

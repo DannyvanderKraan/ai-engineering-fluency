@@ -11,6 +11,7 @@ import customizationPatternsData from './customizationPatterns.json';
 import { resolveFileUri } from './workspacePathResolver';
 import {
 	fileUriToPath,
+	getRepoNameFromWorkspacePath,
 	hasWindowsDriveSegment,
 	normalizePath,
 	normalizePathForComparison,
@@ -20,14 +21,17 @@ import {
 	toPlatformPath
 } from './utils/pathUtils';
 import { withErrorRecoverySync } from './utils/errors';
-import { isGuidMcpTool } from './utils/toolUtils';
+import { isGuidMcpTool, lookupKnownToolName } from './utils/toolUtils';
+import { isCopilotAppClientName } from './copilotCliStore';
 
 export {
 	fileUriToPath,
 	normalizePath,
 	normalizePathForComparison,
 	normalizePathForDedup,
-	normalizePathSeparators
+	normalizePathSeparators,
+	normalizeToRepoRoot,
+	getRepoNameFromWorkspacePath
 } from './utils/pathUtils';
 
 
@@ -120,6 +124,30 @@ export function extractWorkspaceIdFromSessionPath(sessionFilePath: string): stri
 	} catch {
 		return undefined;
 	}
+}
+
+const DEBUG_LOG_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Extension-folder spellings Copilot Chat's debug-logs directory has shipped under. */
+const DEBUG_LOG_EXTENSION_FOLDERS = ['GitHub.copilot-chat', 'github.copilot-chat', 'GitHub.copilot', 'github.copilot'];
+
+/**
+ * Returns the ordered list of candidate `main.jsonl` debug-log paths for a VS Code Copilot
+ * Chat session file — callers try each in order and use the first one that exists. Returns
+ * undefined for any session file that isn't UUID-named inside a `workspaceStorage/<hash>`
+ * folder, the only shape that has a debug log (see
+ * docs/logFilesSchema/vscode-chat-debug-log-format.md).
+ *
+ * Single source of truth for this path shape: shared by readTokensFromDebugLog() (one
+ * session) and the TTFT bulk scan (many sessions) in extension.ts.
+ */
+export function resolveDebugLogCandidatePaths(sessionFilePath: string): string[] | undefined {
+	const norm = normalizePath(sessionFilePath);
+	const sessionId = path.basename(sessionFilePath, path.extname(sessionFilePath));
+	if (!DEBUG_LOG_SESSION_ID_RE.test(sessionId)) { return undefined; }
+	const wsHashMatch = norm.match(/^(.*\/workspaceStorage\/[^/]+)\//);
+	if (!wsHashMatch) { return undefined; }
+	const workspaceHashDir = sessionFilePath.substring(0, wsHashMatch[1].length);
+	return DEBUG_LOG_EXTENSION_FOLDERS.map(extFolder => path.join(workspaceHashDir, extFolder, 'debug-logs', sessionId, 'main.jsonl'));
 }
 
 /** Escape all regex special characters in a literal string fragment. */
@@ -469,7 +497,21 @@ function isVSCodeRoot(lower: string): boolean {
  * @internal
  */
 function detectToolEditorFromRootPath(lower: string): string | undefined {
+	// Cline's storage root lives inside a VS Code variant's globalStorage
+	// (a path containing /code/ or /cursor/), so its specific extension-id
+	// marker must be checked before the generic VS Code family matches.
+	if (lower.includes('saoudrizwan.claude-dev')) { return 'Cline'; }
 	if (lower.includes('opencode')) { return 'OpenCode'; }
+	// Kilo Code (OpenCode fork) data root ~/.local/share/kilo.
+	if (lower.endsWith('/kilo')) { return 'Kilo Code'; }
+	// Hermes Agent's root is <HERMES_HOME> (Windows: %LOCALAPPDATA%/hermes, else ~/.hermes).
+	// 'hermes' doesn't collide with 'copilot'/'code'/'cursor', but checked here alongside
+	// the other CLI-tool root markers for consistency.
+	if (lower.includes('hermes')) { return 'Hermes'; }
+	// OpenAI Codex CLI home (~/.codex). The dot-prefix keeps this from colliding with
+	// the generic 'code' substring checks further down ('.codex' never matches '/code/'
+	// or endsWith('code')), but it must still run before isVSCodeRoot for clarity.
+	if (lower.includes('.codex')) { return 'Codex CLI'; }
 	// Kiro CLI root (~/.kiro) must be checked before the Kiro IDE root — both
 	// contain 'kiro' but only the CLI root has the dot-prefixed folder.
 	if (lower.includes('/.kiro')) { return 'Kiro CLI'; }
@@ -493,6 +535,16 @@ export function getEditorNameFromRoot(rootPath: string): string {
 	// Eclipse roots contain "copilot" (com.microsoft.copilot.eclipse.core), so they
 	// must be matched before the generic Copilot CLI check below.
 	if (lower.includes('com.microsoft.copilot.eclipse')) { return 'Eclipse'; }
+	// Devin (Cognition Labs' desktop IDE, a fork/rebrand of Windsurf) has its own
+	// dataFolderName '.devin' / install marker 'devin-desktop'. Neither substring
+	// collides with 'copilot' or 'code', but it is checked early for consistency
+	// with the other editor-specific guards in this function.
+	if (lower.includes('.devin') || lower.includes('devin-desktop')) { return 'Devin'; }
+	// Devin CLI (separate ACP-based CLI agent tool, distinct from the Devin desktop app
+	// above) stores its global sessions.db under a 'devin/cli' data dir. Checked before
+	// the generic checks below since 'devin' alone would otherwise be ambiguous with the
+	// desktop app guard above (that one requires '.devin' or 'devin-desktop' specifically).
+	if (lower.includes('devin/cli')) { return 'Devin CLI'; }
 	// Check obvious markers first (JetBrains must precede Copilot CLI)
 	if (isJetBrainsRoot(lower)) { return 'JetBrains'; }
 	if (isCopilotCliRoot(lower)) { return 'Copilot CLI'; }
@@ -601,14 +653,58 @@ export function isMcpTool(toolName: string): boolean {
 /**
  * Normalize an MCP tool name so that equivalent tools from different servers
  * (local stdio vs remote) are counted under a single canonical key in "By Tool" views.
- * Maps mcp_github_github_<action> → mcp_io_github_git_<action>.
+ *
+ * Each rule maps a known equivalent prefix to a canonical prefix. Rules are
+ * evaluated in order; the first match wins.
+ */
+const MCP_NORMALIZATION_RULES: readonly [string, string][] = [
+	// GitHub MCP (remote / server-name variants → local stdio form).
+	['mcp_github_github_', 'mcp_io_github_git_'],
+	['github-mcp-server-', 'mcp_io_github_git_'],
+	['mcp_github_mcp_s2_', 'mcp_io_github_git_'],
+	['mcp_github_mcp_se_', 'mcp_io_github_git_'],
+	['mcp.github.github.', 'mcp.io.github.git.'],
+
+	// Context7 / UPS docs.
+	['mcp__plugin_context7_context7__', 'context7-'],
+	['mcp__context7__', 'context7-'],
+	['mcp_context7_', 'context7-'],
+	['mcp_io_github_ups_', 'context7-'],
+
+	// Playwright MCP.
+	['mcp__microsoft_playwright-mcp__', 'microsoft_playwright-mcp-'],
+	['mcp__playwright__', 'microsoft_playwright-mcp-'],
+	['mcp_playwright_', 'microsoft_playwright-mcp-'],
+	['mcp_microsoft_pla_', 'microsoft_playwright-mcp-'],
+
+	// Tavily MCP.
+	['mcp_tavily-mcp_', 'io_github_tavily-ai_tavily-mcp-'],
+	['mcp_tavily_', 'io_github_tavily-ai_tavily-mcp-'],
+
+	// Claude Browser MCP.
+	['mcp__claude-in-chrome__', 'mcp__claude_browser__'],
+	['mcp__Claude_Browser__', 'mcp__claude_browser__'],
+];
+
+/**
+ * Normalize an MCP tool name so that equivalent tools from different servers
+ * (local stdio vs remote) are counted under a single canonical key in "By Tool" views.
+ *
+ * Known equivalent prefix families that collapse to a single canonical form:
+ * - GitHub MCP: mcp_github_github_, mcp_io_github_git_, github-mcp-server-,
+ *   mcp_github_mcp_s2_, mcp_github_mcp_se_, mcp.github.github., mcp.io.github.git.
+ * - Context7: context7-, mcp_context7_, mcp__context7__, mcp__plugin_context7_context7__,
+ *   mcp_io_github_ups_
+ * - Playwright: mcp_microsoft_pla_, microsoft_playwright-mcp-, mcp__playwright__,
+ *   mcp_playwright_, mcp__microsoft_playwright-mcp__
+ * - Tavily: mcp_tavily-mcp_, io_github_tavily-ai_tavily-mcp-, mcp_tavily_
+ * - Claude Browser: mcp__claude-in-chrome__, mcp__claude_browser__, mcp__Claude_Browser__
  */
 export function normalizeMcpToolName(toolName: string): string {
-	if (toolName.startsWith('mcp_github_github_')) {
-		return 'mcp_io_github_git_' + toolName.substring('mcp_github_github_'.length);
-	}
-	if (toolName.startsWith('mcp.github.github.')) {
-		return 'mcp.io.github.git.' + toolName.substring('mcp.github.github.'.length);
+	for (const [prefix, canonicalPrefix] of MCP_NORMALIZATION_RULES) {
+		if (toolName.startsWith(prefix)) {
+			return canonicalPrefix + toolName.substring(prefix.length);
+		}
 	}
 	return toolName;
 }
@@ -623,7 +719,7 @@ export function normalizeMcpToolName(toolName: string): string {
  */
 export function extractMcpServerName(toolName: string, toolNameMap: { [key: string]: string } = {}): string {
 	// First, try to get the display name from toolNames.json and extract the server part
-	const displayName = toolNameMap[toolName] ?? toolNameMap[toolName.toLowerCase()];
+	const displayName = lookupKnownToolName(toolName, toolNameMap);
 	if (displayName && displayName.includes(':')) {
 		// Extract the part before the colon (e.g., "GitHub MCP" from "GitHub MCP: Issue Read")
 		return displayName.split(':')[0].trim();
@@ -879,6 +975,44 @@ export function resolveWorkspaceFolderFromSessionPath(sessionFilePath: string, w
 	}
 }
 
+/**
+ * Resolves a session file's workspace folder for cross-editor workspace attribution
+ * (e.g. the Copilot Customization Files health matrix). `resolveWorkspaceFolderFromSessionPath`
+ * only understands VS Code's `workspaceStorage/<id>` layout, so non-VS Code editors
+ * (Copilot CLI, JetBrains, Claude Code, etc.) never resolve through it and would otherwise
+ * be silently dropped instead of counted or surfaced as "Unresolved". Falls back to a
+ * workspace/cwd path already resolved onto the session data (e.g. Copilot CLI's
+ * `workspace.yaml` `cwd` or `session-store.db` `cwd` column) when the VS Code lookup fails.
+ */
+export function resolveWorkspaceFolderWithFallback(
+	sessionFilePath: string,
+	workspaceIdToFolderCache: Map<string, string | undefined>,
+	fallbackWorkspacePath?: string
+): string | undefined {
+	return resolveWorkspaceFolderFromSessionPath(sessionFilePath, workspaceIdToFolderCache) ?? fallbackWorkspacePath;
+}
+
+/**
+ * Best-effort workspace display name for a session summary. Prefers an explicit
+ * workspace folder path cached on the session, then the repository name, then
+ * workspaceStorage folder resolution. Returns undefined when attribution is
+ * unavailable.
+ */
+export function resolveSessionWorkspaceName(
+	sessionData: { workspaceFolderPath?: string; repository?: string },
+	sessionFilePath: string,
+	workspaceIdToFolderCache?: Map<string, string | undefined>
+): string | undefined {
+	if (sessionData.workspaceFolderPath) { return getRepoNameFromWorkspacePath(sessionData.workspaceFolderPath); }
+	if (sessionData.repository) { return sessionData.repository; }
+	if (!workspaceIdToFolderCache) { return undefined; }
+	try {
+		const workspaceFolder = resolveWorkspaceFolderFromSessionPath(sessionFilePath, workspaceIdToFolderCache);
+		if (workspaceFolder) { return getRepoNameFromWorkspacePath(workspaceFolder); }
+	} catch { /* attribution is optional */ }
+	return undefined;
+}
+
 // ── Editor-detection private predicates ──────────────────────────────────────
 
 /** Returns true for Gemini CLI session paths (`.gemini/tmp/.../chats/session-*.jsonl`). */
@@ -918,14 +1052,19 @@ function isCodeInsidersSource(lowerPath: string): boolean {
 // ── getEditorTypeFromPath helpers ───────────────────────────────────────────
 
 /**
- * Detect Kiro editors from a lower-cased normalised path.
+ * Detect editors whose sessions live inside an editor's globalStorage folder
+ * from a lower-cased normalised path.
  * Kiro CLI (~/.kiro/sessions/cli) and Kiro IDE (kiro.kiroagent global storage)
- * are tracked as separate editors.
+ * are tracked as separate editors. Cline task files live under a VS Code
+ * variant's globalStorage (saoudrizwan.claude-dev), so its specific marker must
+ * win before the generic /code/ and /cursor/ VS Code-variant matches in
+ * detectVSCodeVariantFromPath.
  * @internal
  */
-function detectKiroEditorFromPath(lowerPath: string): string | undefined {
+function detectGlobalStorageEditorFromPath(lowerPath: string): string | undefined {
 	if (lowerPath.includes('/.kiro/sessions/cli/')) { return 'Kiro CLI'; }
 	if (lowerPath.includes('/kiro.kiroagent/workspace-sessions/')) { return 'Kiro'; }
+	if (lowerPath.includes('/saoudrizwan.claude-dev/tasks/')) { return 'Cline'; }
 	return undefined;
 }
 
@@ -943,6 +1082,67 @@ function detectCopilotFamilyFromPath(lowerPath: string): string | undefined {
 }
 
 /**
+ * Peek at the start of a Claude Code session file (~/.claude/projects/**) to find the
+ * `entrypoint` field and distinguish the standalone Claude Desktop app, the terminal CLI,
+ * and the VS Code extension. All three write to the same directory and are indistinguishable
+ * by path alone — only file content (the `entrypoint` field on early JSONL events) tells them
+ * apart. Observed real-world values are "claude-desktop" and "cli" (not "claude-cli" — the
+ * field is the short form); any other/unknown value (e.g. a VS Code extension entrypoint)
+ * falls back to the generic "Claude Code" label.
+ * Bounded to the first 64KB so classification stays cheap even for large session files.
+ * @internal
+ */
+export function detectClaudeCodeEditorVariant(filePath: string): string {
+	try {
+		const fd = fs.openSync(filePath, 'r');
+		try {
+			const buffer = Buffer.alloc(65536);
+			const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+			const chunk = buffer.toString('utf8', 0, bytesRead);
+			for (const line of chunk.split('\n')) {
+				const trimmed = line.trim();
+				if (!trimmed) { continue; }
+				let event: any;
+				try { event = JSON.parse(trimmed); } catch { continue; } // partial/truncated line
+				if (event?.entrypoint === 'claude-desktop') { return 'Claude Desktop'; }
+				if (event?.entrypoint === 'cli') { return 'Claude Code CLI'; }
+				if (event?.entrypoint) { return 'Claude Code'; }
+			}
+		} finally {
+			fs.closeSync(fd);
+		}
+	} catch { /* file unreadable — fall back to default below */ }
+	return 'Claude Code';
+}
+
+/**
+ * Detect terminal CLI agents with dedicated data stores from a lower-cased normalised path.
+ * @internal
+ */
+function detectCliAgentStoreFromPath(lowerPath: string): string | undefined {
+	if (lowerPath.includes('/.crush/crush.db#')) { return 'Crush'; }
+	// Kilo Code (OpenCode fork): virtual DB session paths <...>/.local/share/kilo/kilo.db#ses_<id>.
+	// Checked here so it wins over any generic substring fallbacks further down.
+	if (lowerPath.includes('/kilo/kilo.db#')) { return 'Kilo Code'; }
+	// Hermes Agent's virtual path scheme is <HERMES_HOME>/state.db#<session_id>. HERMES_HOME
+	// itself never contains 'code'/'copilot'/'cursor' (Windows: %LOCALAPPDATA%/hermes, else
+	// ~/.hermes), but the check is placed here alongside the other DB-backed CLI adapters for
+	// consistency and to keep it ahead of any future generic substring matches.
+	if (lowerPath.includes('hermes/state.db#')) { return 'Hermes'; }
+	// Devin CLI virtual paths: <...>/devin/cli/sessions.db#<id>. Checked here (not merely
+	// the generic 'devin' substring match in detectIDEEditorSource) so it always wins over
+	// the desktop app's devin:// scheme / Windsurf family checks, which are handled earlier
+	// in getEditorTypeFromPath/detectEditorSource before this function is even called.
+	if (lowerPath.includes('devin/cli/sessions.db#')) { return 'Devin CLI'; }
+	// OpenAI Codex CLI: rollout JSONL files under ~/.codex/sessions|archived_sessions and
+	// virtual thread paths ~/.codex/state_<N>.sqlite#<thread-id>. Must be detected here,
+	// before the loose 'code' substring fallbacks in detectIDEEditorSource /
+	// detectVSCodeVariantFromPath ('codex' contains 'code' and would misclassify as VS Code).
+	if (lowerPath.includes('/.codex/')) { return 'Codex CLI'; }
+	return undefined;
+}
+
+/**
  * Detect tool-specific (non-VS Code family) editors from a lower-cased normalised path.
  * Returns the editor name or undefined if none matched.
  * @internal
@@ -955,15 +1155,17 @@ function detectToolEditorFromPath(
 	const copilotFamily = detectCopilotFamilyFromPath(lowerPath);
 	if (copilotFamily) { return copilotFamily; }
 	if (isOpenCodeSessionFile?.(filePath)) { return 'OpenCode'; }
-	if (lowerPath.includes('/.crush/crush.db#')) { return 'Crush'; }
+	const cliAgent = detectCliAgentStoreFromPath(lowerPath);
+	if (cliAgent) { return cliAgent; }
 	// Cursor virtual paths must be checked before the generic /cursor/ match in detectVSCodeVariantFromPath.
 	if (lowerPath.includes('/cursor/user/globalstorage/state.vscdb#')) { return 'Cursor'; }
 	if (lowerPath.includes('/.pi/agent/sessions/')) { return 'Pi'; }
-	const kiroEditor = detectKiroEditorFromPath(lowerPath);
-	if (kiroEditor) { return kiroEditor; }
+	const globalStorageEditor = detectGlobalStorageEditorFromPath(lowerPath);
+	if (globalStorageEditor) { return globalStorageEditor; }
 	if (lowerPath.includes('/.continue/sessions/')) { return 'Continue'; }
+	if (lowerPath.includes('/claude-code-sessions/')) { return 'Claude Desktop Cowork'; }
 	if (lowerPath.includes('/local-agent-mode-sessions/')) { return 'Claude Desktop Cowork'; }
-	if (lowerPath.includes('/.claude/projects/')) { return 'Claude Code'; }
+	if (lowerPath.includes('/.claude/projects/')) { return detectClaudeCodeEditorVariant(filePath); }
 	if (lowerPath.includes('/.vibe/logs/session/')) { return 'Mistral Vibe'; }
 	// Antigravity must be checked before Gemini CLI: both live under ~/.gemini/
 	// but Antigravity sessions are under ~/.gemini/antigravity/brain/ which is more specific.
@@ -993,11 +1195,22 @@ function detectVSCodeVariantFromPath(lowerPath: string): string | undefined {
 /**
  * Determine the editor type from a session file path.
  * Returns: 'VS Code', 'VS Code Insiders', 'VSCodium', 'Cursor', 'Copilot CLI',
- *          'JetBrains', 'OpenCode', 'Claude Code', 'Continue', 'Mistral Vibe',
- *          'Gemini CLI', 'Claude Desktop Cowork', 'Crush', or 'Unknown'.
+ *          'JetBrains', 'OpenCode', 'Claude Code', 'Claude Desktop', 'Continue',
+ *          'Mistral Vibe', 'Gemini CLI', 'Claude Desktop Cowork', 'Crush', 'Cline',
+ *          or 'Unknown'.
+ * Note: 'Claude Code' and 'Claude Desktop' share the same ~/.claude/projects/ directory
+ * and are distinguished by the `entrypoint` field inside the session file, not the path
+ * (see detectClaudeCodeEditorVariant). 'Claude Desktop Cowork' is a separate, unrelated
+ * feature (claude-code-sessions, formerly local-agent-mode-sessions) and is still
+ * detected purely by path.
  */
 export function getEditorTypeFromPath(filePath: string, isOpenCodeSessionFile?: (p: string) => boolean): string {
 	const lowerPath = normalizePathForComparison(filePath);
+	// Devin (Cognition Labs' desktop IDE, a fork/rebrand of Windsurf) uses its own
+	// devin://trajectory/{id} virtual path scheme — check before the windsurf:// check
+	// since they are disjoint prefixes, order does not matter here, but keeping the
+	// two paired makes the shared-lineage relationship clear.
+	if (lowerPath.startsWith('devin://')) { return 'Devin'; }
 	if (lowerPath.startsWith('windsurf://')) { return 'Windsurf'; }
 	// Eclipse Copilot conversations live in the workspace metadata; check before
 	// the generic VS Code match (the path can pass through a 'code' folder).
@@ -1005,6 +1218,62 @@ export function getEditorTypeFromPath(filePath: string, isOpenCodeSessionFile?: 
 	return detectToolEditorFromPath(filePath, lowerPath, isOpenCodeSessionFile) ??
 		detectVSCodeVariantFromPath(lowerPath) ??
 		'Unknown';
+}
+
+/**
+ * Maps the content-classified `ModeUsage` keys (see `MODE_USAGE_CONTENT_CLASSIFIED_KEYS` in
+ * `vscode-extension/src/webview/shared/types.ts`) to the editor label
+ * `refineEditorLabelForInteractionModeSplit` produces for them when synced to the sharing
+ * server. `claudeDesktop` is intentionally absent: Claude Desktop already gets its own
+ * stable path-based label ('Claude Desktop') via `detectClaudeCodeEditorVariant`, so it
+ * needs no further refinement here.
+ *
+ * `workspaceHelpers.test.ts` asserts this map's keys plus `claudeDesktop` equal
+ * `MODE_USAGE_CONTENT_CLASSIFIED_KEYS` — add a new content-classified interaction mode to
+ * one and the test fails until the other side is updated too.
+ */
+export const SYNCED_INTERACTION_MODE_LABELS: Readonly<Record<string, string>> = {
+	cliApp: 'Copilot App',
+	claudeVsCode: 'Claude (VS Code)',
+};
+
+/**
+ * Refines a `getEditorTypeFromPath` result with the same content-based signals the
+ * "Interaction Modes" usage view already applies per-session (see
+ * `usageAnalysis.ts::_asuApplyCopilotAppSplit` and `claudeCodeAdapter.ts::resolveModeBucket`),
+ * so consumers that sync a single per-file editor label (e.g. the sharing-server upload)
+ * can distinguish:
+ *  - 'Copilot App' — a Copilot CLI session launched via the Copilot desktop app
+ *    (`client_name: github/autopilot` in the session's sibling `workspace.yaml`).
+ *    Only covers file-based (worktree) session-state sessions; DB-backed Copilot CLI
+ *    sessions (session-store.db) still report 'Copilot CLI'.
+ *  - 'Claude (VS Code)' — a Claude Code session embedded in VS Code, i.e. the generic
+ *    'Claude Code' bucket `detectClaudeCodeEditorVariant` returns for any entrypoint other
+ *    than the standalone desktop app or the terminal CLI.
+ * Leaves every other editor label untouched.
+ */
+export function refineEditorLabelForInteractionModeSplit(filePath: string, baseLabel: string): string {
+	if (baseLabel === 'Claude Code') { return SYNCED_INTERACTION_MODE_LABELS.claudeVsCode; }
+	if (baseLabel === 'Copilot CLI' && isCopilotAppSessionFile(filePath)) { return SYNCED_INTERACTION_MODE_LABELS.cliApp; }
+	return baseLabel;
+}
+
+/**
+ * Synchronously checks the sibling `workspace.yaml` of a Copilot CLI session-state file for
+ * `client_name: github/autopilot`, the marker the Copilot desktop app writes when it launches
+ * the CLI. Mirrors the async check in `usageAnalysis.ts::_asuApplyCopilotAppSplit`, but sync
+ * so it can be called from the otherwise-synchronous `getEditorTypeFromPath` family.
+ * @internal
+ */
+function isCopilotAppSessionFile(filePath: string): boolean {
+	try {
+		const yamlPath = path.join(path.dirname(filePath), 'workspace.yaml');
+		const content = fs.readFileSync(yamlPath, 'utf8');
+		const clientMatch = content.match(/^client_name:\s*(.+)$/m);
+		return !!clientMatch && isCopilotAppClientName(clientMatch[1].trim());
+	} catch {
+		return false;
+	}
 }
 
 // ── detectEditorSource helper ──────────────────────────────────────────
@@ -1018,6 +1287,9 @@ function detectIDEEditorSource(lowerPath: string): string | undefined {
 	if (lowerPath.includes('cursor')) { return 'Cursor'; }
 	if (isCodeInsidersSource(lowerPath)) { return 'VS Code Insiders'; }
 	if (lowerPath.includes('vscodium')) { return 'VSCodium'; }
+	// Devin must be checked before the generic 'windsurf' substring match below is
+	// irrelevant here (disjoint word), but Devin's own data folder is named '.devin'.
+	if (lowerPath.includes('devin')) { return 'Devin'; }
 	if (lowerPath.includes('windsurf')) { return 'Windsurf'; }
 	if (isVisualStudioPath(lowerPath)) { return 'Visual Studio'; }
 	if (lowerPath.includes('code')) { return 'VS Code'; }
@@ -1029,6 +1301,7 @@ function detectIDEEditorSource(lowerPath: string): string | undefined {
  */
 export function detectEditorSource(filePath: string, isOpenCodeSessionFile?: (p: string) => boolean): string {
 	const lowerPath = normalizePathForComparison(filePath);
+	if (lowerPath.startsWith('devin://')) { return 'Devin'; }
 	if (lowerPath.startsWith('windsurf://')) { return 'Windsurf'; }
 	if (lowerPath.includes('com.microsoft.copilot.eclipse')) { return 'Eclipse'; }
 	// Delegate to the shared tool-editor detector (handles JetBrains, Copilot CLI, OpenCode,

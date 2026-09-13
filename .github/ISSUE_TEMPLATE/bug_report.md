@@ -1,6 +1,6 @@
 ---
 name: Bug report — VS Code Extension
-about: Report a bug in the Copilot Token Tracker VS Code extension
+about: Report a bug in the AI Engineering Fluency VS Code extension
 title: '[BUG][vscode] '
 labels: "bug, vscode-extension"
 assignees: ''
@@ -40,4 +40,4 @@ Add any other context about the problem here.
 **Logs (if applicable)**
 If the extension shows unexpected behavior, you can help by sharing:
 - Any error messages from VS Code Developer Tools (Help > Toggle Developer Tools)
-- Contents of VS Code output panel for "Copilot Token Tracker" (if available)
+- Contents of VS Code output panel for "AI Engineering Fluency" (if available)

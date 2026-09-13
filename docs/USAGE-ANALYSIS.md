@@ -16,17 +16,22 @@ You can access the Usage Analysis Dashboard in three ways:
 
 1. **From the Details Panel**: Click the status bar item to open the details panel, then click the "📊 Usage Analysis" button
 2. **From Command Palette**: Press `Ctrl+Shift+P` (Windows/Linux) or `Cmd+Shift+P` (macOS) and type "Show Usage Analysis Dashboard"
-3. **Direct Command**: Run the command `Copilot Token Tracker: Show Usage Analysis Dashboard`
+3. **Direct Command**: Run the command `AI Engineering Fluency: Show Usage Analysis Dashboard`
 
 ## Tracked Metrics
 
 ### 1. Interaction Modes
 
-The dashboard tracks three primary interaction modes:
+The dashboard tracks these interaction modes:
 
 - **💬 Ask Mode (Chat)**: Regular conversational interactions where you ask Copilot questions or request explanations in the chat panel
 - **✏️ Edit Mode**: Interactions where Copilot directly edits your code inline using the edits agent (triggered via inline edit UI or commands)
-- **🤖 Agent Mode**: Autonomous task execution where Copilot operates as an independent agent (including Copilot CLI usage and agent mode in the chat panel)
+- **🤖 Agent Mode**: Autonomous task execution where Copilot operates as an independent agent in the chat panel
+- **📋 Plan Mode / ⚡ Custom Agent**: Plan-mode and custom-agent (.agent.md) interactions
+- **🖥️ CLI**: Interactions in terminal-based agent CLIs (Copilot CLI, Claude Code CLI, OpenCode, Crush, Mistral Vibe, Hermes, Pi, etc.)
+- **✨ Copilot App**: Subset of Copilot CLI usage — sessions started via the Copilot desktop app (detected from `client_name: github/autopilot` in the session's `workspace.yaml`), broken out from terminal CLI usage
+- **🖥️ Claude Desktop**: Claude Code sessions launched from the standalone Claude Desktop app (detected via the session's `entrypoint` field), broken out from terminal CLI usage
+- **🧩 Claude (VS Code)**: Claude Code sessions running inside an IDE, e.g. the VS Code extension (also detected via `entrypoint`), broken out from terminal CLI usage
 
 **Data Source**: 
 - JSON files: 
