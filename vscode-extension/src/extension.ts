@@ -11483,28 +11483,33 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     return { conversations: [], totalCount: 0, totalIsLowerBound: false, authenticated: false, fetchedAt: '', error: '' };
   }
 
-  // BETA: random, process-local key for fingerprintMistralApiKey's HMAC — generated once per
-  // extension host lifetime, never persisted or exposed. Plain `sha256(apiKey)` would let anyone
-  // who ever saw a fingerprint (e.g. in a future log line or crash dump) attempt to recover the
-  // key via a rainbow table, since API keys are a fairly low-entropy, fixed-format secret; keying
-  // the digest with a secret only this process knows means the fingerprint reveals nothing about
-  // the key on its own, while still comparing equal for equal keys within this session.
-  private static _mistralFingerprintHmacKey?: Buffer;
+  // BETA: random, process-local salt for fingerprintMistralApiKey — generated once per extension
+  // host lifetime, never persisted or exposed. Plain `sha256(apiKey)` would let anyone who ever saw
+  // a fingerprint (e.g. in a future log line or crash dump) attempt to recover the key via a
+  // rainbow table, since API keys are a fairly low-entropy, fixed-format secret; a random per-
+  // process salt closes that off, and PBKDF2 (rather than a bare hash) satisfies CodeQL's
+  // insufficient-password-hash check, which flags any fast digest of a credential-like value —
+  // an HMAC keyed with this same salt was tried first and still flagged, since the underlying
+  // primitive is still a fast hash rather than one of the check's recognized slow KDFs.
+  private static _mistralFingerprintSalt?: Buffer;
 
-  private static getMistralFingerprintHmacKey(): Buffer {
-    if (!CopilotTokenTracker._mistralFingerprintHmacKey) {
-      CopilotTokenTracker._mistralFingerprintHmacKey = crypto.randomBytes(32);
+  private static getMistralFingerprintSalt(): Buffer {
+    if (!CopilotTokenTracker._mistralFingerprintSalt) {
+      CopilotTokenTracker._mistralFingerprintSalt = crypto.randomBytes(32);
     }
-    return CopilotTokenTracker._mistralFingerprintHmacKey;
+    return CopilotTokenTracker._mistralFingerprintSalt;
   }
 
   /**
    * BETA: cheap non-reversible fingerprint of an API key, used only to detect whether
    * `_lastMistralCloudSessions` still belongs to the currently configured key — never used for
-   * authentication, logged, or persisted anywhere.
+   * authentication, logged, or persisted anywhere. A modest iteration count keeps this fast enough
+   * to call synchronously on every refresh/status check; this fingerprint's threat model (an
+   * in-memory-only value, never persisted or exposed) doesn't call for a real password-hashing
+   * cost, only for not being a bare fast hash of the raw key.
    */
   private static fingerprintMistralApiKey(key: string): string {
-    return crypto.createHmac('sha256', CopilotTokenTracker.getMistralFingerprintHmacKey()).update(key).digest('hex');
+    return crypto.pbkdf2Sync(key, CopilotTokenTracker.getMistralFingerprintSalt(), 10_000, 32, 'sha256').toString('hex');
   }
 
   /**
