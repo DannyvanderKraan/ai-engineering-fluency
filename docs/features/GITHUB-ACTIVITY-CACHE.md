@@ -56,6 +56,11 @@ An Enterprise host slug carries a short hash of the exact host alongside the rea
 slugging alone is lossy: `ghe.internal.example` and `ghe-internal.example` would otherwise share a
 scope, and one host's private snapshots could be served for the other.
 
+The `api.` and `www.` prefixes are treated as aliases **only** for `github.com` and for a GitHub
+Enterprise Cloud tenant's documented `api.<tenant>.ghe.com` API host. A self-hosted Enterprise
+Server keeps its hostname exactly as configured — nothing says `api.acme.example` and `acme.example`
+are the same machine, and folding them together would be the same leak the hash prevents.
+
 So `repoprs_prod.github-com.1a2b3c4d5e6f7a8b.snapshot.json`. Signing out, switching accounts or
 repointing the Enterprise host lands on a different file rather than re-serving the previous
 identity's private data. Access tokens are never part of the scope and are never stored.
@@ -88,7 +93,9 @@ away on almost every read.
 - Each cache is revalidated **at most once an hour**
   (`REPO_PRS_REFRESH_INTERVAL_MS` / `AGENT_TASKS_REFRESH_INTERVAL_MS`), by whichever VS Code window
   wins that cache's file lock. Other windows read the snapshot that window wrote. A heartbeat keeps
-  the lock alive so a slow API pass is never mistaken for a stale lock.
+  the lock alive so a slow API pass is never mistaken for a stale lock. The freshness check runs
+  again **after** the lock is acquired: the window that waited may have been waiting on exactly the
+  refresh it was about to duplicate.
 - Opening a tab serves the cached snapshot immediately (stale-while-revalidate) and then asks for a
   refresh, which only happens if the snapshot is actually due.
 - The freshness banner on both tabs offers **Refresh now** — including on the error state, which is
@@ -118,6 +125,7 @@ result is marked partial.
 | Cloud-agent detail budget exhausted | Undetailed tasks stay "owed"; tab marked partial |
 | Cloud-agent detail call failed | No aggregate stored for that task — a failure is never remembered as zero usage; the task's row and the tab are marked partial; retried next pass, with its consecutive-failure count |
 | A listing or detail response arrived without its array | Treated as an error, not as an empty result. A 200 carrying no `tasks` array would otherwise read as an authoritative empty page — enough for reconciliation to delete every cached task and publish a confident zero — and one carrying no `sessions` array would be cached as a successful zero-usage aggregate. An empty answer says so explicitly, as `{ tasks: [] }` or `{ sessions: [] }` |
+| Two workspace repositories both list the same task | The first repository keeps the row (deduplicating by task ID is what stops one task being counted twice), but the disagreement makes the task uncacheable for that pass, exactly as a workspace-vs-account disagreement does |
 | Both listings disagree about a task's repository or its `updated_at` | The repo-scoped listing wins the row attribution, but the task is treated as uncacheable for that pass. A repository disagreement would let a stale aggregate land on the wrong row; a timestamp disagreement means the other listing has already seen the task change, so reusing the cached state would break the `updated_at` contract |
 | A repo's listing errored after collecting some pages | The counts it did collect are shown, with the error noted beside them. A row is blanked to an error-only line only when the listing produced nothing — the banner already calls the figures a lower bound, so hiding them would contradict it |
 
@@ -181,6 +189,18 @@ recorded in-flight scope for the same reason: recomputing it from the lagging fi
 the *new* account's own valid work and strand it on the empty state. A collection pass that spans a sign-out, a switch or a Clear Cache has
 its result discarded instead of written — otherwise it would recreate a deliberately deleted file
 under an identity that is no longer signed in.
+
+## A shared snapshot, per workspace
+
+The snapshot is scoped by mode, host and account — deliberately not by workspace — so every window
+signed in as the same account shares one file. Its *contents*, though, come from the repositories
+the writing window discovered. A window with a different workspace therefore replaces the rows the
+previous writer collected, and each window's repos reappear only when that window next refreshes.
+
+This predates per-entity caching (the snapshot has always been one shared file) and is left as is:
+making the cache workspace-aware means either a file per workspace set, which multiplies the API
+cost the cache exists to avoid, or merging foreign rows into a snapshot whose completeness this
+window cannot vouch for. Neither belongs in the change that adds per-entity records.
 
 ## Migration
 

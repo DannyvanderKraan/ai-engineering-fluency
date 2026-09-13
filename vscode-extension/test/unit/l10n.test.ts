@@ -350,7 +350,7 @@ test('l10n: GitHub activity freshness banner labels resolve in English', () => {
 		'usage.githubActivity.refreshNow': '🔄 Refresh now',
 		'usage.githubActivity.refreshNowTooltip': 'Revalidate the cached GitHub data now instead of waiting for the next hourly refresh',
 		'usage.githubActivity.notFetchedTitle': 'Not fetched yet.',
-		'usage.githubActivity.notFetchedBody': 'The snapshot is refreshed hourly by the main VS Code window — it will appear here once that first refresh completes.',
+		'usage.githubActivity.notFetchedBody': 'The snapshot is refreshed hourly by whichever VS Code window takes it on — it will appear here once that first refresh completes.',
 		'usage.githubActivity.revalidatingTitle': 'Revalidating.',
 		'usage.githubActivity.revalidatingBody': 'Showing the cached snapshot from {0} while it is refreshed.',
 		'usage.githubActivity.updated': '🕒 Updated {0} · next refresh after {1}.',
@@ -362,6 +362,7 @@ test('l10n: GitHub activity freshness banner labels resolve in English', () => {
 		'usage.githubActivity.partialAgentTasks': 'Some tasks were not detailed this pass — the task-detail budget was exhausted, or a task listing did not complete.',
 		'usage.githubActivity.tasksScannedTooltip': 'Showing {0} of {1} tasks — the rest could not be counted this pass, so these figures are a lower bound',
 		'usage.githubActivity.tasksScannedLabel': '({0}/{1} tasks scanned)',
+		'usage.githubActivity.lowerBoundNote': 'Note: some figures could not be counted this pass — a listing did not complete, a detail call failed, or the detail budget ran out — so these totals are lower bounds.',
 	};
 	for (const [key, english] of Object.entries(expected)) {
 		assert.equal(t(key), english, `English value for ${key}`);
@@ -375,7 +376,7 @@ test('l10n: GitHub activity freshness banner labels resolve in zh-cn', () => {
 			'usage.githubActivity.refreshNow': '🔄 立即刷新',
 			'usage.githubActivity.refreshNowTooltip': '立即重新校验已缓存的 GitHub 数据，无需等待下一次每小时刷新',
 			'usage.githubActivity.notFetchedTitle': '尚未获取。',
-			'usage.githubActivity.notFetchedBody': '快照由主 VS Code 窗口每小时刷新一次 — 首次刷新完成后会显示在这里。',
+			'usage.githubActivity.notFetchedBody': '快照由取得刷新权的任一 VS Code 窗口每小时刷新一次 — 首次刷新完成后会显示在这里。',
 			'usage.githubActivity.revalidatingTitle': '正在重新校验。',
 			'usage.githubActivity.revalidatingBody': '刷新期间显示 {0} 的缓存快照。',
 			'usage.githubActivity.updated': '🕒 更新于 {0} · 下次刷新在 {1} 之后。',
@@ -387,6 +388,7 @@ test('l10n: GitHub activity freshness banner labels resolve in zh-cn', () => {
 			'usage.githubActivity.partialAgentTasks': '本次未获取全部任务的明细 — 任务明细预算已用尽，或任务列表未能完整枚举。',
 			'usage.githubActivity.tasksScannedTooltip': '显示 {1} 个任务中的 {0} 个 — 其余任务本次无法统计，因此以下数字为下限',
 			'usage.githubActivity.tasksScannedLabel': '(已扫描 {0}/{1} 个任务)',
+			'usage.githubActivity.lowerBoundNote': '注意：本次有部分数据无法统计 — 列表未能完整枚举、明细调用失败，或明细预算已用尽 — 因此以下合计为下限值。',
 		};
 		for (const [key, chinese] of Object.entries(expected)) {
 			assert.equal(t(key), chinese, `zh-cn value for ${key}`);

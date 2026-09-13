@@ -209,6 +209,35 @@ test('readAgentTaskRecords drops a record whose aggregate is not all numbers', (
 	assert.deepEqual(readAgentTaskRecords(envelope).map((r) => r.id), ['task-1']);
 });
 
+test('readAgentTaskRecords drops a record whose detailOk is not a boolean', () => {
+	// `detailOk` gates the cache hit and a string reaches that check truthy, so `"false"` would
+	// suppress the very detail fetch it is asking for and serve stale usage as current.
+	const envelope = makeEnvelope({
+		tasks: [
+			makeTaskRecord(),
+			makeTaskRecord({ key: 'k2', id: 'string-flag', detailOk: 'false' as any }),
+			makeTaskRecord({ key: 'k3', id: 'missing-flag', detailOk: undefined as any }),
+		],
+	});
+	assert.deepEqual(readAgentTaskRecords(envelope).map((r) => r.id), ['task-1']);
+});
+
+test('reconcileAgentTaskRecords drops a seen-but-unverifiable task instead of retaining it', () => {
+	// A task the listing surfaced with an uncacheable timestamp is absent from `current`, because
+	// buildTaskRecords() refuses to store it. Retaining it would read "seen but unverifiable" as
+	// "not seen", and a later pass whose timestamp happened to match the stale one would reuse the
+	// old aggregate with no detail call.
+	const seen = makeTaskRecord({ key: 'seen-uncacheable', id: 'u1' });
+	const absent = makeTaskRecord({ key: 'never-listed', id: 'n1' });
+	const result = reconcileAgentTaskRecords([seen, absent], [], {
+		listingComplete: false,
+		seenKeys: new Set(['seen-uncacheable']),
+	});
+	assert.deepEqual(result.records.map((r) => r.key), ['never-listed'], 'only the unseen record is retained');
+	assert.equal(result.removed, 1);
+	assert.equal(result.retainedUnverified, 1);
+});
+
 test('readAgentTaskRecords keeps a record that is still owed its detail', () => {
 	// An absent aggregate means "must be fetched", never "zero" — such a record is kept so its
 	// retry history survives, and partitionByCacheHit() refuses to treat it as a hit.

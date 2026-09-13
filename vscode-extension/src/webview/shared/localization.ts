@@ -48,6 +48,7 @@ export interface WebviewLocalization {
 	'usage.githubActivity.partialAgentTasks': string;
 	'usage.githubActivity.tasksScannedTooltip': string;
 	'usage.githubActivity.tasksScannedLabel': string;
+	'usage.githubActivity.lowerBoundNote': string;
 
 	// Details view — collapsible "Usage by Editor" section heading tooltips
 	'details.editorSection.show': string;
@@ -122,7 +123,7 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'usage.githubActivity.refreshNow': '🔄 Refresh now',
 	'usage.githubActivity.refreshNowTooltip': 'Revalidate the cached GitHub data now instead of waiting for the next hourly refresh',
 	'usage.githubActivity.notFetchedTitle': 'Not fetched yet.',
-	'usage.githubActivity.notFetchedBody': 'The snapshot is refreshed hourly by the main VS Code window — it will appear here once that first refresh completes.',
+	'usage.githubActivity.notFetchedBody': 'The snapshot is refreshed hourly by whichever VS Code window takes it on — it will appear here once that first refresh completes.',
 	'usage.githubActivity.revalidatingTitle': 'Revalidating.',
 	'usage.githubActivity.revalidatingBody': 'Showing the cached snapshot from {0} while it is refreshed.',
 	'usage.githubActivity.updated': '🕒 Updated {0} · next refresh after {1}.',
@@ -134,6 +135,7 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'usage.githubActivity.partialAgentTasks': 'Some tasks were not detailed this pass — the task-detail budget was exhausted, or a task listing did not complete.',
 	'usage.githubActivity.tasksScannedTooltip': 'Showing {0} of {1} tasks — the rest could not be counted this pass, so these figures are a lower bound',
 	'usage.githubActivity.tasksScannedLabel': '({0}/{1} tasks scanned)',
+	'usage.githubActivity.lowerBoundNote': 'Note: some figures could not be counted this pass — a listing did not complete, a detail call failed, or the detail budget ran out — so these totals are lower bounds.',
 	'details.editorSection.show': 'Show Usage by Editor',
 	'details.editorSection.hide': 'Hide Usage by Editor',
 	'logviewer.summary.interactions': 'Interactions',

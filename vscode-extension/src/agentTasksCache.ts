@@ -68,6 +68,10 @@ export function readAgentTaskRecords(envelope: AgentTasksCacheEnvelope | undefin
 		&& typeof record.key === 'string' && record.key !== ''
 		&& typeof record.id === 'string'
 		&& parseEntityTimestamp(record.updatedAt) !== undefined
+		// `detailOk` gates the cache hit, and a string reaches that check truthy — a record stored
+		// as `detailOk: "false"` would suppress the detail fetch it is asking for and show stale
+		// usage. Nothing about the field's *name* forces it to be a boolean on disk, so check.
+		&& typeof record.detailOk === 'boolean'
 		&& isUsableTaskAggregate(record.aggregate)
 	// The filter has already proved the timestamp parses, so the `!` below cannot be hit.
 	)).map((record) => ({ ...record, updatedAt: parseEntityTimestamp(record.updatedAt)! }));
@@ -102,7 +106,7 @@ function isUsableTaskAggregate(aggregate: AgentTaskRecord['aggregate']): boolean
 export function reconcileAgentTaskRecords(
 	cached: readonly AgentTaskRecord[],
 	current: readonly AgentTaskRecord[],
-	options: { listingComplete: boolean },
+	options: { listingComplete: boolean; seenKeys?: ReadonlySet<string> },
 	budget: RecordBudget = AGENT_TASK_RECORD_BUDGET,
 ): { records: AgentTaskRecord[]; removed: number; retainedUnverified: number; evicted: number } {
 	const byKey = new Map<string, AgentTaskRecord>();
@@ -112,6 +116,13 @@ export function reconcileAgentTaskRecords(
 	let retainedUnverified = 0;
 	for (const record of cached) {
 		if (byKey.has(record.key)) { continue; }
+		// A task the listing *did* surface but whose timestamp was uncacheable is absent from
+		// `current` — `buildTaskRecords()` refuses to store it. Retaining its old record here would
+		// treat "seen, but cannot be verified" as "not seen", and a later pass whose timestamp
+		// happened to match the stale one would reuse the old aggregate without a detail call. The
+		// record is dropped instead: it was observed, and observation without verification is
+		// exactly the case the cache must not paper over.
+		if (options.seenKeys?.has(record.key)) { removed++; continue; }
 		if (options.listingComplete) { removed++; continue; }
 		byKey.set(record.key, record);
 		retainedUnverified++;

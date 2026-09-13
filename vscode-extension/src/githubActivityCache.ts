@@ -56,12 +56,22 @@ const GITHUB_ACTIVITY_CACHE_FILE_PATTERN = /^(repoprs|agenttasks)_(.+?)\.snapsho
  * snapshots be served for the other. github.com keeps its bare, readable slug: its aliases are
  * deliberate, and it is the one host that cannot collide with an Enterprise host by construction
  * (an Enterprise scope always carries a hash suffix).
+ *
+ * The `api.`/`www.` aliases are recognized only for github.com and for a GitHub Enterprise Cloud
+ * tenant's documented `api.<tenant>.ghe.com` API host. A self-hosted Enterprise Server keeps its
+ * hostname exactly as configured — nothing says `api.acme.example` and `acme.example` are the same
+ * machine, and treating them as one scope would be the same leak the hash exists to prevent.
  */
 export function normalizeGitHubHost(hostname: string | undefined): string {
 	const host = (hostname ?? '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
 	if (!host) { return 'github-com'; }
-	const canonical = host.replace(/^(api|www)\./, '');
-	if (canonical === 'github.com') { return 'github-com'; }
+	// Alias stripping is deliberately *not* general. `api.` and `www.` are known to front the same
+	// service only for github.com and for a GitHub Enterprise Cloud tenant's documented
+	// `api.<tenant>.ghe.com` API host. Stripping them from every host would merge two genuinely
+	// different self-hosted Enterprise servers — `api.acme.example` and `acme.example` are not
+	// required to be the same machine — and one host's private snapshots would serve the other.
+	if (host === 'github.com' || host === 'api.github.com' || host === 'www.github.com') { return 'github-com'; }
+	const canonical = /^api\.[a-z0-9][a-z0-9-]*\.ghe\.com$/.test(host) ? host.slice('api.'.length) : host;
 	const slug = canonical.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 	const digest = crypto.createHash('sha256').update(canonical).digest('hex').slice(0, 8);
 	return slug ? `${slug}-${digest}` : `host-${digest}`;

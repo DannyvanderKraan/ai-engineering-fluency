@@ -1949,7 +1949,10 @@ class CopilotTokenTracker implements vscode.Disposable {
 					this.githubSession = session;
 					await this.context.globalState.update('github.authenticated', true);
 					await this.context.globalState.update('github.username', session.account.label);
-					this._syncGitHubActivityScope(this.githubActivityScope(session.account.label));
+					// Awaited, not fired and forgotten: this can publish and clear panel state, so a
+					// second auth event interleaving with it would let the older transition finish
+					// last and overwrite the newer identity's scope and replay buffer.
+					await this._syncGitHubActivityScope(this.githubActivityScope(session.account.label));
 					void this.loadAndLogCopilotPlanInfo();
 				} else {
 					// Capture the scope before clearing the session — it is the only way back to the
@@ -1961,8 +1964,14 @@ class CopilotTokenTracker implements vscode.Disposable {
 					this.githubSession = undefined;
 					await this.context.globalState.update('github.authenticated', false);
 					await this.context.globalState.update('github.username', undefined);
-					void this._purgeGitHubActivityScope(removedScope, 'the GitHub session was removed')
-						.catch((err) => this.warn(`Failed to clear GitHub activity after the session was removed: ${err}`));
+					// Awaited for the same reason as the sign-in branch above, and one more: a purge
+					// that completed *after* a subsequent sign-in would delete the new account's
+					// in-memory snapshots and replay entries and invalidate its in-flight pass.
+					try {
+						await this._purgeGitHubActivityScope(removedScope, 'the GitHub session was removed');
+					} catch (err) {
+						this.warn(`Failed to clear GitHub activity after the session was removed: ${err}`);
+					}
 					this.log('GitHub session removed externally — clearing auth state');
 				}
 			})
@@ -2656,11 +2665,17 @@ class CopilotTokenTracker implements vscode.Disposable {
 			return false;
 		}
 
-		// The per-window cooldown above cannot see another window's clicks, but the snapshot on disk
-		// can: once we hold the lock, a snapshot that another window wrote within the cooldown means
-		// this forced pass would just repeat it.
-		if (force && isRepoPrSnapshotFresh((await readRepoPrSnapshot(cachePath))?.fetchedAt, Date.now(), GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS)) {
-			this.log('⏭️ Repository PRs manual refresh skipped — another window refreshed it moments ago');
+		// Re-check under the lock. The check before acquiring it can be beaten: another window may
+		// have been mid-refresh then and finished while this one waited, so a second full listing
+		// would run against a snapshot that is already fresh — precisely the duplicated API spend
+		// the lock exists to prevent. A forced pass measures against the manual cooldown instead of
+		// the hourly TTL, because the per-window cooldown cannot see another window's clicks.
+		const underLock = await readRepoPrSnapshot(cachePath);
+		const alreadyRefreshed = force
+			? isRepoPrSnapshotFresh(underLock?.fetchedAt, Date.now(), GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS)
+			: canServeRepoPrSnapshot(underLock, since, Date.now());
+		if (alreadyRefreshed) {
+			this.log('⏭️ Repository PRs refresh skipped — another window refreshed the shared snapshot while this one waited for the lock');
 			try { await this.cacheManager.releaseRepoPrLock(scope); }
 			catch (err) { this.warn(`Failed to release repo-PRs lock: ${err}`); }
 			return false;
@@ -2908,10 +2923,16 @@ class CopilotTokenTracker implements vscode.Disposable {
 			return false;
 		}
 
-		// See maybeRefreshRepoPrStats(): the on-disk snapshot is how the manual-refresh cooldown
-		// reaches across windows, which a per-window timestamp cannot do on its own.
-		if (force && isAgentTasksSnapshotFresh((await readAgentTasksSnapshot(cachePath))?.fetchedAt, Date.now(), GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS)) {
-			this.log('⏭️ Cloud agent manual refresh skipped — another window refreshed it moments ago');
+		// Re-check under the lock, as maybeRefreshRepoPrStats() does and for the same two reasons:
+		// another window may have finished its refresh while this one waited (a duplicated listing
+		// *and* detail pass here, the most expensive one to repeat), and the on-disk snapshot is
+		// how the manual-refresh cooldown reaches across windows at all.
+		const underLock = await readAgentTasksSnapshot(cachePath);
+		const alreadyRefreshed = force
+			? isAgentTasksSnapshotFresh(underLock?.fetchedAt, Date.now(), GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS)
+			: canServeAgentTasksSnapshot(underLock, since, Date.now());
+		if (alreadyRefreshed) {
+			this.log('⏭️ Cloud agent refresh skipped — another window refreshed the shared snapshot while this one waited for the lock');
 			try { await this.cacheManager.releaseAgentTasksLock(scope); }
 			catch (err) { this.warn(`Failed to release agent tasks lock: ${err}`); }
 			return false;
@@ -2947,7 +2968,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 
 		// `taskRecords`/`listingComplete` are local cache material and are split off here: only the
 		// rest of the collection — the same aggregate shape as before — is ever published to a webview.
-		const { taskRecords, listingComplete, ...result } = await collectAgentSessions({
+		const { taskRecords, seenTaskKeys, listingComplete, ...result } = await collectAgentSessions({
 			token,
 			since,
 			workspaceRepos,
@@ -2964,7 +2985,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			return;
 		}
 
-		const reconciled = reconcileAgentTaskRecords(cachedTasks, taskRecords, { listingComplete });
+		const reconciled = reconcileAgentTaskRecords(cachedTasks, taskRecords, { listingComplete, seenKeys: seenTaskKeys });
 		this.log(
 			`🤖 Cloud agent task cache: ${taskRecords.length} in listing, ${reconciled.removed} removed`
 			+ `, ${reconciled.retainedUnverified} retained unverified, ${reconciled.evicted} evicted`,
@@ -4484,6 +4505,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'usage.githubActivity.partialAgentTasks': l10n.t('usage.githubActivity.partialAgentTasks'),
 			'usage.githubActivity.tasksScannedTooltip': l10n.t('usage.githubActivity.tasksScannedTooltip'),
 			'usage.githubActivity.tasksScannedLabel': l10n.t('usage.githubActivity.tasksScannedLabel'),
+			'usage.githubActivity.lowerBoundNote': l10n.t('usage.githubActivity.lowerBoundNote'),
 			// Details view — collapsible "Usage by Editor" section heading tooltips
 			'details.editorSection.show': l10n.t('details.editorSection.show'),
 			'details.editorSection.hide': l10n.t('details.editorSection.hide'),

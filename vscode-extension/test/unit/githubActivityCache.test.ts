@@ -128,6 +128,23 @@ test('isManualRefreshAllowed is not pinned shut by a clock jump backwards', () =
 // Storage budget
 // ---------------------------------------------------------------------------
 
+test('normalizeGitHubHost does not merge an Enterprise host with its api. prefix', () => {
+	// `api.` and `www.` front the same service only for github.com and the documented
+	// api.<tenant>.ghe.com form. Nothing says a self-hosted `api.acme.example` is the same machine
+	// as `acme.example`, and merging them would serve one host's private snapshots on the other.
+	assert.notEqual(normalizeGitHubHost('api.acme.example'), normalizeGitHubHost('acme.example'));
+	assert.notEqual(normalizeGitHubHost('www.acme.example'), normalizeGitHubHost('acme.example'));
+
+	// The deliberate aliases still hold.
+	assert.equal(normalizeGitHubHost('api.github.com'), 'github-com');
+	assert.equal(normalizeGitHubHost('www.github.com'), 'github-com');
+	assert.equal(normalizeGitHubHost('github.com'), 'github-com');
+	assert.equal(normalizeGitHubHost('api.acme.ghe.com'), normalizeGitHubHost('acme.ghe.com'));
+
+	// ...and an Enterprise host that merely *contains* ghe.com is not the tenant form.
+	assert.notEqual(normalizeGitHubHost('api.acme.ghe.com.evil.example'), normalizeGitHubHost('acme.ghe.com.evil.example'));
+});
+
 test('applyRecordBudget keeps the most recently updated records within the record cap', () => {
 	const records = [
 		{ id: 'old', at: 1 },

@@ -2770,7 +2770,7 @@ function renderAgentSessionsContent(data: AgentSessionsResult): string {
 		</div>
 		<div style="font-size:11px; color:var(--text-secondary); margin-bottom:12px;">
 			Showing cloud-agent sessions from ${sinceDate} to now.
-			${hasPartial ? '<strong>Note:</strong> Some repos were capped — totals are lower bounds. ' : ''}
+			${hasPartial ? `${escapeHtml(localize('usage.githubActivity.lowerBoundNote'))} ` : ''}
 			${data.accountTasksAvailable
 				? ''
 				: `<strong>Account-wide tasks unavailable:</strong> ${data.accountTasksError ?? 'the /agents/tasks endpoint could not be read'} — only workspace repositories are shown.`}

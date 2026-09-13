@@ -600,6 +600,13 @@ export interface CollectAgentSessionsOptions {
 export interface AgentSessionsCollection extends AgentSessionsResult {
 	/** Per-task records for every task in this pass's listing membership. */
 	taskRecords: AgentTaskRecord[];
+	/**
+	 * Cache keys of every task this pass's listings actually surfaced — a superset of
+	 * `taskRecords`, because a task whose `updated_at` was uncacheable is seen but not stored.
+	 * Reconciliation needs the difference: "seen but unverifiable" must drop the old record rather
+	 * than retain it as reusable, which is what "not seen at all" does on an incomplete listing.
+	 */
+	seenTaskKeys: Set<string>;
 	/** True when every listing (each workspace repo and the account-wide endpoint) enumerated fully. */
 	listingComplete: boolean;
 }
@@ -706,13 +713,23 @@ async function collectWorkspaceTasks(
 		if (error) { row.error = describeTaskFetchError(statusCode); }
 		if (!complete) { allComplete = false; }
 		for (const task of tasks) {
-			if (!candidates.has(task.id)) {
-				candidates.set(task.id, {
-					id: task.id, key, owner, repo,
-					sortAt: taskSortAt(task), updatedAt: taskUpdatedAt(task),
-					cacheKey: agentTaskCacheKey(key, task.id), discovery: 'workspace',
-				});
+			const existing = candidates.get(task.id);
+			if (existing) {
+				// Two workspace repositories both listed this task — a move, or an inconsistent
+				// listing. The first repo keeps the row (deduplicating by task ID is what stops one
+				// task being counted twice), but the disagreement makes the candidate uncacheable,
+				// exactly as a workspace-vs-account disagreement does: whichever repo is stale, its
+				// cached aggregate must not be folded in without a fresh detail call.
+				if (existing.key !== key || existing.updatedAt !== taskUpdatedAt(task)) {
+					existing.updatedAt = '';
+				}
+				continue;
 			}
+			candidates.set(task.id, {
+				id: task.id, key, owner, repo,
+				sortAt: taskSortAt(task), updatedAt: taskUpdatedAt(task),
+				cacheKey: agentTaskCacheKey(key, task.id), discovery: 'workspace',
+			});
 		}
 		reportProgress();
 	}
@@ -963,6 +980,7 @@ export async function collectAgentSessions(options: CollectAgentSessionsOptions)
 		// not enumerate fully.
 		partial: needsDetail.length > selected.length || failed.length > 0 || !listingComplete,
 		taskRecords: buildTaskRecords(candidates, cachedByKey, new Set(selected.map(c => c.cacheKey)), outcomes),
+		seenTaskKeys: new Set([...candidates.values()].map((c) => c.cacheKey)),
 		listingComplete,
 	};
 }
