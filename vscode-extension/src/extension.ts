@@ -635,11 +635,18 @@ class CopilotTokenTracker implements vscode.Disposable {
 	// the key doesn't leave the old key's listing making up to MAX_PAGES sequential requests in the
 	// background after this window has stopped caring about the result.
 	private _mistralCloudAbortController?: AbortController;
+	// BETA: fingerprint of the key the currently in-flight fetch (if any) was started with — lets
+	// rehydrateOrInvalidateMistralCloudSessionsCache detect and abort a request that's still running
+	// under a since-superseded key even when there's no completed listing cached yet to compare
+	// against (e.g. the very first refresh in this window, still in flight when another VS Code
+	// window replaces the key).
+	private _mistralCloudInFlightKeyFingerprint?: string;
 
 	/** BETA: aborts any in-flight Mistral cloud sessions fetch — called whenever the configured key
 	 * changes or clears, and internally before a new refresh starts one of its own. */
 	private abortInFlightMistralCloudSessionsFetch(): void {
 		this._mistralCloudAbortController?.abort();
+		this._mistralCloudInFlightKeyFingerprint = undefined;
 	}
 	// Per scan-range TTFT result cache. Granularity changes reuse the cached sample set instantly.
 	private readonly diagnosticsTtftCache = new TtftScanResultCache();
@@ -4271,6 +4278,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'mistral.button.retry': l10n.t('mistral.button.retry'),
 			'mistral.summary.conversations': l10n.t('mistral.summary.conversations'),
 			'mistral.summary.ofCount': l10n.t('mistral.summary.ofCount'),
+			'mistral.summary.atLeastCount': l10n.t('mistral.summary.atLeastCount'),
 			'mistral.summary.lastFetched': l10n.t('mistral.summary.lastFetched'),
 			'mistral.error.label': l10n.t('mistral.error.label'),
 			'mistral.button.refresh': l10n.t('mistral.button.refresh'),
@@ -10914,7 +10922,7 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
 
   /** BETA: empty result shape used when no key is configured or the key was cleared. */
   private buildEmptyMistralCloudSessionsResult(): MistralCloudSessionsResult {
-    return { conversations: [], totalCount: 0, authenticated: false, fetchedAt: '', error: '' };
+    return { conversations: [], totalCount: 0, totalIsLowerBound: false, authenticated: false, fetchedAt: '', error: '' };
   }
 
   /**
@@ -11050,7 +11058,13 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     this.abortInFlightMistralCloudSessionsFetch();
     const abortController = new AbortController();
     this._mistralCloudAbortController = abortController;
+    this._mistralCloudInFlightKeyFingerprint = CopilotTokenTracker.fingerprintMistralApiKey(apiKey);
     const result = await collectMistralCloudSessions(apiKey, { signal: abortController.signal });
+    if (this._mistralCloudAbortController === abortController) {
+      // Still the active fetch (not superseded by a newer one while this was in flight) — it's no
+      // longer in-flight now that it has settled, one way or another.
+      this._mistralCloudInFlightKeyFingerprint = undefined;
+    }
     // The key may have been removed or changed while this fetch was in flight (e.g. "Remove API
     // key" clicked mid-refresh) — discard a now-stale result instead of repopulating the UI with
     // data fetched under a key that is no longer the configured one.
@@ -12291,7 +12305,11 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
    * this window's own generation counter ever seeing it.
    */
   private async rehydrateOrInvalidateMistralCloudSessionsCache(panel: vscode.WebviewPanel): Promise<void> {
-    if (!this._lastMistralCloudSessions) { return; }
+    // Also run this reconciliation when a fetch is still in flight but nothing has completed yet —
+    // otherwise the very first refresh in this window (no cached result to compare against) can
+    // keep sending a since-superseded key (changed in another VS Code window) for up to the full
+    // fetch timeout before the in-flight request's own post-fetch key check would notice.
+    if (!this._lastMistralCloudSessions && !this._mistralCloudInFlightKeyFingerprint) { return; }
     const generationBeforeFingerprintCheck = this._mistralCloudRefreshGeneration;
     const currentKeyFingerprint = await this.getCurrentMistralApiKeyFingerprint();
     if (this._mistralCloudRefreshGeneration !== generationBeforeFingerprintCheck) {
@@ -12303,16 +12321,33 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     if (!this.isMistralPanelAlive(panel)) { return; }
     if (currentKeyFingerprint.readFailed) {
       // A transient SecretStorage read failure is not evidence the key changed — clearing the
-      // cache here would expose an unwarranted "no key configured" / Connect state over a key
-      // that may still be there. Leave the cached listing and its display alone.
+      // cache or aborting an active fetch here would expose an unwarranted "no key configured" /
+      // Connect state over a key that may still be there. Leave everything alone.
       return;
     }
+    if (this._mistralCloudInFlightKeyFingerprint && this._mistralCloudInFlightKeyFingerprint !== currentKeyFingerprint.fingerprint) {
+      // An active fetch is still running under a key that is no longer the configured one (e.g.
+      // replaced in another VS Code window whose own generation counter this window never sees) —
+      // stop it instead of letting it keep paginating under a stale credential until it settles.
+      this.abortInFlightMistralCloudSessionsFetch();
+    }
+    if (!this._lastMistralCloudSessions) { return; }
     if (currentKeyFingerprint.fingerprint && currentKeyFingerprint.fingerprint === this._lastMistralCloudSessionsKeyFingerprint) {
       panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this._lastMistralCloudSessions });
       return;
     }
     this._lastMistralCloudSessions = undefined;
     this._lastMistralCloudSessionsKeyFingerprint = undefined;
+    if (!currentKeyFingerprint.fingerprint) {
+      // The key was genuinely removed (not just replaced by a different one) — the status message
+      // this reconciliation's callers already sent (postMistralCloudSessionsStatusEarly's earlier
+      // snapshot, or the final diagnosticDataLoaded assembly's) predates this observation and still
+      // says `apiKeyConfigured: true`. Post the corrected status so the webview drops to Connect
+      // instead of being left believing a key is configured when it no longer is; this also clears
+      // the cached conversations client-side (see handleMistralCloudSessionsStatus).
+      panel.webview.postMessage({ command: "mistralCloudSessionsStatus", mistralCloudSessionsStatus: { apiKeyConfigured: false } });
+      return;
+    }
     // The webview may already be showing this stale listing from an earlier message (e.g. a
     // previous panel-open rehydration) — explicitly clear the display instead of leaving it until
     // manual Refresh. This is a distinct message from `mistralCloudSessionsResult`, not an empty

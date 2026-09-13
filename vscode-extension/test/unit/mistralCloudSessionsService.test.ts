@@ -321,9 +321,12 @@ test('collectMistralCloudSessions: stops at a bounded page cap instead of pagina
 	const result = await collectMistralCloudSessions('key', { requestFn });
 	assert.ok(calls <= 20, `expected a bounded number of page fetches, got ${calls}`);
 	assert.ok(result.conversations.length <= 2000, `expected a bounded conversation count, got ${result.conversations.length}`);
-	// The page cap cut a listing that still looked full short, so the total must read as larger
-	// than what was actually fetched — otherwise the "N of Total" UI would present it as complete.
-	assert.ok(result.totalCount > result.conversations.length, 'expected the total to signal truncation');
+	// The page cap cut a listing that still looked full short with no API-reported total to trust
+	// instead, so `totalCount` is only a lower bound (equal to what was actually fetched) — not a
+	// fabricated exact total — and `totalIsLowerBound` must say so, so the UI can render it as
+	// "N+" rather than presenting it as a complete, exact count.
+	assert.equal(result.totalCount, result.conversations.length, 'expected the total to equal the fetched count, not a fabricated bump');
+	assert.equal(result.totalIsLowerBound, true, 'expected the truncation to be signaled via totalIsLowerBound');
 });
 
 test('collectMistralCloudSessions: stops at an exact-page authoritative total without probing an unnecessary next page', async () => {
@@ -342,6 +345,7 @@ test('collectMistralCloudSessions: stops at an exact-page authoritative total wi
 	assert.equal(calls, 1, 'an authoritative total already reached must not trigger a next-page probe');
 	assert.equal(result.conversations.length, 100);
 	assert.equal(result.totalCount, 100);
+	assert.equal(result.totalIsLowerBound, false, 'an authoritative API total is an exact count, not a lower bound');
 	assert.equal(result.error, '', 'a complete, authoritative listing must not read as a partial failure');
 });
 
@@ -358,6 +362,7 @@ test('collectMistralCloudSessions: trusts an API-reported total that exactly equ
 	const result = await collectMistralCloudSessions('key', { requestFn });
 	assert.equal(result.conversations.length, 2000);
 	assert.equal(result.totalCount, 2000, 'expected the authoritative API total, not a synthesized truncation bump');
+	assert.equal(result.totalIsLowerBound, false, 'an authoritative API total is an exact count, not a lower bound');
 });
 
 test('collectMistralCloudSessions: a later-page failure keeps the pages already fetched but reports it as incomplete', async () => {

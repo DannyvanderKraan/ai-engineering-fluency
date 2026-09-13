@@ -317,6 +317,7 @@ test('l10n: Mistral Cloud tab labels resolve in English', () => {
 		'mistral.status.checkFailed': "Couldn't check whether an API key is configured.",
 		'mistral.summary.conversations': 'Conversations',
 		'mistral.summary.ofCount': '{0} of {1}',
+		'mistral.summary.atLeastCount': '{0}+',
 		'mistral.summary.lastFetched': 'Last fetched',
 		'mistral.error.label': 'Error:',
 		'mistral.error.storeFailed': 'Failed to store the Mistral API key.',
@@ -381,6 +382,7 @@ test('l10n: Mistral Cloud tab labels resolve in zh-cn', () => {
 			'mistral.status.checkFailed': '无法检查是否已配置 API 密钥。',
 			'mistral.summary.conversations': '对话数',
 			'mistral.summary.ofCount': '{1} 个中的 {0} 个',
+			'mistral.summary.atLeastCount': '{0}+',
 			'mistral.summary.lastFetched': '最后获取时间',
 			'mistral.error.label': '错误:',
 			'mistral.error.storeFailed': '存储 Mistral API 密钥失败。',
@@ -443,6 +445,7 @@ test('l10n: Mistral Cloud description templates format {0}/{1} placeholders', ()
 		'Requires a Mistral API key stored locally; it is sent only to <code>api.mistral.ai</code> over HTTPS.',
 	);
 	assert.equal(t('mistral.summary.ofCount', '3', '12'), '3 of 12');
+	assert.equal(t('mistral.summary.atLeastCount', '2000'), '2000+');
 });
 
 test('l10n: Mistral Cloud ofCount reorders placeholders in zh-cn', () => {

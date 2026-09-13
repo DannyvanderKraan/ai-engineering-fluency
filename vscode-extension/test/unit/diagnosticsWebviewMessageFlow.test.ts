@@ -450,6 +450,32 @@ test('Mistral Cloud tab: a mistralCloudSessionsResult message rerenders the tab 
 	assert.ok(rendered?.includes('My beta conversation'), `expected the fetched conversation name, got: ${rendered}`);
 });
 
+test('Mistral Cloud tab: a totalIsLowerBound result renders "N+" instead of a fabricated "N of N+1"', async () => {
+	await preloadBundle();
+	const harness = bootWebviewUnsettled(buildInitialData({ mistralCloudSessionsStatus: { apiKeyConfigured: true } }));
+	await harness.settle();
+
+	harness.post({
+		command: 'mistralCloudSessionsResult',
+		result: {
+			conversations: Array.from({ length: 2000 }, (_, i) => ({
+				id: `conv-${i}`, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z',
+				agentId: 'agent-1', name: `Conversation ${i}`, description: null, agentVersion: '1',
+			})),
+			totalCount: 2000,
+			totalIsLowerBound: true,
+			authenticated: true,
+			fetchedAt: '2026-01-02T00:00:00Z',
+			error: '',
+		},
+	});
+	await harness.settle();
+
+	const rendered = harness.text('#tab-mistral-cloud');
+	assert.ok(rendered?.includes('2,000+'), `expected a lower-bound "2,000+" count, got: ${rendered}`);
+	assert.ok(!rendered?.includes('2,000 of'), `expected no fabricated "of" total, got: ${rendered}`);
+});
+
 test('Mistral Cloud tab: a status update reporting the key removed clears a previously cached result', async () => {
 	await preloadBundle();
 	const harness = bootWebviewUnsettled(buildInitialData({ mistralCloudSessionsStatus: { apiKeyConfigured: true } }));

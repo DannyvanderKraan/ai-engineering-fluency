@@ -3426,6 +3426,18 @@ function renderMistralConversationTable(conversations: MistralCloudConversation[
   return `<div class="table-container" style="margin-top: 12px; max-height: 420px;"><table class="session-table"><thead><tr><th>${localize("mistral.table.id")}</th><th>${localize("mistral.table.name")}</th><th>${localize("mistral.table.agentId")}</th><th>${localize("mistral.table.version")}</th><th>${localize("mistral.table.created")}</th><th>${localize("mistral.table.updated")}</th><th>${localize("mistral.table.description")}</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
+/**
+ * `totalIsLowerBound` means the page cap was hit with no API-reported total to trust instead —
+ * `totalCount` there just echoes the fetched count, so it can never take the "of" branch below;
+ * render it as "at least this many" instead of a bare count that looks like a complete, exact
+ * listing.
+ */
+function formatMistralConversationCount(result: MistralCloudSessionsResult | undefined, count: number): string {
+  if (result?.totalIsLowerBound) { return localizeFormat("mistral.summary.atLeastCount", count.toLocaleString()); }
+  if (result && result.totalCount > count) { return localizeFormat("mistral.summary.ofCount", count.toLocaleString(), result.totalCount.toLocaleString()); }
+  return count.toLocaleString();
+}
+
 function renderMistralCloudSummaryCards(result: MistralCloudSessionsResult | undefined, configured: boolean, statusKnown: boolean): string {
   const statusText = !statusKnown
     ? localize("mistral.status.checking")
@@ -3433,9 +3445,7 @@ function renderMistralCloudSummaryCards(result: MistralCloudSessionsResult | und
   const statusColor = !statusKnown ? "var(--text-secondary)" : configured ? "var(--success-fg)" : "var(--text-secondary)";
   const statusIcon = !statusKnown ? "⏳" : configured ? "✅" : "⚪";
   const count = result?.conversations?.length ?? 0;
-  const countDisplay = result && result.totalCount > count
-    ? localizeFormat("mistral.summary.ofCount", count.toLocaleString(), result.totalCount.toLocaleString())
-    : count.toLocaleString();
+  const countDisplay = formatMistralConversationCount(result, count);
   const lastFetched = result?.fetchedAt ? new Date(result.fetchedAt).toLocaleString() : "";
   return `<div class="summary-cards">
 <div class="summary-card" style="border-left: 4px solid ${statusColor};">
@@ -3570,7 +3580,7 @@ function handleMistralCloudSessionsStatus(message: DiagMessage): void {
   // account's conversations and the Refresh/Remove buttons after a status refresh reports the key
   // was removed (e.g. from another window), instead of falling back to the Connect state.
   if (!currentMistralApiKeyConfigured) {
-    currentMistralCloudSessions = { conversations: [], totalCount: 0, authenticated: false, fetchedAt: "", error: "" };
+    currentMistralCloudSessions = { conversations: [], totalCount: 0, totalIsLowerBound: false, authenticated: false, fetchedAt: "", error: "" };
     // A refresh/connect that was in flight for the now-removed key can no longer produce a message
     // this window will treat as terminal — the host silently discards a superseded generation
     // (see diagHandleRefreshMistralCloudSessions) rather than posting a final result — so Connect

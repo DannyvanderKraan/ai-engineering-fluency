@@ -146,6 +146,14 @@ export const WHATS_NEW_RELEASES: readonly WhatsNewRelease[] = [
 				surface: { view: 'diagnostics', tab: 'ttft' },
 			},
 			{
+				id: 'diagnostics.mistral-cloud-tab',
+				title: 'Research → Mistral Cloud (Beta)',
+				description:
+					'Lists your Mistral Vibe Code Web conversations right in the Diagnostics Research tab, via the beta Agents Conversations API — store an API key once and see conversation names, agents, and timestamps without leaving the editor.',
+				kind: 'tab',
+				surface: { view: 'diagnostics', tab: 'mistral-cloud' },
+			},
+			{
 				// Listed last on purpose: the per-release cap means this is never
 				// announced, and it does not need to be — the notification's second
 				// button is a link to this very page.

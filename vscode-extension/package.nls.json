@@ -256,6 +256,7 @@
   "mistral.status.checkFailed": "Couldn't check whether an API key is configured.",
   "mistral.summary.conversations": "Conversations",
   "mistral.summary.ofCount": "{0} of {1}",
+  "mistral.summary.atLeastCount": "{0}+",
   "mistral.summary.lastFetched": "Last fetched",
   "mistral.error.label": "Error:",
   "mistral.error.storeFailed": "Failed to store the Mistral API key.",

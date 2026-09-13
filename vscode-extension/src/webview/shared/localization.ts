@@ -79,6 +79,7 @@ export interface WebviewLocalization {
 	'mistral.status.checkFailed': string;
 	'mistral.summary.conversations': string;
 	'mistral.summary.ofCount': string;
+	'mistral.summary.atLeastCount': string;
 	'mistral.summary.lastFetched': string;
 	'mistral.error.label': string;
 	'mistral.button.refresh': string;
@@ -174,6 +175,7 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'mistral.status.checkFailed': "Couldn't check whether an API key is configured.",
 	'mistral.summary.conversations': 'Conversations',
 	'mistral.summary.ofCount': '{0} of {1}',
+	'mistral.summary.atLeastCount': '{0}+',
 	'mistral.summary.lastFetched': 'Last fetched',
 	'mistral.error.label': 'Error:',
 	'mistral.button.refresh': 'Refresh',

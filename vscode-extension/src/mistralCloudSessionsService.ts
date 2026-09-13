@@ -197,6 +197,13 @@ export interface MistralListResult {
   error?: string;
 }
 
+/** Result of `computeEffectiveTotal`: the total to report, and whether it's a genuine count or
+ * merely a lower bound (the page cap was hit with no API-reported total to trust instead). */
+interface EffectiveTotal {
+  total: number;
+  isLowerBound: boolean;
+}
+
 /**
  * Extracts the raw conversation list from a `/v1/conversations` response body. The API may return
  * a bare array, or an object envelope keyed `conversations` (the documented shape) or `data`;
@@ -249,18 +256,20 @@ export async function listMistralConversations(
 /**
  * The total to report to the caller. An API-reported total is trusted outright — including when
  * it exactly equals what we fetched, which is a genuine "this is everything" signal, not something
- * to override with a synthetic truncation bump. Only when the API never reported a total at all do
- * we synthesize a "more than shown" total for a listing the page cap cut short while the last
- * fetched page was still full, so the existing "N of Total" UI stays honest about truncation.
+ * to override with a synthetic bump. When the API never reported a total at all and the page cap
+ * cut the listing short while the last fetched page was still full, `fetchedCount` is only a lower
+ * bound, not an exact total — fabricating one more than what was fetched (e.g. an account with
+ * exactly 2,000 conversations reporting "2000 of 2001") would be a false precise count instead of
+ * an honest "at least this many"; `isLowerBound` lets the caller render it as such (e.g. "2000+").
  */
 function computeEffectiveTotal(
   fetchedCount: number,
   apiTotal: number | undefined,
   apiTotalIsAuthoritative: boolean,
   hitPageCap: boolean,
-): number {
-  if (apiTotalIsAuthoritative && apiTotal !== undefined) { return apiTotal; }
-  return hitPageCap ? fetchedCount + 1 : fetchedCount;
+): EffectiveTotal {
+  if (apiTotalIsAuthoritative && apiTotal !== undefined) { return { total: apiTotal, isLowerBound: false }; }
+  return { total: fetchedCount, isLowerBound: hitPageCap };
 }
 
 /**
@@ -276,7 +285,7 @@ function computeEffectiveTotal(
 async function listAllMistralConversations(
   apiKey: string,
   options: { pageSize?: number; requestFn?: MistralRequestFn; signal?: AbortSignal } = {},
-): Promise<MistralListResult & { partialError?: string }> {
+): Promise<MistralListResult & { partialError?: string; totalIsLowerBound?: boolean }> {
   const pageSize = Math.min(Math.max(options.pageSize ?? DEFAULT_PAGE_SIZE, 1), 100);
   const conversations: MistralCloudConversation[] = [];
   let totalCount: number | undefined;
@@ -311,9 +320,11 @@ async function listAllMistralConversations(
     if ((pageResult.rawCount ?? pageConversations.length) < pageSize) { break; }
     if (page === MAX_PAGES - 1) { hitPageCap = true; }
   }
+  const effectiveTotal = computeEffectiveTotal(conversations.length, totalCount, totalIsFromApi, hitPageCap);
   return {
     conversations,
-    totalCount: computeEffectiveTotal(conversations.length, totalCount, totalIsFromApi, hitPageCap),
+    totalCount: effectiveTotal.total,
+    totalIsLowerBound: effectiveTotal.isLowerBound,
     statusCode,
     partialError,
   };
@@ -354,6 +365,7 @@ export async function collectMistralCloudSessions(
       return {
         conversations: [],
         totalCount: 0,
+        totalIsLowerBound: false,
         authenticated: false,
         fetchedAt,
         // requestMistralJson's HTTP-status errors already read "HTTP <code>"; only append the
@@ -367,6 +379,7 @@ export async function collectMistralCloudSessions(
     return {
       conversations: list.conversations ?? [],
       totalCount: list.totalCount ?? 0,
+      totalIsLowerBound: !!list.totalIsLowerBound,
       authenticated: true,
       fetchedAt,
       // A later page can fail after earlier pages already succeeded (listAllMistralConversations
@@ -378,6 +391,7 @@ export async function collectMistralCloudSessions(
     return {
       conversations: [],
       totalCount: 0,
+      totalIsLowerBound: false,
       authenticated: false,
       fetchedAt,
       error: e instanceof Error ? e.message : String(e),

@@ -1494,6 +1494,13 @@ export interface MistralCloudSessionsResult {
   conversations: MistralCloudConversation[];
   /** Total conversations reported by the listing, when the API returns it. */
   totalCount: number;
+  /**
+   * True when `totalCount` is only a lower bound, not an exact total: the API never reported a
+   * `total` and the bounded page cap (see `mistralCloudSessionsService.ts`) was hit while the last
+   * fetched page was still full. `totalCount` then equals `conversations.length` and callers should
+   * render it as "at least this many" (e.g. "2000+") rather than an exact "N of totalCount".
+   */
+  totalIsLowerBound: boolean;
   /** True when an API key is configured and the listing call succeeded (even partially). */
   authenticated: boolean;
   /** ISO timestamp of the fetch; empty when never fetched. */
