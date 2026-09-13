@@ -3420,7 +3420,10 @@ function renderMistralConversationRow(c: MistralCloudConversation): string {
 function renderMistralConversationTable(conversations: MistralCloudConversation[]): string {
   const rows = conversations.map(renderMistralConversationRow).join("");
   if (!rows) { return ""; }
-  return `<table class="session-table"><thead><tr><th>${localize("mistral.table.id")}</th><th>${localize("mistral.table.name")}</th><th>${localize("mistral.table.agentId")}</th><th>${localize("mistral.table.version")}</th><th>${localize("mistral.table.created")}</th><th>${localize("mistral.table.updated")}</th><th>${localize("mistral.table.description")}</th></tr></thead><tbody>${rows}</tbody></table>`;
+  // The loader can return up to 2,000 rows with unbounded conversation names — without the shared
+  // scrollable container the other Diagnostics tables use, this would grow the whole tab instead
+  // of scrolling within it.
+  return `<div class="table-container" style="margin-top: 12px; max-height: 420px;"><table class="session-table"><thead><tr><th>${localize("mistral.table.id")}</th><th>${localize("mistral.table.name")}</th><th>${localize("mistral.table.agentId")}</th><th>${localize("mistral.table.version")}</th><th>${localize("mistral.table.created")}</th><th>${localize("mistral.table.updated")}</th><th>${localize("mistral.table.description")}</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 function renderMistralCloudSummaryCards(result: MistralCloudSessionsResult | undefined, configured: boolean, statusKnown: boolean): string {
@@ -3582,6 +3585,12 @@ function handleMistralCloudSessionsStatus(message: DiagMessage): void {
  * instead of leaving the tab stuck with no way to recover. */
 function handleMistralCloudSessionsStatusCheckFailed(): void {
   mistralStatusCheckFailed = true;
+  // A previously-known status (configured or not) is no longer something this failed read can
+  // stand behind — leaving it defined would let renderMistralCloudButtons keep treating the status
+  // as known and render Connect (over a key the extension can no longer verify one way or the
+  // other) or Refresh/Remove (over a key it can no longer confirm is still there). Only Retry
+  // should be offered until a fresh read actually succeeds.
+  currentMistralApiKeyConfigured = undefined;
   rerenderMistralCloudTab();
 }
 

@@ -294,9 +294,14 @@ async function listAllMistralConversations(
     statusCode = pageResult.statusCode;
     const pageConversations = pageResult.conversations ?? [];
     conversations.push(...pageConversations);
-    if (typeof pageResult.totalCount === 'number') {
+    // A page's own totalCount is only meaningful in aggregate when the API actually reported it
+    // (totalIsFromApi, which listMistralConversations only sets alongside a numeric totalCount) —
+    // otherwise it's that function's per-page fallback (the page's own conversation count), and
+    // overwriting the running total with it on every page would make a short final page (e.g. 2
+    // entries) clobber the true aggregate with that page's own count.
+    if (pageResult.totalIsFromApi) {
       totalCount = pageResult.totalCount;
-      totalIsFromApi = !!pageResult.totalIsFromApi;
+      totalIsFromApi = true;
     }
     // An authoritative total that's already been reached means the listing is complete even when
     // the last page happened to come back exactly `pageSize` long — without this, an exact-page

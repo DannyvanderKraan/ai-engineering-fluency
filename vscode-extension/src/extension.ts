@@ -10593,7 +10593,13 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     this.log("✅ Diagnostic Report panel created");
     this.diagnosticsPanel.webview.onDidReceiveMessage(async (message) => { await this.handleDiagnosticMessage(message); });
     this.diagnosticsPanel.webview.html = this.getDiagnosticReportHtml(this.diagnosticsPanel.webview, "Loading...", [], [], [], null);
-    this.diagnosticsPanel.onDidDispose(() => { this.log("🔍 Diagnostic Report closed"); this.diagnosticsPanel = undefined; });
+    this.diagnosticsPanel.onDidDispose(() => {
+      this.log("🔍 Diagnostic Report closed");
+      this.diagnosticsPanel = undefined;
+      // A fetch left running after the panel is gone would keep issuing serial page requests
+      // (up to MAX_PAGES/20s) against the beta endpoint for a UI nobody can see anymore.
+      this.abortInFlightMistralCloudSessionsFetch();
+    });
     this.loadDiagnosticDataInBackground(this.diagnosticsPanel);
   }
 
@@ -10812,7 +10818,10 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
    * failing read would otherwise leave the tab permanently stuck with no way to recover.
    */
   private async diagHandleRetryMistralCloudSessionsStatus(): Promise<void> {
-    if (this.diagnosticsPanel && this.isPanelOpen(this.diagnosticsPanel)) {
+    // Not gated on isPanelOpen(): the panel is retained while merely hidden
+    // (retainContextWhenHidden), and a retry triggered just before the tab is backgrounded should
+    // still resolve so the correct state is there once it's revealed again.
+    if (this.diagnosticsPanel) {
       await this.postMistralCloudSessionsStatusEarly(this.diagnosticsPanel);
     }
   }
@@ -10832,11 +10841,13 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     });
     if (key) {
       await this.diagHandleSetMistralApiKey(key);
-    } else if (this.diagnosticsPanel && this.isPanelOpen(this.diagnosticsPanel)) {
+    } else if (this.diagnosticsPanel) {
       // The webview disables the Connect button while this prompt is in flight (to stop rapid
       // clicks from stacking multiple input boxes); the key/set path re-enables it via the
       // eventual mistralCloudSessionsResult message, but a cancelled prompt never produces one, so
-      // tell the webview explicitly to re-enable it here.
+      // tell the webview explicitly to re-enable it here. Not gated on isPanelOpen(): the panel is
+      // retained while merely hidden, and this terminal message must still reach it there too, or
+      // Connect stays disabled indefinitely once the tab is revealed again.
       this.diagnosticsPanel.webview.postMessage({ command: 'mistralCloudPromptCancelled' });
     }
   }
@@ -10864,7 +10875,8 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       vscode.window.showErrorMessage(l10n.t('mistral.error.storeFailed'));
       // The webview disabled Connect while this was in flight; without a terminal message here it
       // would stay disabled forever since the store failed before any refresh could send one.
-      if (this.diagnosticsPanel && this.isPanelOpen(this.diagnosticsPanel)) {
+      // Not gated on isPanelOpen() — see diagHandlePromptMistralApiKey's cancel branch above.
+      if (this.diagnosticsPanel) {
         this.diagnosticsPanel.webview.postMessage({ command: 'mistralCloudPromptCancelled' });
       }
     }
@@ -10882,7 +10894,8 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       this._lastMistralCloudSessions = undefined;
       this._lastMistralCloudSessionsKeyFingerprint = undefined;
       this.log('Mistral API key removed.');
-      if (this.diagnosticsPanel && this.isPanelOpen(this.diagnosticsPanel)) {
+      // Not gated on isPanelOpen() — see diagHandlePromptMistralApiKey's cancel branch above.
+      if (this.diagnosticsPanel) {
         this.diagnosticsPanel.webview.postMessage({ command: 'mistralCloudSessionsResult', result: this.buildEmptyMistralCloudSessionsResult() });
       }
     } catch (error) {
@@ -10978,22 +10991,33 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
    * interim "loading" marker up, so it needs a terminal message either way to re-enable Refresh.
    */
   private postMistralKeyCheckFailedResult(): void {
-    if (this.diagnosticsPanel && this.isPanelOpen(this.diagnosticsPanel)) {
+    // Not gated on isPanelOpen() — see diagHandlePromptMistralApiKey's cancel branch above.
+    if (this.diagnosticsPanel) {
       this.diagnosticsPanel.webview.postMessage({
         command: 'mistralCloudSessionsResult',
         result: { ...this.buildEmptyMistralCloudSessionsResult(), error: l10n.t('mistral.error.keyCheckFailed') },
       });
+      // This error result alone leaves `apiKeyConfigured` at whatever it was before (the webview
+      // can't tell "definitely still false" from "we just don't know anymore" from an error result
+      // alone) — if that stale value happened to be false, the tab would render Connect and let the
+      // user overwrite a key that a transient read failure merely couldn't verify. Transition the
+      // status itself to unknown so only Retry is offered until a fresh read actually succeeds.
+      this.diagnosticsPanel.webview.postMessage({ command: 'mistralCloudSessionsStatusCheckFailed' });
     }
   }
 
   /** BETA: fetch Mistral cloud conversations and post the result to the diagnostics webview. */
   private async diagHandleRefreshMistralCloudSessions(): Promise<void> {
-    if (!this.diagnosticsPanel || !this.isPanelOpen(this.diagnosticsPanel)) { return; }
+    // Not gated on isPanelOpen() anywhere in this method: the panel is retained while merely
+    // hidden, and a refresh started (or a key entered) just before the tab is backgrounded must
+    // still resolve and post its terminal message, or the button stays disabled indefinitely once
+    // the tab is revealed again. Disposal (this.diagnosticsPanel becoming undefined) still stops it.
+    if (!this.diagnosticsPanel) { return; }
     const generation = ++this._mistralCloudRefreshGeneration;
     let apiKey: string | undefined;
     let initialKeyReadFailed = false;
     try { apiKey = await this.context.secrets.get(MISTRAL_API_KEY_SECRET); } catch { initialKeyReadFailed = true; }
-    if (generation !== this._mistralCloudRefreshGeneration || !this.diagnosticsPanel || !this.isPanelOpen(this.diagnosticsPanel)) { return; }
+    if (generation !== this._mistralCloudRefreshGeneration || !this.diagnosticsPanel) { return; }
     if (initialKeyReadFailed) {
       // A rejected read is not the same as a genuinely absent key — treating it as "no key" would
       // post the empty/unconfigured result below, which the webview reads as "removed", prompting
@@ -11038,7 +11062,7 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     }
     this._lastMistralCloudSessions = result;
     this._lastMistralCloudSessionsKeyFingerprint = CopilotTokenTracker.fingerprintMistralApiKey(apiKey);
-    if (this.diagnosticsPanel && this.isPanelOpen(this.diagnosticsPanel)) {
+    if (this.diagnosticsPanel) {
       this.diagnosticsPanel.webview.postMessage({ command: 'mistralCloudSessionsResult', result });
     }
   }
@@ -12219,7 +12243,7 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
    */
   private async postMistralCloudSessionsStatusEarly(panel: vscode.WebviewPanel): Promise<void> {
     const mistralCloudSessionsStatus = await this.getFreshMistralCloudSessionsStatus();
-    if (!this.isPanelOpen(panel)) { return; }
+    if (!this.isMistralPanelAlive(panel)) { return; }
     if (!mistralCloudSessionsStatus) {
       // A synthesized `apiKeyConfigured: false` would render Connect over a key that may still be
       // there, so the key status itself stays unknown — but the read failure must still reach the
@@ -12257,7 +12281,7 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       // on top of it.
       return;
     }
-    if (!this.isPanelOpen(panel)) { return; }
+    if (!this.isMistralPanelAlive(panel)) { return; }
     if (currentKeyFingerprint.readFailed) {
       // A transient SecretStorage read failure is not evidence the key changed — clearing the
       // cache here would expose an unwarranted "no key configured" / Connect state over a key
@@ -12414,6 +12438,19 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
    */
   private isPanelOpen(panel: vscode.WebviewPanel): boolean {
     return panel.viewColumn !== undefined;
+  }
+
+  /**
+   * BETA: true while `this.diagnosticsPanel` still refers to this exact panel — i.e. it has not
+   * been disposed (onDidDispose clears the field) — regardless of whether it's currently the
+   * visible/active tab. Deliberately laxer than isPanelOpen(), which also reads false while the
+   * panel is merely hidden (the right check for gating expensive background work): the diagnostics
+   * panel sets `retainContextWhenHidden: true`, so a hidden-but-alive webview keeps its in-flight
+   * Mistral state and must still receive terminal status/result messages, or it can get stuck
+   * showing a stale "Checking…"/disabled-button state once revealed again.
+   */
+  private isMistralPanelAlive(panel: vscode.WebviewPanel): boolean {
+    return this.diagnosticsPanel === panel;
   }
 
   /**

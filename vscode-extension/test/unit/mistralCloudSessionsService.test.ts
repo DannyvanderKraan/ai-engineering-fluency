@@ -289,6 +289,10 @@ test('collectMistralCloudSessions: paginates a full first page and stops at a sh
 	assert.equal(result.conversations.length, 102);
 	assert.equal(result.conversations[100].id, 'p1-0');
 	assert.equal(result.authenticated, true);
+	// Neither page's body carries an API-reported total (bare arrays), so totalCount must be the
+	// aggregate across both pages — not the last (short) page's own count clobbering the running
+	// total.
+	assert.equal(result.totalCount, 102, 'expected the aggregate count, not the short final page\'s own count');
 });
 
 test('collectMistralCloudSessions: a single short page fetches only one page', async () => {
