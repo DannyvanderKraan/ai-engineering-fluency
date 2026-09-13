@@ -3534,7 +3534,22 @@ class CopilotTokenTracker implements vscode.Disposable {
 		if (!this.lastFullDailyStats) { return; }
 		const fullMap = new Map(this.lastFullDailyStats.map(d => [d.date, d]));
 		for (const day of dailyStats) { fullMap.set(day.date, day); }
-		this.lastFullDailyStats = Array.from(fullMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+		this.setFullDailyStats(Array.from(fullMap.values()).sort((a, b) => a.date.localeCompare(b.date)));
+	}
+
+	/**
+	 * Replaces the cached full daily stats, retiring the Efficiency view's
+	 * session sample with them.
+	 *
+	 * The two are charted side by side — daily aggregates supply the volume
+	 * series, the session sample the duration/retry/apply/skill series — so a
+	 * refresh that renewed only one would hand the webview a payload whose two
+	 * halves describe different moments. Assigning through one setter keeps that
+	 * impossible rather than merely remembered.
+	 */
+	private setFullDailyStats(stats: DailyTokenStats[]): void {
+		this.lastFullDailyStats = stats;
+		this.lastEfficiencySessionInputs = undefined;
 	}
 
 	private updateStatusBarAndTooltip(detailedStats: DetailedStats): void {
@@ -4450,7 +4465,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		}
 
 		const result = Array.from(dailyStatsMap.values()).sort((a, b) => a.date.localeCompare(b.date));
-		this.lastFullDailyStats = result;
+		this.setFullDailyStats(result);
 		return result;
 	}
 

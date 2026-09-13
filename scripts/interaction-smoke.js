@@ -105,6 +105,7 @@ const TAG_CONTROLS = (selector) => {
   };
 
   const controls = [];
+  const seen = new Map();
   let index = 0;
   for (const el of Array.from(document.querySelectorAll(selector))) {
     if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') {
@@ -127,6 +128,18 @@ const TAG_CONTROLS = (selector) => {
     }
     el.setAttribute('data-smoke-id', String(index));
     const label = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+    // Identity, not position: a control that re-renders its view can add or
+    // remove controls around this one, and matching the fresh enumeration by
+    // array index would then silently exercise a different control.
+    const identity = [
+      el.tagName.toLowerCase(),
+      el.id || '',
+      el.getAttribute('data-tab') || el.getAttribute('data-action') || el.getAttribute('data-command') || el.getAttribute('data-range') || '',
+      label,
+    ].join('|');
+    const occurrence = seen.get(identity) || 0;
+    seen.set(identity, occurrence + 1);
+    const key = `${identity}#${occurrence}`;
     // A segmented control's current option, a checked radio: re-clicking it is
     // meant to be inert, so a no-op there is not evidence of broken wiring.
     const alreadySelected =
@@ -143,6 +156,7 @@ const TAG_CONTROLS = (selector) => {
       label: label || null,
       alreadySelected,
       selectValue,
+      key,
     });
     index++;
   }
@@ -310,17 +324,20 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
   // replaces every tagged node, and the stale `data-smoke-id`s then make every
   // later control report `skipped` — untested, while the run still exits 0.
   // Re-tagging keeps the pass honest without `--isolate`'s page reload.
-  for (let index = 0; index < controls.length; index++) {
+  for (const original of controls) {
     if (isolate && results.length > 0) {
       await page.close();
       page = await openPage(browser, pageFile, view, defaults);
     }
     const current = await page.evaluate(TAG_CONTROLS, INTERACTIVE_SELECTOR);
-    // The set can legitimately shrink (a tab with fewer controls). Nothing left
-    // at this position means nothing to exercise, not a failure.
-    const control = current[index];
+    // Find *this* control again by identity. Matching by array position would
+    // drift the moment an earlier interaction added or removed a control — e.g.
+    // switching the Efficiency resolution to Daily removes the drill picker, so
+    // every later control would shift up one and be exercised in place of the
+    // one actually intended.
+    const control = current.find((c) => c.key === original.key);
     if (!control) {
-      results.push({ ...controls[index], status: 'skipped', reason: 'no longer present after an earlier interaction' });
+      results.push({ ...original, status: 'skipped', reason: 'no longer present after an earlier interaction' });
       continue;
     }
 

@@ -132,11 +132,13 @@ function visibleTabs(d: EfficiencyViewData): { id: TabId; label: string }[] {
  * attributable to a session, editor or model. Those three get no toolbar rather
  * than a toolbar that cannot tell the truth.
  */
-const SCOPE_POLICY: Partial<Record<TabId, { editor: boolean; vendor: boolean }>> = {
-	trends: { editor: true, vendor: false },
-	combined: { editor: true, vendor: false },
-	skills: { editor: true, vendor: false },
-	models: { editor: true, vendor: true },
+const SCOPE_POLICY: Partial<Record<TabId, { editor: boolean; vendor: boolean; behavioral: boolean }>> = {
+	trends: { editor: true, vendor: false, behavioral: true },
+	combined: { editor: true, vendor: false, behavioral: true },
+	skills: { editor: true, vendor: false, behavioral: true },
+	// `behavioral: false` — the Models tab draws from `modelDaily`, which carries
+	// a full year, so the session-window caveat would be false there.
+	models: { editor: true, vendor: true, behavioral: false },
 };
 
 /**
@@ -343,7 +345,7 @@ function renderScopeToolbar(d: EfficiencyViewData, s: ScopedData): string {
 			${drill}
 		</div>
 		<p class="scope-announce" role="status" aria-live="polite">${escapeHtml(localizeFormat('efficiency.scope.announce', announcement))}</p>
-		${s.behaviorGap ? `<p class="scope-caveat">${escapeHtml(localizeFormat('efficiency.scope.behaviorGap', Math.round((d.behaviorWindowDays ?? 84) / 7)))}</p>` : ''}
+		${s.behaviorGap && policy.behavioral ? `<p class="scope-caveat">${escapeHtml(localizeFormat('efficiency.scope.behaviorGap', Math.round((d.behaviorWindowDays ?? 84) / 7)))}</p>` : ''}
 		${scope.editor ? `<p class="scope-caveat">${escapeHtml(localizeFormat('efficiency.scope.editorScoped', scope.editor))}</p>` : ''}`;
 }
 
@@ -840,7 +842,31 @@ function reconcileModelSelection(d: EfficiencyViewData): void {
 	const preferred = models.filter(m => m.sampleSufficient);
 	const pool = preferred.length >= 2 ? preferred : models;
 	if (!ids.has(modelState.modelA)) { modelState.modelA = pool[0].model; }
-	if (!ids.has(modelState.modelB)) { modelState.modelB = pool[1]?.model ?? pool[0].model; }
+	// Leave B empty when the scope holds only one model. Pointing both sides at
+	// the same model would render an all-ties "head-to-head" that looks like a
+	// real comparison; {@link renderModelsTab} shows an explicit state instead.
+	if (!ids.has(modelState.modelB)) { modelState.modelB = pool[1]?.model ?? ''; }
+	reconcileModelWindows(d);
+}
+
+/**
+ * Re-points a comparison window that the narrowed scope emptied at one that
+ * still has data.
+ *
+ * Without this, picking an editor or vendor whose data does not reach into the
+ * selected window leaves the tab in its no-data state even though another
+ * window would show a perfectly good comparison — and the window picker renders
+ * the culprit as a disabled option, so the cause is not obvious.
+ */
+function reconcileModelWindows(d: EfficiencyViewData): void {
+	const available = availableWindowIds(d, payloadNow(d));
+	if (available.length === 0) { return; }
+	const fix = (id: ModelCompareWindowId): ModelCompareWindowId => available.includes(id) ? id : available[0];
+	modelState.window = fix(modelState.window);
+	modelState.windowA = fix(modelState.windowA);
+	modelState.windowB = available.includes(modelState.windowB)
+		? modelState.windowB
+		: (available.find(w => w !== modelState.windowA) ?? available[0]);
 }
 
 /** Picks sensible defaults on first render: the two most-used comparable models, and windows that actually have data. */
@@ -1127,17 +1153,14 @@ function renderModelsTab(d: EfficiencyViewData, s: ScopedData): string {
 	}
 	const controls = renderModelControls(d);
 	const cmp = buildModelComparison(d);
-	if (!cmp) {
-		return `
-			${toolbar}
-			${controls}
-			<p class="eff-section-note">No data for one of the two sides in the selected window${scope.vendor ? ` under vendor ${escapeHtml(scope.vendor)}` : ''}. Pick a different model, a wider window, or clear the vendor filter.</p>`;
-	}
 	const metricOptions = MODEL_TREND_METRICS.map(m => ({ value: m.id, label: m.label }));
-	return `
-		${toolbar}
-		<p class="eff-section-note">Head-to-head efficiency. Costs use <b>provider/API rates</b>, so this measures the models themselves rather than a billing plan — “model vendor” above is who trains and serves the model, not who bills for the call. Metrics whose sample was too small show as “—”. Session-level signals (duration, lines changed) are split across a session's models by token share.</p>
-		${controls}
+	// The drift chart is driven by the scope toolbar's range, not by the
+	// comparison's own window pickers, so it stays useful even when the
+	// head-to-head has no data — hiding it would throw away a valid chart
+	// because an unrelated selection came up empty.
+	const comparison = cmp
+		? `
+		<p class="eff-section-note">Head-to-head efficiency. Costs use <b>provider/API rates</b>, so this measures the models themselves rather than a billing plan — “model vendor” above is the model's own provider, not who bills for the call. Metrics whose sample was too small show as “—”. Session-level signals (duration, lines changed) are split across a session's models by token share.</p>
 		<div class="model-sides">${sideSummary(cmp.a, 'A')}${sideSummary(cmp.b, 'B')}</div>
 		${verdictHtml(cmp)}
 		${comparisonTableHtml(cmp)}
@@ -1145,11 +1168,25 @@ function renderModelsTab(d: EfficiencyViewData, s: ScopedData): string {
 		${taskMixHtml(cmp)}
 		<h3>Shape of each side</h3>
 		<p class="eff-section-note">Each axis is indexed so the better side scores 100. A larger shape is a better all-round profile; a spiky shape means the side wins on some dimensions and loses on others.</p>
-		<div class="model-radar-wrap"><canvas id="model-radar"></canvas></div>
+		<div class="model-radar-wrap"><canvas id="model-radar"></canvas></div>`
+		: `<p class="eff-section-note">${escapeHtml(noComparisonReason())}</p>`;
+	return `
+		${toolbar}
+		${controls}
+		${comparison}
 		<h3>Drift over time</h3>
 		<p class="eff-section-note">${escapeHtml(resolutionLabel(s.resolution))} values for each side's model over ${escapeHtml(s.range.label.toLowerCase())}, so a model getting better — or quietly getting worse — is visible. Gaps are buckets where the model was not used. The head-to-head comparison above keeps its own window pickers.</p>
 		<div class="model-trend-controls"><label>Metric ${selectHtml('model-trend-metric', metricOptions, modelState.trendMetric)}</label></div>
 		<div class="model-trend-wrap"><canvas id="model-trend"></canvas></div>`;
+}
+
+/** Why the head-to-head is unavailable, in the terms of whichever selection caused it. */
+function noComparisonReason(): string {
+	if (modelState.mode === 'models' && !modelState.modelB) {
+		return 'Only one model has data in this scope, so there is nothing to compare it against. Widen the editor or vendor filter to compare two models — the drift chart below still works.';
+	}
+	const vendor = scope.vendor ? ` under vendor ${scope.vendor}` : '';
+	return `No data for one of the two sides in the selected window${vendor}. Pick a different model, a wider window, or clear the vendor filter — the drift chart below still works.`;
 }
 
 
@@ -1283,9 +1320,11 @@ async function drawModelTrend(d: EfficiencyViewData, s: ScopedData, generation: 
 
 async function drawModelCharts(d: EfficiencyViewData, s: ScopedData, generation: number): Promise<void> {
 	const cmp = buildModelComparison(d);
-	if (!cmp) { return; }
-	await drawModelRadar(cmp, generation);
-	if (!isCurrentRender(generation)) { return; }
+	// Only the radar depends on the comparison; the drift chart is independent.
+	if (cmp) {
+		await drawModelRadar(cmp, generation);
+		if (!isCurrentRender(generation)) { return; }
+	}
 	await drawModelTrend(d, s, generation);
 }
 
