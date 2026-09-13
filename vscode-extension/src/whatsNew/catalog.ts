@@ -149,7 +149,7 @@ export const WHATS_NEW_RELEASES: readonly WhatsNewRelease[] = [
 				id: 'diagnostics.mistral-cloud-tab',
 				title: 'Research → Mistral Cloud (Beta)',
 				description:
-					'Lists your Mistral Vibe Code Web conversations right in the Diagnostics Research tab, via the beta Agents Conversations API — store an API key once and see conversation names, agents, and timestamps without leaving the editor.',
+					'Lists conversations from your Mistral account via the beta Agents Conversations API, right in the Diagnostics Research tab — the closest available surface to Vibe Code Web (cloud) sessions, though the mapping between the two is undocumented. Store an API key once and see conversation names, agents, and timestamps without leaving the editor.',
 				kind: 'tab',
 				surface: { view: 'diagnostics', tab: 'mistral-cloud' },
 			},

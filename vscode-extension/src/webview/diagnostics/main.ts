@@ -295,6 +295,11 @@ let mistralCloudRequestInFlight = false;
 // configured/not-configured status. Neither Connect nor Refresh render while the status is
 // unknown, so this drives a Retry affordance instead of leaving the tab stuck indefinitely.
 let mistralStatusCheckFailed = false;
+// A `switchTab` request (e.g. the What's New "Take me there" action) that arrived before
+// renderLayout() built the tab bar — the message listener is registered before renderLayout()
+// runs (see resolveEarlyBackendState's comment for the same race with backendStorageInfoLoaded),
+// so activateTab() below can silently no-op on first arrival. Applied once renderLayout() runs.
+let pendingSwitchTabTo: string | undefined;
 let currentModelUsageTimeRange = "all";
 
 function removeSessionFilesSection(reportText: string): string {
@@ -1574,6 +1579,28 @@ function groupOfTab(tabId: string): string {
   return "diagnostics";
 }
 
+function isKnownDiagnosticsTab(tabId: string): boolean {
+  return Object.values(TAB_GROUPS).some((tabs) => tabs.includes(tabId));
+}
+
+/**
+ * Requested by the extension host (e.g. the What's New "Take me there" action) to land on a
+ * specific tab, including switching its group's leaf bar into view — a plain tab-button click
+ * only ever needs activateTab() since the user is already looking at that group's leaf bar. If
+ * the tab bar doesn't exist yet (renderLayout() hasn't run — see pendingSwitchTabTo's comment),
+ * stash the request instead of silently dropping it.
+ */
+function handleSwitchTab(message: DiagMessage): void {
+  const tab = String(message.tab ?? "");
+  if (!isKnownDiagnosticsTab(tab)) { return; }
+  if (activateTab(tab)) {
+    activateGroup(groupOfTab(tab));
+    diagState.patch({ activeTab: tab });
+    return;
+  }
+  pendingSwitchTabTo = tab;
+}
+
 /** The first leaf tab in a group that actually has a rendered button (handles the conditional Debug tab). */
 function firstAvailableTabInGroup(groupId: string): string | undefined {
   return TAB_GROUPS[groupId]?.find((id) => document.querySelector(`.tab[data-tab="${id}"]`));
@@ -2637,6 +2664,7 @@ const DIAG_MESSAGE_HANDLERS: Record<string, (message: DiagMessage) => void> = {
   mistralCloudSessionsCacheInvalidated: handleMistralCloudSessionsCacheInvalidated,
   mistralCloudSessionsStatusCheckFailed: handleMistralCloudSessionsStatusCheckFailed,
   mistralCloudPromptCancelled: handleMistralCloudPromptCancelled,
+  switchTab: handleSwitchTab,
 };
 
 function setupMessageHandlers(): void {
@@ -3862,9 +3890,23 @@ function renderLayout(data: DiagnosticsData): void {
   setupMistralCloudHandlers();
   setupTtftHandlers();
 
+  restoreActiveTabAndSubtab();
+}
+
+/**
+ * Applies whichever tab should be active on first render: a `switchTab` request that arrived
+ * before renderLayout() ran (see pendingSwitchTabTo's comment) takes priority over whatever tab
+ * was last open — it's an explicit, just-now navigation request, not stale persisted state.
+ */
+function restoreActiveTabAndSubtab(): void {
   const savedState = diagState.restore();
+  const requestedTab = pendingSwitchTabTo;
+  pendingSwitchTabTo = undefined;
   let restoredTab = "report";
-  if (savedState?.activeTab && activateTab(savedState.activeTab)) {
+  if (requestedTab && activateTab(requestedTab)) {
+    restoredTab = requestedTab;
+    diagState.patch({ activeTab: requestedTab });
+  } else if (savedState?.activeTab && activateTab(savedState.activeTab)) {
     restoredTab = savedState.activeTab;
   } else {
     activateTab("report");

@@ -10994,8 +10994,9 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
   private async getMistralCloudSessionsStatusMessageField(panel: vscode.WebviewPanel): Promise<{ mistralCloudSessionsStatus?: { apiKeyConfigured: boolean } }> {
     const generationBefore = this._mistralCloudRefreshGeneration;
     const status = await this.getFreshMistralCloudSessionsStatus();
+    let reconciledApiKeyConfigured: boolean | undefined;
     if (status?.apiKeyConfigured) {
-      await this.rehydrateOrInvalidateMistralCloudSessionsCache(panel);
+      reconciledApiKeyConfigured = await this.rehydrateOrInvalidateMistralCloudSessionsCache(panel);
     }
     // The rehydrate await above can span a local Remove/Set, which bumps
     // _mistralCloudRefreshGeneration and posts its own authoritative status. The snapshot
@@ -11005,6 +11006,14 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     if (this._mistralCloudRefreshGeneration !== generationBefore) {
       const refreshedStatus = await this.getFreshMistralCloudSessionsStatus();
       return refreshedStatus ? { mistralCloudSessionsStatus: refreshedStatus } : {};
+    }
+    // The rehydrate call above doesn't bump the generation counter on this path (there was no
+    // concurrent set/clear here — it discovered the removal itself, purely from the fingerprint
+    // check), so the generation guard above can't catch this case: without this, the `status`
+    // snapshot captured before rehydrate ran (still `apiKeyConfigured: true`) would silently
+    // overwrite the corrective `false` rehydrate already posted directly to the webview.
+    if (reconciledApiKeyConfigured === false) {
+      return { mistralCloudSessionsStatus: { apiKeyConfigured: false } };
     }
     return status ? { mistralCloudSessionsStatus: status } : {};
   }
@@ -12313,8 +12322,15 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
    * again at the tail of the full diagnostics pipeline (see loadDiagnosticDataInBackground) —
    * that pipeline can take a while, during which the key can change in another window without
    * this window's own generation counter ever seeing it.
+   *
+   * Returns `false` when this reconciliation discovers the key was genuinely removed (having
+   * already posted the corrective status itself), `undefined` otherwise — callers that captured
+   * an `apiKeyConfigured: true` status snapshot *before* awaiting this method (which doesn't bump
+   * `_mistralCloudRefreshGeneration` itself on this path, only on a genuinely concurrent set/clear)
+   * need this to override that now-stale snapshot in whatever they send next, rather than letting
+   * it silently resurrect a configured state the webview was just told is gone.
    */
-  private async rehydrateOrInvalidateMistralCloudSessionsCache(panel: vscode.WebviewPanel): Promise<void> {
+  private async rehydrateOrInvalidateMistralCloudSessionsCache(panel: vscode.WebviewPanel): Promise<boolean | undefined> {
     // Also run this reconciliation when a fetch is still in flight but nothing has completed yet —
     // otherwise the very first refresh in this window (no cached result to compare against) can
     // keep sending a since-superseded key (changed in another VS Code window) for up to the full
@@ -12356,7 +12372,7 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       // instead of being left believing a key is configured when it no longer is; this also clears
       // the cached conversations client-side (see handleMistralCloudSessionsStatus).
       panel.webview.postMessage({ command: "mistralCloudSessionsStatus", mistralCloudSessionsStatus: { apiKeyConfigured: false } });
-      return;
+      return false;
     }
     // The webview may already be showing this stale listing from an earlier message (e.g. a
     // previous panel-open rehydration) — explicitly clear the display instead of leaving it until

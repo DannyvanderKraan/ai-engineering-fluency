@@ -343,6 +343,50 @@ test('restoring the Mistral Cloud tab reveals the Research leaf bar and marks it
 	assert.ok(mistralTabContent?.classList.contains('active'), 'expected the Mistral Cloud tab content to be active');
 });
 
+test('a switchTab message (e.g. the What\'s New "Take me there" action) navigates to the requested tab and group', async () => {
+	await preloadBundle();
+	const harness = bootWebviewUnsettled(buildInitialData());
+	await harness.settle();
+
+	harness.post({ command: 'switchTab', tab: 'mistral-cloud' });
+	await harness.settle();
+
+	const doc = harness.window.document;
+	assert.ok(doc.querySelector('.group-tab[data-group="research"]')?.classList.contains('active'), 'expected the Research group tab to be active');
+	assert.ok(doc.querySelector('.tab[data-tab="mistral-cloud"]')?.classList.contains('active'), 'expected the Mistral Cloud tab button to be active');
+	assert.ok(doc.getElementById('tab-mistral-cloud')?.classList.contains('active'), 'expected the Mistral Cloud tab content to be active');
+});
+
+test('a switchTab message that arrives before the layout renders still lands on the requested tab', async () => {
+	// Mirrors the backendStorageInfoLoaded early-arrival tests above: the message listener is
+	// registered before renderLayout() runs (bootstrap() awaits a dynamic import first), so a
+	// switchTab request — e.g. from the What's New "Take me there" action — can legitimately
+	// arrive before any tab button exists yet.
+	await preloadBundle();
+	const harness = bootWebviewUnsettled(buildInitialData());
+
+	assert.equal(harness.window.document.getElementById('tab-mistral-cloud'), null, 'layout must not exist yet');
+	harness.postSync({ command: 'switchTab', tab: 'mistral-cloud' });
+
+	await harness.settle();
+
+	const doc = harness.window.document;
+	assert.ok(doc.querySelector('.group-tab[data-group="research"]')?.classList.contains('active'), 'expected the Research group tab to be active');
+	assert.ok(doc.querySelector('.tab[data-tab="mistral-cloud"]')?.classList.contains('active'), 'expected the Mistral Cloud tab button to be active');
+});
+
+test('a switchTab message naming an unknown tab is ignored rather than breaking navigation', async () => {
+	await preloadBundle();
+	const harness = bootWebviewUnsettled(buildInitialData());
+	await harness.settle();
+
+	harness.post({ command: 'switchTab', tab: 'not-a-real-tab' });
+	await harness.settle();
+
+	const doc = harness.window.document;
+	assert.ok(doc.querySelector('.tab[data-tab="report"]')?.classList.contains('active'), 'expected the default report tab to remain active');
+});
+
 test('Mistral Cloud tab: neither Connect nor Refresh render before the Mistral status is known', async () => {
 	// A real diagnostics load has no mistralCloudSessionsStatus in its initial payload — it arrives
 	// later via its own dedicated message (posted independently of backendStorageInfoLoaded, so the
