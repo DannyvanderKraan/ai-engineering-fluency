@@ -126,8 +126,8 @@ Use today's date. If the branch already exists, append a short suffix (e.g. `-2`
 
 Stage only the version files:
 ```bash
-git add vscode-extension/package.json vscode-extension/package-lock.json   # if VS Code changed
-git add cli/package.json cli/package-lock.json                              # if CLI changed
+git add vscode-extension/package.json vscode-extension/pnpm-lock.yaml   # if VS Code changed
+git add cli/package.json cli/pnpm-lock.yaml                              # if CLI changed
 git add visualstudio-extension/src/AIEngineeringFluency/source.extension.vsixmanifest  # if VS changed
 ```
 

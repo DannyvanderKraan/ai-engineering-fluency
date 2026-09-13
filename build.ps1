@@ -80,15 +80,9 @@ function Build-VsCode {
     Push-Location "$PSScriptRoot/vscode-extension"
     try {
         switch ($Target) {
-<<<<<<< HEAD
-            'build'   { pnpm install --frozen-lockfile; pnpm run compile }
-            'package' { pnpm install --frozen-lockfile; pnpm run package; pnpm exec vsce package }
-            'test'    { pnpm install --frozen-lockfile; pnpm run compile-tests; pnpm test }
-=======
-            'build'   { Ensure-PnpmDeps .; npm run validate }
-            'package' { Ensure-PnpmDeps .; npm run package; npx vsce package }
-            'test'    { Ensure-PnpmDeps .; npm run test:node }
->>>>>>> origin/main
+            'build'   { Ensure-PnpmDeps .; pnpm run validate }
+            'package' { Ensure-PnpmDeps .; pnpm run package; pnpm exec vsce package }
+            'test'    { Ensure-PnpmDeps .; pnpm run test:node }
             'clean'   { Remove-Item -Recurse -Force dist, out -ErrorAction SilentlyContinue }
         }
         Write-Ok "vscode-extension done."
@@ -104,8 +98,8 @@ function Build-Cli {
     Push-Location "$PSScriptRoot/cli"
     try {
         switch ($Target) {
-            'build'   { pnpm install --frozen-lockfile; pnpm run build }
-            'package' { pnpm install --frozen-lockfile; pnpm run build:production; & pwsh -NoProfile -File bundle-exe.ps1 -SkipBuild }
+            'build'   { Ensure-PnpmDeps .; pnpm run build }
+            'package' { Ensure-PnpmDeps .; pnpm run build:production; & pwsh -NoProfile -File bundle-exe.ps1 -SkipBuild }
             'test'    { Write-Host "    (no CLI tests yet)" }
             'clean'   { Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue }
         }
@@ -297,19 +291,13 @@ function Build-Sharing {
     Push-Location "$PSScriptRoot/sharing-server"
     try {
         switch ($Target) {
-<<<<<<< HEAD
-            'build'   { pnpm install --frozen-lockfile; pnpm run build }
-            'package' { pnpm install --frozen-lockfile; pnpm run build:production }
-            'test'    { Write-Host "    (no sharing-server tests yet)" }
-=======
-            'build'   { Ensure-PnpmDeps .; npm run build }
-            'package' { Ensure-PnpmDeps .; npm run build:production }
+            'build'   { Ensure-PnpmDeps .; pnpm run build }
+            'package' { Ensure-PnpmDeps .; pnpm run build:production }
             'test'    {
                 Ensure-PnpmDeps .
-                npm test
+                pnpm test
                 if ($LASTEXITCODE -ne 0) { throw "Sharing-server tests failed" }
             }
->>>>>>> origin/main
             'clean'   { Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue }
         }
         Write-Ok "sharing-server done."
