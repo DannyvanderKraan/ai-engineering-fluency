@@ -13,6 +13,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { AgentSessionsResult, AgentTaskRecord } from './agentSessionsService';
+import { agentTaskCacheKey } from './agentSessionsService';
 import { applyRecordBudget, parseEntityTimestamp, type RecordBudget } from './githubActivityCache';
 
 /** How often the agent-task snapshot may be refreshed from the GitHub API: once an hour. */
@@ -67,6 +68,12 @@ export function readAgentTaskRecords(envelope: AgentTasksCacheEnvelope | undefin
 		Boolean(record)
 		&& typeof record.key === 'string' && record.key !== ''
 		&& typeof record.id === 'string'
+		// The key must be derived from this record's *own* repo and task, not merely non-empty.
+		// It is what a candidate is looked up by, so a record sitting under a key that does not
+		// describe it would hand its aggregate to a different task — precisely the cross-entity
+		// reuse this cache promises cannot happen.
+		&& typeof record.repoKey === 'string'
+		&& record.key === agentTaskCacheKey(record.repoKey, record.id)
 		&& parseEntityTimestamp(record.updatedAt) !== undefined
 		// `detailOk` gates the cache hit, and a string reaches that check truthy — a record stored
 		// as `detailOk: "false"` would suppress the detail fetch it is asking for and show stale
@@ -89,8 +96,11 @@ export function readAgentTaskRecords(envelope: AgentTasksCacheEnvelope | undefin
 function isUsableTaskAggregate(aggregate: AgentTaskRecord['aggregate']): boolean {
 	if (aggregate === undefined || aggregate === null) { return true; }
 	if (typeof aggregate !== 'object') { return false; }
+	// Non-negative, not merely finite: `foldAggregateIntoRow()` *adds* these straight into the
+	// displayed totals, so a negative would subtract credits or sessions a repo really used. None
+	// of these quantities can be negative in the API, so one on disk means the record is corrupt.
 	return (['tasks', 'sessions', 'credits', 'premiumRequests'] as const)
-		.every((field) => Number.isFinite(aggregate[field]));
+		.every((field) => Number.isFinite(aggregate[field]) && aggregate[field] >= 0);
 }
 
 /**

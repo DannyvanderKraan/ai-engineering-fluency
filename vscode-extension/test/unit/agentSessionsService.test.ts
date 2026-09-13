@@ -942,6 +942,58 @@ test('toTaskDetailResult: a body with no sessions array is an error, never zero 
 	assert.deepEqual(empty.sessions, []);
 });
 
+test('collectAgentSessions: a task timestamped differently in the active and archived slices is uncacheable', async () => {
+	// A task archived between the two requests comes back from both listings with different
+	// timestamps. Keeping the first object is right — it must not be counted twice — but reusing an
+	// aggregate matching that value would ignore the other listing having reported it changed.
+	const task = (updatedAt: string) => ({
+		id: 't1', name: 'Task t1', state: 'completed',
+		updated_at: updatedAt, created_at: '2026-08-01T00:00:00Z',
+		repository: { full_name: 'octo/local-repo' },
+	});
+	const detailed: string[] = [];
+	const cached = [cachedRecordFor('t1', 'octo/local-repo', '2026-08-01T00:00:00Z')];
+	const result = await collectAgentSessions({
+		token: 'token',
+		since: SINCE,
+		workspaceRepos: [{ owner: 'octo', repo: 'local-repo' }],
+		cachedTasks: cached,
+		fetchTaskPage: async ({ page, archived }) => (
+			page === 1 ? { tasks: [task(archived ? '2026-08-02T00:00:00Z' : '2026-08-01T00:00:00Z')] } : { tasks: [] }
+		),
+		fetchAccountTaskPage: async () => ({ tasks: [] }),
+		fetchTaskDetail: async (_owner, _repo, taskId) => { detailed.push(taskId); return { sessions: [makeSession('cloud-model', 4)] }; },
+		fetchAccountTaskDetail: async (taskId) => { detailed.push(taskId); return { sessions: [] }; },
+	});
+	assert.deepEqual(detailed, ['t1'], 'the conflicting timestamp forces a fresh detail fetch');
+	assert.equal(result.totalTasks, 1, 'and the task is still counted exactly once');
+	assert.equal(result.totalCredits, 4);
+});
+
+test('collectAgentSessions: the same task in both slices with one timestamp still hits the cache', async () => {
+	// An unchanged task legitimately appears in both slices. Treating that as a conflict would cost
+	// a detail call for every task that happens to be listed twice.
+	const task = () => ({
+		id: 't1', name: 'Task t1', state: 'completed',
+		updated_at: '2026-08-01T00:00:00Z', created_at: '2026-08-01T00:00:00Z',
+		repository: { full_name: 'octo/local-repo' },
+	});
+	const detailed: string[] = [];
+	const cached = [cachedRecordFor('t1', 'octo/local-repo', '2026-08-01T00:00:00Z')];
+	const result = await collectAgentSessions({
+		token: 'token',
+		since: SINCE,
+		workspaceRepos: [{ owner: 'octo', repo: 'local-repo' }],
+		cachedTasks: cached,
+		fetchTaskPage: async ({ page }) => (page === 1 ? { tasks: [task()] } : { tasks: [] }),
+		fetchAccountTaskPage: async () => ({ tasks: [] }),
+		fetchTaskDetail: async (_owner, _repo, taskId) => { detailed.push(taskId); return { sessions: [makeSession('cloud-model', 4)] }; },
+		fetchAccountTaskDetail: async (taskId) => { detailed.push(taskId); return { sessions: [] }; },
+	});
+	assert.deepEqual(detailed, []);
+	assert.equal(result.totalCredits, 7);
+});
+
 test('collectAgentSessions: two workspace repos listing the same task make it uncacheable', async () => {
 	// Deduplicating by task ID is what stops one task being counted twice, but it silently threw
 	// away the second repo's attribution and timestamp. Whichever of the two is stale, its cached

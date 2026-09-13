@@ -155,9 +155,15 @@ test('readAgentTasksSnapshot: missing or corrupt files read as undefined, never 
 // Per-task cache records (issue #1968)
 // ---------------------------------------------------------------------------
 
+/**
+ * A well-formed task record. The key is **derived** from the record's own repo and id unless a test
+ * overrides it explicitly — `readAgentTaskRecords()` now rejects a record whose key does not
+ * describe it, so a helper that left a fixed key behind would make every other test here pass for
+ * the wrong reason: they would be asserting the key check, not the field they mean to isolate.
+ */
 function makeTaskRecord(overrides: Partial<AgentTaskRecord> = {}): AgentTaskRecord {
-	return {
-		key: agentTaskCacheKey('rajbos/repo', 'task-1'),
+	const merged: AgentTaskRecord = {
+		key: '',
 		id: 'task-1',
 		repoKey: 'rajbos/repo',
 		owner: 'rajbos',
@@ -170,6 +176,7 @@ function makeTaskRecord(overrides: Partial<AgentTaskRecord> = {}): AgentTaskReco
 		lastSeenAt: '2026-08-29T12:00:00.000Z',
 		...overrides,
 	};
+	return 'key' in overrides ? merged : { ...merged, key: agentTaskCacheKey(merged.repoKey, merged.id) };
 }
 
 test('the cloud-agent cache schema is v3 — a v2 aggregate-only snapshot is not migrated', () => {
@@ -186,7 +193,7 @@ test('readAgentTaskRecords drops records that could never be matched again', () 
 		tasks: [
 			makeTaskRecord(),
 			makeTaskRecord({ key: '', id: 'no-key' }),
-			makeTaskRecord({ key: 'k2', id: 'bad-stamp', updatedAt: 'not-a-date' }),
+			makeTaskRecord({ id: 'bad-stamp', updatedAt: 'not-a-date' }),
 			makeTaskRecord({ key: 'k3', id: 'missing-stamp', updatedAt: undefined as any }),
 		],
 	});
@@ -200,10 +207,10 @@ test('readAgentTaskRecords drops a record whose aggregate is not all numbers', (
 	const envelope = makeEnvelope({
 		tasks: [
 			makeTaskRecord(),
-			makeTaskRecord({ key: 'k2', id: 'string-credits', aggregate: { tasks: 1, sessions: 1, credits: '3' as any, premiumRequests: 0 } }),
-			makeTaskRecord({ key: 'k3', id: 'missing-field', aggregate: { tasks: 1, sessions: 1, credits: 3 } as any }),
-			makeTaskRecord({ key: 'k4', id: 'nan-credits', aggregate: { tasks: 1, sessions: 1, credits: NaN, premiumRequests: 0 } }),
-			makeTaskRecord({ key: 'k5', id: 'not-an-object', aggregate: 'nope' as any }),
+			makeTaskRecord({ id: 'string-credits', aggregate: { tasks: 1, sessions: 1, credits: '3' as any, premiumRequests: 0 } }),
+			makeTaskRecord({ id: 'missing-field', aggregate: { tasks: 1, sessions: 1, credits: 3 } as any }),
+			makeTaskRecord({ id: 'nan-credits', aggregate: { tasks: 1, sessions: 1, credits: NaN, premiumRequests: 0 } }),
+			makeTaskRecord({ id: 'not-an-object', aggregate: 'nope' as any }),
 		],
 	});
 	assert.deepEqual(readAgentTaskRecords(envelope).map((r) => r.id), ['task-1']);
@@ -215,8 +222,8 @@ test('readAgentTaskRecords drops a record whose detailOk is not a boolean', () =
 	const envelope = makeEnvelope({
 		tasks: [
 			makeTaskRecord(),
-			makeTaskRecord({ key: 'k2', id: 'string-flag', detailOk: 'false' as any }),
-			makeTaskRecord({ key: 'k3', id: 'missing-flag', detailOk: undefined as any }),
+			makeTaskRecord({ id: 'string-flag', detailOk: 'false' as any }),
+			makeTaskRecord({ id: 'missing-flag', detailOk: undefined as any }),
 		],
 	});
 	assert.deepEqual(readAgentTaskRecords(envelope).map((r) => r.id), ['task-1']);
@@ -236,6 +243,40 @@ test('reconcileAgentTaskRecords drops a seen-but-unverifiable task instead of re
 	assert.deepEqual(result.records.map((r) => r.key), ['never-listed'], 'only the unseen record is retained');
 	assert.equal(result.removed, 1);
 	assert.equal(result.retainedUnverified, 1);
+});
+
+test('readAgentTaskRecords drops an aggregate with a negative field', () => {
+	// foldAggregateIntoRow() *adds* these into the displayed totals, so a negative subtracts usage
+	// a repo really had. None of these quantities can be negative in the API.
+	const envelope = makeEnvelope({
+		tasks: [
+			makeTaskRecord(),
+			makeTaskRecord({ id: 'neg-credits', aggregate: { tasks: 1, sessions: 1, credits: -5, premiumRequests: 0 } }),
+			makeTaskRecord({ id: 'neg-sessions', aggregate: { tasks: 1, sessions: -1, credits: 0, premiumRequests: 0 } }),
+		],
+	});
+	assert.deepEqual(readAgentTaskRecords(envelope).map((r) => r.id), ['task-1']);
+	// Zero stays legitimate — a task can genuinely have run no billable sessions.
+	const zeroed = makeTaskRecord({ id: 'zeroed', aggregate: { tasks: 0, sessions: 0, credits: 0, premiumRequests: 0 } });
+	assert.equal(readAgentTaskRecords(makeEnvelope({ tasks: [zeroed] })).length, 1);
+});
+
+test('readAgentTaskRecords drops a record whose key does not describe it', () => {
+	// The key is what a candidate is looked up by. A record sitting under a key that names another
+	// task would hand its aggregate to that task — the cross-entity reuse this cache rules out.
+	const impostor = {
+		...makeTaskRecord({ id: 'task-1', repoKey: 'octo/repo' }),
+		key: agentTaskCacheKey('octo/repo', 'a-different-task'),
+	};
+	assert.deepEqual(readAgentTaskRecords(makeEnvelope({ tasks: [impostor] })), []);
+
+	const mismatchedRepo = { ...makeTaskRecord({ id: 'task-1', repoKey: 'octo/repo' }), key: agentTaskCacheKey('octo/other', 'task-1') };
+	assert.deepEqual(readAgentTaskRecords(makeEnvelope({ tasks: [mismatchedRepo] })), []);
+
+	// The honestly-keyed record still loads, including the "no repository" bucket's empty repoKey.
+	assert.equal(readAgentTaskRecords(makeEnvelope({ tasks: [makeTaskRecord()] })).length, 1);
+	const noRepo = { ...makeTaskRecord({ id: 'orphan', repoKey: '' }), key: agentTaskCacheKey('', 'orphan') };
+	assert.equal(readAgentTaskRecords(makeEnvelope({ tasks: [noRepo] })).length, 1);
 });
 
 test('readAgentTaskRecords keeps a record that is still owed its detail', () => {

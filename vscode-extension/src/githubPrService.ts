@@ -725,11 +725,25 @@ export function isCacheableRepoPrRecord(record: RepoPrRecord | undefined): recor
 		// reached disk malformed (a hand-edited file, a truncated write, a future shape) would
 		// otherwise be reused on a matching timestamp and throw — turning a cache read into a
 		// failure where recomputing the PR from the listing would have cost one projection.
-		&& Array.isArray(record!.reviewerAiTypes)
 		&& typeof record!.authorLogin === 'string'
 		&& typeof record!.title === 'string'
 		&& typeof record!.url === 'string'
-		&& typeof record!.state === 'string';
+		&& typeof record!.state === 'string'
+		// `merged` and the AI attribution are *counted*, not just displayed, so their types have to
+		// hold: `merged: "false"` is truthy and would inflate the merged count, and any truthy
+		// value in an AI field increments the AI metrics whether or not it names a real system.
+		&& typeof record!.merged === 'boolean'
+		&& isRepoPrAiType(record!.authorAiType, true)
+		&& Array.isArray(record!.reviewerAiTypes)
+		&& record!.reviewerAiTypes.every((type) => isRepoPrAiType(type, false));
+}
+
+/** The AI attribution values `summarizeRepoPrRecords()` knows how to count. */
+const REPO_PR_AI_TYPES: readonly RepoPrDetail['aiType'][] = ['copilot', 'claude', 'openai', 'other-ai'];
+
+function isRepoPrAiType(value: unknown, nullAllowed: boolean): boolean {
+	if (value === null) { return nullAllowed; }
+	return REPO_PR_AI_TYPES.includes(value as RepoPrDetail['aiType']);
 }
 
 /**

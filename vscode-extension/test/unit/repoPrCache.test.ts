@@ -220,6 +220,34 @@ test('readRepoPrRecords drops a record whose projection is malformed, not just m
 	assert.deepEqual(readRepoPrRecords(envelope, 'rajbos/repo').map((r) => r.number), [1]);
 });
 
+test('readRepoPrRecords drops a record whose counted fields have the wrong type', () => {
+	// merged and the AI attribution are *counted*, not just displayed: `merged: "false"` is truthy
+	// and inflates the merged count, and any truthy AI value increments the AI metrics whether or
+	// not it names a system this code knows how to attribute.
+	const envelope = makeEnvelope({
+		prs: {
+			'rajbos/repo': [
+				makePrRecord({ number: 1 }),
+				makePrRecord({ number: 2, merged: 'false' as any }),
+				makePrRecord({ number: 3, authorAiType: 'gemini' as any }),
+				makePrRecord({ number: 4, reviewerAiTypes: ['copilot', 'nonsense'] as any }),
+			],
+		},
+	});
+	assert.deepEqual(readRepoPrRecords(envelope, 'rajbos/repo').map((r) => r.number), [1]);
+
+	// The real shapes still load: a human author is `null`, and the four known AI types are valid.
+	const valid = makeEnvelope({
+		prs: {
+			'rajbos/repo': [
+				makePrRecord({ number: 5, authorAiType: null, merged: true }),
+				makePrRecord({ number: 6, authorAiType: 'copilot', reviewerAiTypes: ['claude', 'openai', 'other-ai'] }),
+			],
+		},
+	});
+	assert.deepEqual(readRepoPrRecords(valid, 'rajbos/repo').map((r) => r.number), [5, 6]);
+});
+
 test('readRepoPrRecords canonicalizes timestamps so an alternate ISO spelling still hits', () => {
 	// Reuse is exact string equality against a canonical listing timestamp. A record written with a
 	// valid-but-different spelling (no millis, or an offset instead of Z) would pass validation and

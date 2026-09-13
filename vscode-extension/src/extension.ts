@@ -321,6 +321,7 @@ import {
 	readAgentTasksSnapshot,
 	reconcileAgentTaskRecords,
 	writeAgentTasksSnapshot,
+	type AgentTasksCacheEnvelope,
 } from './agentTasksCache';
 import {
 	REPO_PRS_CACHE_SCHEMA_VERSION,
@@ -334,6 +335,7 @@ import {
 	readRepoPrSnapshot,
 	shouldPreserveRepoPrSnapshotForEmptyDiscovery,
 	writeRepoPrSnapshot,
+	type RepoPrCacheEnvelope,
 } from './repoPrCache';
 import {
 	GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS,
@@ -2524,6 +2526,33 @@ class CopilotTokenTracker implements vscode.Disposable {
 		}
 	}
 
+	/**
+	 * Whether the snapshot read *under the lock* already satisfies this pass, so it can stand down.
+	 *
+	 * A normal pass measures against the hourly TTL; a forced one against the short manual cooldown,
+	 * which is how that cooldown reaches windows that cannot see each other's clicks. Either way the
+	 * envelope must also be **usable** — one with the wrong schema or a narrower window carries a
+	 * perfectly fresh `fetchedAt` and nothing this panel can render, so treating it as refreshed
+	 * would make Refresh now a no-op in exactly the situation a user reaches for it.
+	 */
+	private _repoPrSnapshotAlreadyRefreshed(envelope: RepoPrCacheEnvelope | undefined, since: Date, force: boolean): boolean {
+		if (!force) { return canServeRepoPrSnapshot(envelope, since, Date.now()); }
+		return isRepoPrEnvelopeUsable(envelope, since)
+			&& isRepoPrSnapshotFresh(envelope?.fetchedAt, Date.now(), GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS);
+	}
+
+	/**
+	 * The cloud-agent equivalent of {@link _repoPrSnapshotAlreadyRefreshed}. Usability matters more
+	 * here: a **v2** envelope left by an older extension has a fresh `fetchedAt` and no task records
+	 * at all, so without that check Refresh now would decline to perform the very v3 rebuild the
+	 * migration depends on until the timestamp aged out.
+	 */
+	private _agentTasksSnapshotAlreadyRefreshed(envelope: AgentTasksCacheEnvelope | undefined, since: Date, force: boolean): boolean {
+		if (!force) { return canServeAgentTasksSnapshot(envelope, since, Date.now()); }
+		return isAgentTasksEnvelopeUsable(envelope, since)
+			&& isAgentTasksSnapshotFresh(envelope?.fetchedAt, Date.now(), GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS);
+	}
+
 	/** Path of the cross-window Repository PRs snapshot shared by every window of this VS Code edition. */
 	private repoPrCachePath(accountIdentity?: string): string {
 		return getRepoPrCachePath(this.context.globalStorageUri.fsPath, this.githubActivityScope(accountIdentity));
@@ -2650,6 +2679,12 @@ class CopilotTokenTracker implements vscode.Disposable {
 		// write the "not signed in yet" scope instead of this account's.
 		const session = await vscode.authentication.getSession(getGitHubAuthProviderId(), ['read:user'], { silent: true });
 		if (!session) { return false; }
+		// Register the resolved scope *before* capturing the generation. The freshness guard compares
+		// against `_githubActivityScopeInMemory`, so a pass started for a newly switched account
+		// while that field still named the previous identity would fail its own guard and be thrown
+		// away — leaving the new account on an empty panel until some later refresh happened to run
+		// after the auth event. The serve paths already did this; the refresh paths did not.
+		await this._syncGitHubActivityScope(this.githubActivityScope(session.account.label));
 		const scope = this.githubActivityScope(session.account.label);
 		const generation = this._githubActivityGeneration;
 		const cachePath = getRepoPrCachePath(this.context.globalStorageUri.fsPath, scope);
@@ -2671,10 +2706,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		// the lock exists to prevent. A forced pass measures against the manual cooldown instead of
 		// the hourly TTL, because the per-window cooldown cannot see another window's clicks.
 		const underLock = await readRepoPrSnapshot(cachePath);
-		const alreadyRefreshed = force
-			? isRepoPrSnapshotFresh(underLock?.fetchedAt, Date.now(), GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS)
-			: canServeRepoPrSnapshot(underLock, since, Date.now());
-		if (alreadyRefreshed) {
+		if (this._repoPrSnapshotAlreadyRefreshed(underLock, since, force)) {
 			this.log('⏭️ Repository PRs refresh skipped — another window refreshed the shared snapshot while this one waited for the lock');
 			try { await this.cacheManager.releaseRepoPrLock(scope); }
 			catch (err) { this.warn(`Failed to release repo-PRs lock: ${err}`); }
@@ -2908,6 +2940,12 @@ class CopilotTokenTracker implements vscode.Disposable {
 		// Resolve the session before picking a cache path — see maybeRefreshRepoPrStats().
 		const session = await vscode.authentication.getSession(getGitHubAuthProviderId(), ['read:user'], { silent: true });
 		if (!session) { return false; }
+		// Register the resolved scope *before* capturing the generation. The freshness guard compares
+		// against `_githubActivityScopeInMemory`, so a pass started for a newly switched account
+		// while that field still named the previous identity would fail its own guard and be thrown
+		// away — leaving the new account on an empty panel until some later refresh happened to run
+		// after the auth event. The serve paths already did this; the refresh paths did not.
+		await this._syncGitHubActivityScope(this.githubActivityScope(session.account.label));
 		const scope = this.githubActivityScope(session.account.label);
 		const generation = this._githubActivityGeneration;
 		const cachePath = getAgentTasksCachePath(this.context.globalStorageUri.fsPath, scope);
@@ -2928,10 +2966,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		// *and* detail pass here, the most expensive one to repeat), and the on-disk snapshot is
 		// how the manual-refresh cooldown reaches across windows at all.
 		const underLock = await readAgentTasksSnapshot(cachePath);
-		const alreadyRefreshed = force
-			? isAgentTasksSnapshotFresh(underLock?.fetchedAt, Date.now(), GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS)
-			: canServeAgentTasksSnapshot(underLock, since, Date.now());
-		if (alreadyRefreshed) {
+		if (this._agentTasksSnapshotAlreadyRefreshed(underLock, since, force)) {
 			this.log('⏭️ Cloud agent refresh skipped — another window refreshed the shared snapshot while this one waited for the lock');
 			try { await this.cacheManager.releaseAgentTasksLock(scope); }
 			catch (err) { this.warn(`Failed to release agent tasks lock: ${err}`); }
@@ -4506,6 +4541,9 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'usage.githubActivity.tasksScannedTooltip': l10n.t('usage.githubActivity.tasksScannedTooltip'),
 			'usage.githubActivity.tasksScannedLabel': l10n.t('usage.githubActivity.tasksScannedLabel'),
 			'usage.githubActivity.lowerBoundNote': l10n.t('usage.githubActivity.lowerBoundNote'),
+			'usage.githubActivity.accountTasksIncomplete': l10n.t('usage.githubActivity.accountTasksIncomplete'),
+			'usage.githubActivity.accountTasksUnavailable': l10n.t('usage.githubActivity.accountTasksUnavailable'),
+			'usage.githubActivity.accountTasksUnknownReason': l10n.t('usage.githubActivity.accountTasksUnknownReason'),
 			// Details view — collapsible "Usage by Editor" section heading tooltips
 			'details.editorSection.show': l10n.t('details.editorSection.show'),
 			'details.editorSection.hide': l10n.t('details.editorSection.hide'),

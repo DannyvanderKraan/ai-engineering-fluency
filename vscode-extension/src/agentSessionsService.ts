@@ -641,18 +641,37 @@ const MAX_TASK_LIST_PAGES = 5;
  * it short. Only a complete enumeration proves a cached task is really gone, so this flag is what
  * stops the cache from reconciling away tasks it simply never got to (see `reconcileAgentTaskRecords`).
  */
+/**
+ * Record one listed task, keeping the first object seen for any id.
+ *
+ * The same task legitimately appears in both the active and archived slices (and can repeat across
+ * pages). Keeping the first is what stops it being counted twice — but if the two sightings carry
+ * *different* timestamps, one of the listings has already reported the task as changed, so reusing
+ * a cached aggregate matching the other would break the exact-timestamp reuse contract. That id is
+ * recorded as conflicting and its candidate is made uncacheable.
+ */
+function absorbListedTask(task: any, tasks: any[], seen: Map<string, string>, conflicting: Set<string>): void {
+	if (!task?.id) { return; }
+	const previous = seen.get(task.id);
+	if (previous === undefined) {
+		seen.set(task.id, taskUpdatedAt(task));
+		tasks.push(task);
+		return;
+	}
+	if (previous !== taskUpdatedAt(task)) { conflicting.add(task.id); }
+}
+
 async function listTaskSlice(
 	fetchPage: (page: number, archived: boolean) => Promise<TaskPageResult>,
 	archived: boolean,
 	tasks: any[],
-	seen: Set<string>,
+	seen: Map<string, string>,
+	conflicting: Set<string>,
 ): Promise<{ statusCode?: number; error?: string; complete: boolean }> {
 	for (let page = 1; page <= MAX_TASK_LIST_PAGES; page++) {
 		const result = await fetchPage(page, archived);
 		if (result.error) { return { statusCode: result.statusCode, error: result.error, complete: false }; }
-		for (const task of result.tasks) {
-			if (task?.id && !seen.has(task.id)) { seen.add(task.id); tasks.push(task); }
-		}
+		for (const task of result.tasks) { absorbListedTask(task, tasks, seen, conflicting); }
 		if (result.tasks.length < 100) { return { complete: true }; }
 	}
 	return { complete: false };
@@ -665,18 +684,38 @@ async function listTaskSlice(
  */
 async function listAllTasks(
 	fetchPage: (page: number, archived: boolean) => Promise<TaskPageResult>,
-): Promise<{ tasks: any[]; statusCode?: number; error?: string; complete: boolean }> {
+): Promise<{ tasks: any[]; conflicting: Set<string>; statusCode?: number; error?: string; complete: boolean }> {
 	const tasks: any[] = [];
-	const seen = new Set<string>();
-	const active = await listTaskSlice(fetchPage, false, tasks, seen);
-	if (active.error && tasks.length === 0) { return { tasks: [], ...active }; }
-	const archived = await listTaskSlice(fetchPage, true, tasks, seen);
+	const seen = new Map<string, string>();
+	const conflicting = new Set<string>();
+	const active = await listTaskSlice(fetchPage, false, tasks, seen, conflicting);
+	if (active.error && tasks.length === 0) { return { tasks: [], conflicting, ...active }; }
+	const archived = await listTaskSlice(fetchPage, true, tasks, seen, conflicting);
 	// Report the first error from either slice even when some pages did come back. Dropping it
 	// would hide a failed archived pass, or a failure partway through the active one, behind a
 	// result that looks whole — the caller still gets the tasks it did collect, plus the reason
 	// the pass is short and `complete: false` to stop anything reconciling on it.
 	const failure = active.error ? active : (archived.error ? archived : undefined);
-	return { tasks, statusCode: failure?.statusCode, error: failure?.error, complete: active.complete && archived.complete };
+	return { tasks, conflicting, statusCode: failure?.statusCode, error: failure?.error, complete: active.complete && archived.complete };
+}
+
+/**
+ * Mark a candidate uncacheable when a second sighting disagrees with the first.
+ *
+ * The repo-scoped listing keeps the row — it is the more specific source — but whichever sighting
+ * is stale, its cached aggregate must not be folded in without a fresh detail call. A disagreement
+ * is either the repository (a move, or a late `repository.id` resolution) or the `updated_at`: the
+ * listings are fetched moments apart, so a task changed in between reports two values, and the
+ * other listing has already said the cached state is superseded.
+ *
+ * The sort key takes the newer sighting's value too. An uncacheable task always needs a detail
+ * call, so leaving it on the older listing's position would make it lose the newest-first budget
+ * to work that is genuinely older.
+ */
+function contestCandidate(candidate: AgentTaskCandidate, task: any, contestedRepo: boolean): void {
+	if (!contestedRepo && taskUpdatedAt(task) === candidate.updatedAt) { return; }
+	candidate.updatedAt = '';
+	candidate.sortAt = Math.max(candidate.sortAt, taskSortAt(task));
 }
 
 /** Ensure a row exists for this repo key, widening its discovery when seen from both sources. */
@@ -707,7 +746,7 @@ async function collectWorkspaceTasks(
 	for (const { owner, repo } of options.workspaceRepos) {
 		const key = repoKey(owner, repo);
 		const row = upsertRow(rows, key, owner, repo, 'workspace');
-		const { tasks, statusCode, error, complete } = await listAllTasks(
+		const { tasks, conflicting, statusCode, error, complete } = await listAllTasks(
 			(page, archived) => fetchTaskPage({ owner, repo, token: options.token, page, archived, since: sinceStr }),
 		);
 		if (error) { row.error = describeTaskFetchError(statusCode); }
@@ -717,17 +756,17 @@ async function collectWorkspaceTasks(
 			if (existing) {
 				// Two workspace repositories both listed this task — a move, or an inconsistent
 				// listing. The first repo keeps the row (deduplicating by task ID is what stops one
-				// task being counted twice), but the disagreement makes the candidate uncacheable,
-				// exactly as a workspace-vs-account disagreement does: whichever repo is stale, its
-				// cached aggregate must not be folded in without a fresh detail call.
-				if (existing.key !== key || existing.updatedAt !== taskUpdatedAt(task)) {
-					existing.updatedAt = '';
-				}
+				// task being counted twice), but a disagreement about the repo or the timestamp
+				// makes the candidate uncacheable, exactly as a workspace-vs-account one does.
+				contestCandidate(existing, task, existing.key !== key);
 				continue;
 			}
 			candidates.set(task.id, {
 				id: task.id, key, owner, repo,
-				sortAt: taskSortAt(task), updatedAt: taskUpdatedAt(task),
+				sortAt: taskSortAt(task),
+				// A task the two listing slices timestamped differently is uncacheable for the same
+				// reason: one of them has already reported it changed.
+				updatedAt: conflicting.has(task.id) ? '' : taskUpdatedAt(task),
 				cacheKey: agentTaskCacheKey(key, task.id), discovery: 'workspace',
 			});
 		}
@@ -800,7 +839,7 @@ async function collectAccountTasks(
 ): Promise<{ available: boolean; error?: string; complete: boolean }> {
 	const fetchAccountPage = options.fetchAccountTaskPage ?? fetchAccountAgentTasksPage;
 	const sinceStr = options.since.toISOString();
-	const { tasks, statusCode, error, complete } = await listAllTasks(
+	const { tasks, conflicting, statusCode, error, complete } = await listAllTasks(
 		(page, archived) => fetchAccountPage({ token: options.token, page, archived, since: sinceStr }),
 	);
 	// Only a listing that produced nothing is "unavailable". One that failed partway still has real
@@ -812,38 +851,47 @@ async function collectAccountTasks(
 	const idCache = await resolveRepositoryIds(tasks, options);
 
 	for (const task of tasks) {
-		const existingCandidate = candidates.get(task.id);
-		const resolved = resolveAccountTaskRepo(task, idCache);
-		const key = accountTaskKey(resolved, existingCandidate);
-		upsertRow(rows, key, resolved?.owner ?? '', resolved?.repo ?? '', 'account');
-		if (existingCandidate) {
-			if (existingCandidate.discovery !== 'account') { existingCandidate.discovery = 'both'; }
-			// Any disagreement between the two listings makes the repo-scoped candidate uncacheable.
-			// The repo-scoped listing is the more specific source, so it keeps the row attribution,
-			// but a cached aggregate under a contested key can no longer be trusted to describe
-			// current usage — marking the candidate uncacheable forces a fresh detail fetch.
-			//
-			// - **Repository**: the task moved, or was re-attributed once its bare repository ID
-			//   resolved, so a stale aggregate could be folded into the wrong repository's row.
-			// - **Timestamp**: the two listings were fetched moments apart, so a task updated in
-			//   between reports two different `updated_at` values. Reusing the older one would
-			//   break the contract this cache rests on — that a reused record cannot be showing a
-			//   superseded state — because the newer listing has already said it changed. An
-			//   account timestamp that is itself uncacheable ('' here) counts as a disagreement
-			//   too: it cannot confirm the repo-scoped one.
-			const contestedRepo = Boolean(resolved) && repoKey(resolved!.owner, resolved!.repo) !== existingCandidate.key;
-			if (contestedRepo || taskUpdatedAt(task) !== existingCandidate.updatedAt) {
-				existingCandidate.updatedAt = '';
-			}
-			continue;
-		}
-		candidates.set(task.id, {
-			id: task.id, key, owner: resolved?.owner, repo: resolved?.repo,
-			sortAt: taskSortAt(task), updatedAt: taskUpdatedAt(task),
-			cacheKey: agentTaskCacheKey(key, task.id), discovery: 'account',
-		});
+		absorbAccountTask(task, rows, candidates, idCache, conflicting);
 	}
 	return { available: true, error: listingError, complete: complete && !error };
+}
+
+/** Fold one account-wide task into the rows and candidates, contesting an existing candidate. */
+function absorbAccountTask(
+	task: any,
+	rows: Map<string, AgentRepoSummary>,
+	candidates: Map<string, AgentTaskCandidate>,
+	idCache: Map<number, { owner: string; repo: string } | undefined>,
+	conflicting: ReadonlySet<string>,
+): void {
+	const existingCandidate = candidates.get(task.id);
+	const resolved = resolveAccountTaskRepo(task, idCache);
+	const key = accountTaskKey(resolved, existingCandidate);
+	upsertRow(rows, key, resolved?.owner ?? '', resolved?.repo ?? '', 'account');
+	if (existingCandidate) {
+		if (existingCandidate.discovery !== 'account') { existingCandidate.discovery = 'both'; }
+		// Any disagreement between the two listings makes the repo-scoped candidate uncacheable.
+		// The repo-scoped listing is the more specific source, so it keeps the row attribution,
+		// but a cached aggregate under a contested key can no longer be trusted to describe
+		// current usage — marking the candidate uncacheable forces a fresh detail fetch.
+		//
+		// - **Repository**: the task moved, or was re-attributed once its bare repository ID
+		//   resolved, so a stale aggregate could be folded into the wrong repository's row.
+		// - **Timestamp**: the two listings were fetched moments apart, so a task updated in
+		//   between reports two different `updated_at` values. Reusing the older one would
+		//   break the contract this cache rests on — that a reused record cannot be showing a
+		//   superseded state — because the newer listing has already said it changed. An
+		//   account timestamp that is itself uncacheable ('' here) counts as a disagreement
+		//   too: it cannot confirm the repo-scoped one.
+		contestCandidate(existingCandidate, task, Boolean(resolved) && repoKey(resolved!.owner, resolved!.repo) !== existingCandidate.key);
+		return;
+	}
+	candidates.set(task.id, {
+		id: task.id, key, owner: resolved?.owner, repo: resolved?.repo,
+		sortAt: taskSortAt(task),
+		updatedAt: conflicting.has(task.id) ? '' : taskUpdatedAt(task),
+		cacheKey: agentTaskCacheKey(key, task.id), discovery: 'account',
+	});
 }
 
 /** Add one task's cloud-session totals to its repository row. */

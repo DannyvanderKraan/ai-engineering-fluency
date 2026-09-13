@@ -49,6 +49,9 @@ export interface WebviewLocalization {
 	'usage.githubActivity.tasksScannedTooltip': string;
 	'usage.githubActivity.tasksScannedLabel': string;
 	'usage.githubActivity.lowerBoundNote': string;
+	'usage.githubActivity.accountTasksIncomplete': string;
+	'usage.githubActivity.accountTasksUnavailable': string;
+	'usage.githubActivity.accountTasksUnknownReason': string;
 
 	// Details view — collapsible "Usage by Editor" section heading tooltips
 	'details.editorSection.show': string;
@@ -136,6 +139,9 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'usage.githubActivity.tasksScannedTooltip': 'Showing {0} of {1} tasks — the rest could not be counted this pass, so these figures are a lower bound',
 	'usage.githubActivity.tasksScannedLabel': '({0}/{1} tasks scanned)',
 	'usage.githubActivity.lowerBoundNote': 'Note: some figures could not be counted this pass — a listing did not complete, a detail call failed, or the detail budget ran out — so these totals are lower bounds.',
+	'usage.githubActivity.accountTasksIncomplete': 'The account-wide task listing stopped early ({0}) — tasks outside your workspace repositories may be missing.',
+	'usage.githubActivity.accountTasksUnavailable': 'Account-wide tasks unavailable ({0}) — only workspace repositories are shown.',
+	'usage.githubActivity.accountTasksUnknownReason': 'the /agents/tasks endpoint could not be read',
 	'details.editorSection.show': 'Show Usage by Editor',
 	'details.editorSection.hide': 'Hide Usage by Editor',
 	'logviewer.summary.interactions': 'Interactions',

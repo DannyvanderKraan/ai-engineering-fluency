@@ -2675,6 +2675,24 @@ function agentRepoLabelHtml(r: AgentRepoSummary): string {
   return `${link}${accountOnly}`;
 }
 
+/**
+ * The account-wide listing's own status line.
+ *
+ * Two distinct outcomes, and they were collapsed into one: a listing that produced *nothing* is
+ * unavailable, while one that collected some pages and then failed is available but incomplete —
+ * `accountTasksError` is set in both cases. Reporting only the first meant a partial account
+ * listing was reduced to the generic lower-bound note, leaving the user with no idea that tasks
+ * outside their workspace repositories were the part that went missing.
+ */
+function accountTasksNoteHtml(data: AgentSessionsResult): string {
+  if (!data.accountTasksAvailable) {
+    const reason = data.accountTasksError || localize('usage.githubActivity.accountTasksUnknownReason');
+    return `<strong>${escapeHtml(localizeFormat('usage.githubActivity.accountTasksUnavailable', reason))}</strong>`;
+  }
+  if (!data.accountTasksError) { return ''; }
+  return escapeHtml(localizeFormat('usage.githubActivity.accountTasksIncomplete', data.accountTasksError));
+}
+
 function buildAgentSessionRows(data: AgentSessionsResult, cell: string, cellCenter: string): string {
   return data.repos.map((r) => {
     // r.owner, r.repo, r.repoUrl and r.error are pre-sanitized by sanitizeAgentSessionsData
@@ -2771,9 +2789,7 @@ function renderAgentSessionsContent(data: AgentSessionsResult): string {
 		<div style="font-size:11px; color:var(--text-secondary); margin-bottom:12px;">
 			Showing cloud-agent sessions from ${sinceDate} to now.
 			${hasPartial ? `${escapeHtml(localize('usage.githubActivity.lowerBoundNote'))} ` : ''}
-			${data.accountTasksAvailable
-				? ''
-				: `<strong>Account-wide tasks unavailable:</strong> ${data.accountTasksError ?? 'the /agents/tasks endpoint could not be read'} — only workspace repositories are shown.`}
+			${accountTasksNoteHtml(data)}
 		</div>
 		<div class="customization-matrix-container">
 			<table class="customization-matrix" style="width:100%; border-collapse:collapse;">

@@ -363,6 +363,9 @@ test('l10n: GitHub activity freshness banner labels resolve in English', () => {
 		'usage.githubActivity.tasksScannedTooltip': 'Showing {0} of {1} tasks — the rest could not be counted this pass, so these figures are a lower bound',
 		'usage.githubActivity.tasksScannedLabel': '({0}/{1} tasks scanned)',
 		'usage.githubActivity.lowerBoundNote': 'Note: some figures could not be counted this pass — a listing did not complete, a detail call failed, or the detail budget ran out — so these totals are lower bounds.',
+		'usage.githubActivity.accountTasksIncomplete': 'The account-wide task listing stopped early ({0}) — tasks outside your workspace repositories may be missing.',
+		'usage.githubActivity.accountTasksUnavailable': 'Account-wide tasks unavailable ({0}) — only workspace repositories are shown.',
+		'usage.githubActivity.accountTasksUnknownReason': 'the /agents/tasks endpoint could not be read',
 	};
 	for (const [key, english] of Object.entries(expected)) {
 		assert.equal(t(key), english, `English value for ${key}`);
@@ -389,6 +392,9 @@ test('l10n: GitHub activity freshness banner labels resolve in zh-cn', () => {
 			'usage.githubActivity.tasksScannedTooltip': '显示 {1} 个任务中的 {0} 个 — 其余任务本次无法统计，因此以下数字为下限',
 			'usage.githubActivity.tasksScannedLabel': '(已扫描 {0}/{1} 个任务)',
 			'usage.githubActivity.lowerBoundNote': '注意：本次有部分数据无法统计 — 列表未能完整枚举、明细调用失败，或明细预算已用尽 — 因此以下合计为下限值。',
+			'usage.githubActivity.accountTasksIncomplete': '账户级任务列表提前中断（{0}）— 工作区仓库之外的任务可能缺失。',
+			'usage.githubActivity.accountTasksUnavailable': '无法获取账户级任务（{0}）— 仅显示工作区仓库。',
+			'usage.githubActivity.accountTasksUnknownReason': '无法读取 /agents/tasks 接口',
 		};
 		for (const [key, chinese] of Object.entries(expected)) {
 			assert.equal(t(key), chinese, `zh-cn value for ${key}`);
@@ -401,7 +407,7 @@ test('l10n: GitHub activity freshness banner labels resolve in zh-cn', () => {
 test('l10n: the banner\'s placeholder templates keep their {0}/{1} slots in both languages', () => {
 	// localizeFormat() fills these webview-side; a translation that drops a slot would silently
 	// swallow the snapshot age or the next-refresh time.
-	for (const key of ['usage.githubActivity.revalidatingBody', 'usage.githubActivity.updated', 'usage.githubActivity.tasksScannedTooltip', 'usage.githubActivity.tasksScannedLabel']) {
+	for (const key of ['usage.githubActivity.revalidatingBody', 'usage.githubActivity.updated', 'usage.githubActivity.tasksScannedTooltip', 'usage.githubActivity.tasksScannedLabel', 'usage.githubActivity.accountTasksIncomplete', 'usage.githubActivity.accountTasksUnavailable']) {
 		assert.match(t(key), /\{0\}/, `English ${key} keeps its {0} slot`);
 	}
 	for (const key of ['usage.githubActivity.updated', 'usage.githubActivity.tasksScannedTooltip', 'usage.githubActivity.tasksScannedLabel']) {
@@ -409,7 +415,7 @@ test('l10n: the banner\'s placeholder templates keep their {0}/{1} slots in both
 	}
 	mock.setLanguage('zh-cn');
 	try {
-		for (const key of ['usage.githubActivity.revalidatingBody', 'usage.githubActivity.updated', 'usage.githubActivity.tasksScannedTooltip', 'usage.githubActivity.tasksScannedLabel']) {
+		for (const key of ['usage.githubActivity.revalidatingBody', 'usage.githubActivity.updated', 'usage.githubActivity.tasksScannedTooltip', 'usage.githubActivity.tasksScannedLabel', 'usage.githubActivity.accountTasksIncomplete', 'usage.githubActivity.accountTasksUnavailable']) {
 			assert.match(t(key), /\{0\}/, `zh-cn ${key} keeps its {0} slot`);
 		}
 		for (const key of ['usage.githubActivity.updated', 'usage.githubActivity.tasksScannedTooltip', 'usage.githubActivity.tasksScannedLabel']) {

@@ -28,7 +28,11 @@ titles/descriptions, and session transcripts.
 ### `updated_at` is the correctness contract
 
 A cached record is reused **only** when the entity's `updated_at`, parsed and canonicalized, matches
-the authoritative listing exactly. Anything that changes a PR or a task moves that timestamp, so a
+the authoritative listing exactly. A record loaded from disk must also *describe itself*: a
+cloud-agent record whose key is not `agentTaskCacheKey(repoKey, id)` is discarded rather than
+allowed to answer for the task whose key it happens to occupy, and totals that would be added to a
+row (session counts, credits) must be non-negative numbers of the expected type — malformed local
+data causes a refetch, never a wrong number on screen. Anything that changes a PR or a task moves that timestamp, so a
 reused record cannot be showing a superseded state. An entity whose `updated_at` is missing or
 unparseable is treated as **uncacheable**: it is counted in the current pass but never enters the
 cache, so it is recomputed every time rather than reused on a timestamp that cannot be verified.
@@ -95,7 +99,9 @@ away on almost every read.
   wins that cache's file lock. Other windows read the snapshot that window wrote. A heartbeat keeps
   the lock alive so a slow API pass is never mistaken for a stale lock. The freshness check runs
   again **after** the lock is acquired: the window that waited may have been waiting on exactly the
-  refresh it was about to duplicate.
+  refresh it was about to duplicate. That re-check requires the snapshot to be *usable*, not just
+  recent — a v2 cloud-agent envelope has a perfectly fresh `fetchedAt` and no task records, and
+  standing down on it would make **Refresh now** refuse the very v3 rebuild the migration needs.
 - Opening a tab serves the cached snapshot immediately (stale-while-revalidate) and then asks for a
   refresh, which only happens if the snapshot is actually due.
 - The freshness banner on both tabs offers **Refresh now** — including on the error state, which is
@@ -125,6 +131,7 @@ result is marked partial.
 | Cloud-agent detail budget exhausted | Undetailed tasks stay "owed"; tab marked partial |
 | Cloud-agent detail call failed | No aggregate stored for that task — a failure is never remembered as zero usage; the task's row and the tab are marked partial; retried next pass, with its consecutive-failure count |
 | A listing or detail response arrived without its array | Treated as an error, not as an empty result. A 200 carrying no `tasks` array would otherwise read as an authoritative empty page — enough for reconciliation to delete every cached task and publish a confident zero — and one carrying no `sessions` array would be cached as a successful zero-usage aggregate. An empty answer says so explicitly, as `{ tasks: [] }` or `{ sessions: [] }` |
+| The same task appears in both the active and archived listings with different `updated_at` values | Counted once (the first sighting keeps the row), but treated as uncacheable — one of the two listings has already reported it changed |
 | Two workspace repositories both list the same task | The first repository keeps the row (deduplicating by task ID is what stops one task being counted twice), but the disagreement makes the task uncacheable for that pass, exactly as a workspace-vs-account disagreement does |
 | Both listings disagree about a task's repository or its `updated_at` | The repo-scoped listing wins the row attribution, but the task is treated as uncacheable for that pass. A repository disagreement would let a stale aggregate land on the wrong row; a timestamp disagreement means the other listing has already seen the task change, so reusing the cached state would break the `updated_at` contract |
 | A repo's listing errored after collecting some pages | The counts it did collect are shown, with the error noted beside them. A row is blanked to an error-only line only when the listing produced nothing — the banner already calls the figures a lower bound, so hiding them would contradict it |
