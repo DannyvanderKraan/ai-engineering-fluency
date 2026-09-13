@@ -228,6 +228,13 @@ test('getModelVendor: a vendor prefix only matches as a whole token', () => {
 	assert.equal(getModelVendor('mai-code-1-flash'), 'Microsoft');
 	assert.equal(getModelVendor('command-r'), 'Cohere');
 	assert.equal(getModelVendor('command-a'), 'Cohere');
+	// A prefix ending in a *digit* is not self-bounding: `o4` needs a real
+	// boundary after it, or every `o4…` word would read as OpenAI's.
+	assert.equal(getModelVendor('o4fake'), UNCLASSIFIED_VENDOR);
+	assert.equal(getModelVendor('o1fake'), UNCLASSIFIED_VENDOR);
+	assert.equal(getModelVendor('o3nonsense'), UNCLASSIFIED_VENDOR);
+	assert.equal(getModelVendor('o1'), 'OpenAI');
+	assert.equal(getModelVendor('o3-pro'), 'OpenAI');
 });
 
 test('getModelVendor: unrecognized models stay visible as Unclassified rather than being guessed at', () => {

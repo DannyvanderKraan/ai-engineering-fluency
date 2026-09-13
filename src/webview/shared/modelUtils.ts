@@ -260,14 +260,19 @@ export function getModelVendor(model: string): string {
  * only a version or variant separator (or a digit, as in `gpt5`) may follow the
  * prefix. Anything else is a different word, and stays Unclassified.
  */
+/** Characters that end one token and start the next in a model id. */
+const DELIMITER = /[-._/]/;
+/** What may legally follow a prefix: a delimiter, or a version digit (`gpt5`). */
 const TOKEN_BOUNDARY = /[-._/0-9]/;
 
 function matchesVendorPrefix(canonical: string, prefix: string): boolean {
 	if (!canonical.startsWith(prefix)) { return false; }
-	// A prefix that already ends in a delimiter (`phi-`, `mai-`, `command-`) is
+	// A prefix that already ends in a *delimiter* (`phi-`, `mai-`, `command-`) is
 	// token-bounded by its own last character; demanding another delimiter after
 	// it would reject every real id it exists to match (`phi-mini`, `command-r`).
-	if (TOKEN_BOUNDARY.test(prefix.charAt(prefix.length - 1))) { return true; }
+	// A prefix ending in a digit (`o1`, `o3`, `o4`) is not — it still needs a real
+	// boundary after it, or `o4fake` would read as OpenAI's.
+	if (DELIMITER.test(prefix.charAt(prefix.length - 1))) { return true; }
 	if (canonical.length === prefix.length) { return true; }
 	return TOKEN_BOUNDARY.test(canonical.charAt(prefix.length));
 }

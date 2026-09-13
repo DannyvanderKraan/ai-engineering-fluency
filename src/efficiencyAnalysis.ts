@@ -1344,7 +1344,7 @@ export interface EfficiencyViewData {
  *
  * The empty string is the one value no dimension can ever take: an editor falls
  * back to {@link COMBINED_UNKNOWN_EDITOR}, a vendor to `Unclassified`, and a
- * canonical model id to `unknown`. A readable word would not be safe — a custom
+ * canonical model id to {@link UNKNOWN_MODEL_ID}. A readable word would not be safe — a custom
  * endpoint's free-text model part canonicalizes straight through, so
  * `customendpoint/Acme/all` really does produce the model id `all`, which would
  * then be indistinguishable from "no filter" and impossible to select.
@@ -1400,7 +1400,7 @@ export const UNFILTERED_COMBINED: CombinedFilter = {
 export interface CombinedDailyCell {
 	/** Editor / session source. */
 	editor: string;
-	/** Canonical model id (`unknown` when the usage names no model). */
+	/** Canonical model id, or {@link UNKNOWN_MODEL_ID} when the usage names no model. */
 	model: string;
 	/** Underlying model maker, or `Unclassified`. */
 	vendor: string;

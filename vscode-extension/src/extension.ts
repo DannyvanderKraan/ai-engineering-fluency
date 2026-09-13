@@ -4230,6 +4230,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'efficiency.combined.vendorLabel': l10n.t('efficiency.combined.vendorLabel'),
 			'efficiency.combined.modelLabel': l10n.t('efficiency.combined.modelLabel'),
 			'efficiency.combined.editorLabel': l10n.t('efficiency.combined.editorLabel'),
+			'efficiency.combined.unknownEditor': l10n.t('efficiency.combined.unknownEditor'),
 			'efficiency.combined.optionAll': l10n.t('efficiency.combined.optionAll'),
 			'efficiency.combined.clearFilters': l10n.t('efficiency.combined.clearFilters'),
 			'efficiency.combined.selectionAll': l10n.t('efficiency.combined.selectionAll'),
@@ -4437,11 +4438,17 @@ class CopilotTokenTracker implements vscode.Disposable {
 	private accumulateDailyRollups(dailyStatsMap: Map<string, DailyTokenStats>, sessionData: SessionFileCache, editorType: string, repository: string, cutoffUtcStartKey: string): void {
 		const dailyRollups = sessionData.dailyRollups!;
 		let lastDayKey: string | undefined;
+		// Only a rollup with no model usage needs the fallback weighting, and the
+		// answer is the same for every day of the session — so derive it at most
+		// once, and not at all for the common case.
+		let fallbackWeights: { [model: string]: number } | undefined;
+		const lazyFallbackWeights = (): { [model: string]: number } =>
+			(fallbackWeights ??= this.fallbackModelWeights(sessionData));
 		for (const [dayKey, dayRollup] of Object.entries(dailyRollups)) {
 			if (dayKey < cutoffUtcStartKey) { continue; }
 			const dayTokens = (dayRollup.actualTokens > 0 ? dayRollup.actualTokens : dayRollup.tokens);
 			const dailyEntry = this.getOrCreateDailyEntry(dailyStatsMap, dayKey);
-			this.addUsageToDailyEntry(dailyEntry, dayTokens, dayRollup.interactions, editorType, repository, dayRollup.modelUsage, dayRollup.taskCategoryShares, dayRollup.primaryTaskCategory, this.fallbackModelWeights(sessionData));
+			this.addUsageToDailyEntry(dailyEntry, dayTokens, dayRollup.interactions, editorType, repository, dayRollup.modelUsage, dayRollup.taskCategoryShares, dayRollup.primaryTaskCategory, Object.keys(dayRollup.modelUsage ?? {}).length === 0 ? lazyFallbackWeights() : undefined);
 			if (!lastDayKey || dayKey > lastDayKey) { lastDayKey = dayKey; }
 		}
 		if (lastDayKey) {
@@ -4462,7 +4469,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		const dateKey = toLocalDayKey(lastActivity);
 		if (dateKey < cutoffUtcStartKey) { return; }
 		const dailyEntry = this.getOrCreateDailyEntry(dailyStatsMap, dateKey);
-		this.addUsageToDailyEntry(dailyEntry, tokens, sessionData.interactions, editorType, repository, sessionData.modelUsage, sessionData.taskCategoryShares, sessionData.taskCategory, this.fallbackModelWeights(sessionData));
+		this.addUsageToDailyEntry(dailyEntry, tokens, sessionData.interactions, editorType, repository, sessionData.modelUsage, sessionData.taskCategoryShares, sessionData.taskCategory, Object.keys(sessionData.modelUsage ?? {}).length === 0 ? this.fallbackModelWeights(sessionData) : undefined);
 		this.addModelEfficiencyToDailyEntry(dailyEntry, sessionData);
 		if ((sessionData.linesAdded ?? 0) + (sessionData.linesRemoved ?? 0) > 0) {
 			this.addLocToDailyEntry(dailyEntry, sessionData.linesAdded ?? 0, sessionData.linesRemoved ?? 0, editorType, repository, sessionData.languageUsage);

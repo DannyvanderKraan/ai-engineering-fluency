@@ -80,6 +80,7 @@ export interface WebviewLocalization {
 	'efficiency.combined.vendorLabel': string;
 	'efficiency.combined.modelLabel': string;
 	'efficiency.combined.editorLabel': string;
+	'efficiency.combined.unknownEditor': string;
 	'efficiency.combined.optionAll': string;
 	'efficiency.combined.clearFilters': string;
 	'efficiency.combined.selectionAll': string;
@@ -170,6 +171,7 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'efficiency.combined.vendorLabel': "Model vendor",
 	'efficiency.combined.modelLabel': "Model",
 	'efficiency.combined.editorLabel': "Editor",
+	'efficiency.combined.unknownEditor': "Unknown editor",
 	'efficiency.combined.optionAll': "All",
 	'efficiency.combined.clearFilters': "Clear filters",
 	'efficiency.combined.selectionAll': "All editors, all vendors, all models",

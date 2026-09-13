@@ -241,6 +241,7 @@
   "efficiency.combined.vendorLabel": "Model vendor",
   "efficiency.combined.modelLabel": "Model",
   "efficiency.combined.editorLabel": "Editor",
+  "efficiency.combined.unknownEditor": "Unknown editor",
   "efficiency.combined.optionAll": "All",
   "efficiency.combined.clearFilters": "Clear filters",
   "efficiency.combined.selectionAll": "All editors, all vendors, all models",

@@ -28,6 +28,7 @@ import {
 	aggregateCombinedWeekly,
 	buildModelWeeklySeries,
 	COMBINED_FILTER_ALL,
+	COMBINED_UNKNOWN_EDITOR,
 	compareModels,
 	computeModelPeriodMetrics,
 	listCombinedFacets,
@@ -514,6 +515,15 @@ function combinedWeekly(d: EfficiencyViewData): EfficiencyWeekPoint[] {
 	return aggregateCombinedWeekly(d.combinedDaily, combinedFilter, payloadNow(d));
 }
 
+/**
+ * Display label for an editor. The payload carries a stable English sentinel for
+ * a session whose source could not be determined; only its *display* is
+ * localized, so the filter value itself stays language-independent.
+ */
+function editorLabel(editor: string): string {
+	return editor === COMBINED_UNKNOWN_EDITOR ? localize('efficiency.combined.unknownEditor') : editor;
+}
+
 /** Options for one filter control: "All" first, then the faceted values. */
 function facetSelectOptions(options: CombinedFacetOption[], label: (value: string) => string): { value: string; label: string }[] {
 	return [
@@ -537,7 +547,7 @@ function combinedSelectionText(): string {
 	};
 	add('efficiency.combined.vendorLabel', combinedFilter.vendor);
 	add('efficiency.combined.modelLabel', combinedFilter.model === COMBINED_FILTER_ALL ? COMBINED_FILTER_ALL : getModelDisplayName(combinedFilter.model));
-	add('efficiency.combined.editorLabel', combinedFilter.editor);
+	add('efficiency.combined.editorLabel', editorLabel(combinedFilter.editor));
 	return parts.length > 0 ? parts.join(' · ') : localize('efficiency.combined.selectionAll');
 }
 
@@ -552,7 +562,7 @@ function renderCombinedFilters(d: EfficiencyViewData): string {
 		<div class="combined-filters" role="group" aria-label="${escapeHtml(localize('efficiency.combined.filtersLegend'))}">
 			${control('combined-vendor', 'efficiency.combined.vendorLabel', facetSelectOptions(facets.vendors, v => v), combinedFilter.vendor)}
 			${control('combined-model', 'efficiency.combined.modelLabel', facetSelectOptions(facets.models, getModelDisplayName), combinedFilter.model)}
-			${control('combined-editor', 'efficiency.combined.editorLabel', facetSelectOptions(facets.editors, v => v), combinedFilter.editor)}
+			${control('combined-editor', 'efficiency.combined.editorLabel', facetSelectOptions(facets.editors, editorLabel), combinedFilter.editor)}
 			<button type="button" id="combined-clear" class="combined-clear"${isUnfiltered() ? ' disabled' : ''}>${escapeHtml(localize('efficiency.combined.clearFilters'))}</button>
 		</div>`;
 }
