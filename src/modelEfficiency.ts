@@ -24,6 +24,7 @@
  */
 import type { DailyModelEfficiency, DailyModelEfficiencyEntry, DailyTokenStats, ModelEfficiencyCounters, ModelEfficiencyUsage, ModelPricing, ModelUsage, SessionFileCache } from './types';
 import { calculateEstimatedCost } from './tokenEstimation';
+import { isUnsafeObjectKey } from './utils/protoGuard';
 
 // ---------------------------------------------------------------------------
 // Edit-tool detection
@@ -272,7 +273,16 @@ export function createEmptyDailyModelEfficiencyEntry(): DailyModelEfficiencyEntr
 	};
 }
 
-function ensureDailyEntry(target: DailyModelEfficiency, model: string): DailyModelEfficiencyEntry {
+/**
+ * The day entry for `model`, created on demand.
+ *
+ * Returns null for a prototype-polluting key: model ids come from parsed
+ * session logs, and `target['__proto__']` is truthy, so an unguarded lookup
+ * would hand back `Object.prototype` and the counter writes that follow would
+ * land on it. `statsHelpers` guards the same pattern — see protoGuard.ts.
+ */
+function ensureDailyEntry(target: DailyModelEfficiency, model: string): DailyModelEfficiencyEntry | null {
+	if (isUnsafeObjectKey(model)) { return null; }
 	if (!target[model]) { target[model] = createEmptyDailyModelEfficiencyEntry(); }
 	return target[model];
 }
@@ -344,6 +354,7 @@ export function accumulateDailyModelTokens(
 	if (!modelUsage) { return; }
 	for (const [model, usage] of Object.entries(modelUsage)) {
 		const entry = ensureDailyEntry(target, model);
+		if (!entry) { continue; }
 		entry.inputTokens += usage.inputTokens || 0;
 		entry.outputTokens += usage.outputTokens || 0;
 		entry.cachedReadTokens += usage.cachedReadTokens || 0;
@@ -367,6 +378,7 @@ export function accumulateDailyModelCounters(target: DailyModelEfficiency, input
 
 	for (const [model, counters] of Object.entries(input.modelEfficiency ?? {})) {
 		const entry = ensureDailyEntry(target, model);
+		if (!entry) { continue; }
 		entry.calls += counters.calls;
 		entry.toolCalls = (entry.toolCalls ?? 0) + (counters.toolCalls ?? 0);
 		entry.editTurns += counters.editTurns;
@@ -379,6 +391,7 @@ export function accumulateDailyModelCounters(target: DailyModelEfficiency, input
 	const hasDuration = (input.activeDurationMs ?? 0) > 0;
 	for (const [model, share] of shares) {
 		const entry = ensureDailyEntry(target, model);
+		if (!entry) { continue; }
 		entry.sessionShare += share;
 		if (hasDuration) {
 			entry.activeDurationMs += input.activeDurationMs! * share;
@@ -412,6 +425,7 @@ export function buildSessionEfficiencyAttribution(sessionData: SessionFileCache)
 	if (!src) { return; }
 	for (const [model, s] of Object.entries(src)) {
 		const t = ensureDailyEntry(target, model);
+		if (!t) { continue; }
 		t.calls += s.calls;
 		t.toolCalls = (t.toolCalls ?? 0) + (s.toolCalls ?? 0);
 		t.editTurns += s.editTurns;

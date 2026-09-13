@@ -3533,8 +3533,28 @@ class CopilotTokenTracker implements vscode.Disposable {
 	private mergeIntoFullDailyStats(dailyStats: DailyTokenStats[]): void {
 		if (!this.lastFullDailyStats) { return; }
 		const fullMap = new Map(this.lastFullDailyStats.map(d => [d.date, d]));
-		for (const day of dailyStats) { fullMap.set(day.date, day); }
+		for (const day of dailyStats) { fullMap.set(day.date, this.carryForwardEnrichedFields(fullMap.get(day.date), day)); }
 		this.setFullDailyStats(Array.from(fullMap.values()).sort((a, b) => a.date.localeCompare(b.date)));
+	}
+
+	/**
+	 * Keeps the per-model efficiency counters when a refreshed day replaces an
+	 * enriched one.
+	 *
+	 * The routine refresh path builds its days through `statsHelpers`'
+	 * `addToDailyEntry`, which computes volume but not `modelEfficiency` /
+	 * `editorModelEfficiency` — those come only from the fuller
+	 * `calculateDailyStats()` pass. Replacing the day wholesale therefore
+	 * stripped the newest days of exactly the data the Models tab and its editor
+	 * filter read, emptying recent comparisons after the first background
+	 * refresh. Carrying the counters forward keeps them at their last computed
+	 * value instead of dropping them; the next full pass recomputes them.
+	 */
+	private carryForwardEnrichedFields(previous: DailyTokenStats | undefined, refreshed: DailyTokenStats): DailyTokenStats {
+		if (!previous) { return refreshed; }
+		if (!refreshed.modelEfficiency && previous.modelEfficiency) { refreshed.modelEfficiency = previous.modelEfficiency; }
+		if (!refreshed.editorModelEfficiency && previous.editorModelEfficiency) { refreshed.editorModelEfficiency = previous.editorModelEfficiency; }
+		return refreshed;
 	}
 
 	/**
@@ -9675,8 +9695,10 @@ private async shareTextToSocialPlatform(shareText: string, platform: 'linkedin' 
 	 * without per-model data are dropped to keep the webview payload small.
 	 */
 	private buildModelDailyPayload(dailyStats: DailyTokenStats[], now: Date): ModelDailyInput[] {
-		const cutoff = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
-		const cutoffKey = toLocalDayKey(cutoff);
+		// Same snapped cutoff as the volume payload: the 1-year preset starts on
+		// the first of the month, so a flat 365-day window would leave the drift
+		// chart's earliest bucket short of up to a month of data.
+		const cutoffKey = _resolveEfficiencyRange('last1y', now).startKey;
 		const payload: ModelDailyInput[] = [];
 		for (const day of dailyStats) {
 			if (day.date < cutoffKey || !day.modelEfficiency || Object.keys(day.modelEfficiency).length === 0) { continue; }

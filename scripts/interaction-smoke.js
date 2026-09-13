@@ -131,12 +131,24 @@ const TAG_CONTROLS = (selector) => {
     // Identity, not position: a control that re-renders its view can add or
     // remove controls around this one, and matching the fresh enumeration by
     // array index would then silently exercise a different control.
-    const identity = [
-      el.tagName.toLowerCase(),
-      el.id || '',
-      el.getAttribute('data-tab') || el.getAttribute('data-action') || el.getAttribute('data-command') || el.getAttribute('data-range') || '',
-      label,
-    ].join('|');
+    //
+    // Built from stable attributes first. A <select>'s textContent is the
+    // concatenation of all its option labels, so it changes whenever a rerender
+    // prunes or refills the options — including it would make the control
+    // unfindable on the next pass and silently skip it, the exact failure this
+    // identity exists to prevent. Text is therefore only a last resort, and
+    // never for a <select>.
+    const tag = el.tagName.toLowerCase();
+    const stable =
+      el.id ||
+      el.getAttribute('name') ||
+      el.getAttribute('aria-label') ||
+      el.getAttribute('data-tab') ||
+      el.getAttribute('data-action') ||
+      el.getAttribute('data-command') ||
+      el.getAttribute('data-range') ||
+      '';
+    const identity = [tag, stable, stable || tag === 'select' ? '' : label].join('|');
     const occurrence = seen.get(identity) || 0;
     seen.set(identity, occurrence + 1);
     const key = `${identity}#${occurrence}`;
@@ -150,7 +162,7 @@ const TAG_CONTROLS = (selector) => {
       (el instanceof HTMLInputElement && el.type === 'radio' && el.checked);
     controls.push({
       index,
-      tag: el.tagName.toLowerCase(),
+      tag,
       id: el.id || null,
       classes: el.className && typeof el.className === 'string' ? el.className.slice(0, 80) : null,
       label: label || null,

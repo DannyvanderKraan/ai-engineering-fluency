@@ -657,6 +657,10 @@ function addToDailyEntry(entry: DailyTokenStats, tokens: number, interactions: n
 	entry.tokens += tokens; entry.sessions += 1; entry.interactions += interactions;
 	if (!entry.editorUsage[editorType]) { entry.editorUsage[editorType] = { tokens: 0, sessions: 0 }; }
 	entry.editorUsage[editorType].tokens += tokens; entry.editorUsage[editorType].sessions += 1;
+	// Keep the per-editor turn count in step with the day total. The Efficiency
+	// view's editor filter divides by it, so a path that updated the day but not
+	// the editor slice would silently read as "0 turns" for that editor.
+	entry.editorUsage[editorType].interactions = (entry.editorUsage[editorType].interactions ?? 0) + interactions;
 	if (!entry.repositoryUsage[repository]) { entry.repositoryUsage[repository] = { tokens: 0, sessions: 0 }; }
 	entry.repositoryUsage[repository].tokens += tokens; entry.repositoryUsage[repository].sessions += 1;
 	addModelUsage(entry.modelUsage, modelUsage);

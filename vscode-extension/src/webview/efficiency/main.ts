@@ -295,12 +295,31 @@ function withStaleValue(options: { value: string; label: string }[], selected: s
 	return [...options, { value: selected, label: localizeFormat('efficiency.scope.noDataFor', selected) }];
 }
 
-function editorSelectHtml(d: EfficiencyViewData): string {
+function editorSelectHtml(d: EfficiencyViewData, s: ScopedData): string {
+	// `d.editors` spans the payload's whole year, so an editor last used six
+	// months ago would look ordinary while a 30-day scope charts nothing for it.
+	// Mark the ones with no volume in the *active* range.
+	const inRange = editorsWithDataInRange(d, s);
 	const options = withStaleValue(
-		[{ value: '', label: localize('efficiency.scope.allEditors') }, ...(d.editors ?? []).map(e => ({ value: e, label: e }))],
+		[
+			{ value: '', label: localize('efficiency.scope.allEditors') },
+			...(d.editors ?? []).map(e => ({ value: e, label: inRange.has(e) ? e : localizeFormat('efficiency.scope.noDataFor', e) })),
+		],
 		scope.editor,
 	);
 	return selectHtml('eff-editor', options, scope.editor);
+}
+
+/** Editors with any token volume inside the range currently being charted. */
+function editorsWithDataInRange(d: EfficiencyViewData, s: ScopedData): Set<string> {
+	const present = new Set<string>();
+	for (const day of d.dailyVolume ?? []) {
+		if (day.date < s.range.startKey || day.date > s.range.endKey) { continue; }
+		for (const [editor, slice] of Object.entries(day.byEditor ?? {})) {
+			if (slice.tokens > 0) { present.add(editor); }
+		}
+	}
+	return present;
 }
 
 function vendorSelectHtml(d: EfficiencyViewData): string {
@@ -339,7 +358,7 @@ function renderScopeToolbar(d: EfficiencyViewData, s: ScopedData): string {
 		<div class="scope-toolbar">
 			${rangeButtonsHtml()}
 			<label class="scope-field">${escapeHtml(localize('efficiency.resolution.label'))} ${resolutionSelectHtml(d)}</label>
-			${policy.editor ? `<label class="scope-field">${escapeHtml(localize('efficiency.scope.editorLabel'))} ${editorSelectHtml(d)}</label>` : ''}
+			${policy.editor ? `<label class="scope-field">${escapeHtml(localize('efficiency.scope.editorLabel'))} ${editorSelectHtml(d, s)}</label>` : ''}
 			${policy.vendor ? `<label class="scope-field">${escapeHtml(localize('efficiency.scope.vendorLabel'))} ${vendorSelectHtml(d)}</label>` : ''}
 			${drillSelectHtml(s)}
 			${drill}
@@ -842,10 +861,13 @@ function reconcileModelSelection(d: EfficiencyViewData): void {
 	const preferred = models.filter(m => m.sampleSufficient);
 	const pool = preferred.length >= 2 ? preferred : models;
 	if (!ids.has(modelState.modelA)) { modelState.modelA = pool[0].model; }
-	// Leave B empty when the scope holds only one model. Pointing both sides at
-	// the same model would render an all-ties "head-to-head" that looks like a
-	// real comparison; {@link renderModelsTab} shows an explicit state instead.
-	if (!ids.has(modelState.modelB)) { modelState.modelB = pool[1]?.model ?? ''; }
+	// B must be present *and* different from A. Checking membership alone left a
+	// stale B === A in place, and the view then rendered an all-ties
+	// "head-to-head" of a model against itself, which reads as a real result.
+	// Empty is honest: {@link noComparisonReason} explains why.
+	if (!ids.has(modelState.modelB) || modelState.modelB === modelState.modelA) {
+		modelState.modelB = pool.find(m => m.model !== modelState.modelA)?.model ?? '';
+	}
 	reconcileModelWindows(d);
 }
 
@@ -877,7 +899,9 @@ function initModelState(d: EfficiencyViewData): void {
 	const preferred = models.filter(m => m.sampleSufficient);
 	const pool = preferred.length >= 2 ? preferred : models;
 	modelState.modelA = pool[0]?.model ?? '';
-	modelState.modelB = pool[1]?.model ?? pool[0]?.model ?? '';
+	// Never seed B with A — see reconcileModelSelection for why a self-comparison
+	// is worse than an empty side.
+	modelState.modelB = pool.find(m => m.model !== modelState.modelA)?.model ?? '';
 
 	const available = availableWindowIds(d, payloadNow(d));
 	if (available.length > 0) {
@@ -1182,6 +1206,12 @@ function renderModelsTab(d: EfficiencyViewData, s: ScopedData): string {
 
 /** Why the head-to-head is unavailable, in the terms of whichever selection caused it. */
 function noComparisonReason(): string {
+	// Zero models and one model are different problems with different fixes, and
+	// a vendor that exists across the payload can still be empty for the selected
+	// editor — telling that user "only one model has data" would be wrong.
+	if (modelState.mode === 'models' && !modelState.modelA) {
+		return 'No model has data for this combination of editor and vendor. Clear one of the two filters, or pick a vendor this editor actually used.';
+	}
 	if (modelState.mode === 'models' && !modelState.modelB) {
 		return 'Only one model has data in this scope, so there is nothing to compare it against. Widen the editor or vendor filter to compare two models — the drift chart below still works.';
 	}

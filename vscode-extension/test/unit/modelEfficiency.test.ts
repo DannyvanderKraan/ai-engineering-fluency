@@ -20,7 +20,7 @@ import {
     type EfficiencyTurn,
     type SessionEfficiencyAttribution,
 } from '../../../src/modelEfficiency';
-import type { DailyModelEfficiency, DailyModelEfficiencyEntry, DailyTokenStats, ModelEfficiencyCounters, ModelEfficiencyUsage, ModelPricing } from '../../../src/types';
+import type { DailyModelEfficiency, DailyModelEfficiencyEntry, DailyTokenStats, ModelEfficiencyCounters, ModelEfficiencyUsage, ModelPricing, ModelUsage } from '../../../src/types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -569,4 +569,42 @@ test('accumulateDayAndEditorModelCounters: several editors on one day stay separ
 	assert.equal(entry.editorModelEfficiency!['Claude Code']['gpt-5'].calls, 5);
 	assert.equal(entry.modelEfficiency!['gpt-5'].calls, 8);
 	assert.deepEqual(mergedEditorSlices(entry)['gpt-5'], entry.modelEfficiency!['gpt-5']);
+});
+
+// A session log arrives as parsed JSON, and `JSON.parse` creates `__proto__` as
+// a real own property (an object *literal* would set the prototype instead and
+// never reach the guard at all — such a test cannot fail).
+function parsedModelUsage(model: string): ModelUsage {
+	return JSON.parse(`{"${model}": {"inputTokens": 500, "outputTokens": 100, "sessions": 1}}`);
+}
+
+test('accumulateDayAndEditorModelTokens: a prototype-polluting model id is dropped, not written to Object.prototype', () => {
+	const entry = emptyDay();
+	const usage = parsedModelUsage('__proto__');
+	assert.ok(Object.prototype.hasOwnProperty.call(usage, '__proto__'), 'fixture must carry a real own __proto__ key');
+
+	accumulateDayAndEditorModelTokens(entry, 'VS Code', usage, {});
+	accumulateDayAndEditorModelTokens(entry, 'VS Code', parsedModelUsage('constructor'), {});
+
+	// Unguarded, `target['__proto__']` returns Object.prototype and the counter
+	// writes land on it, poisoning every object in the process.
+	assert.equal((({}) as Record<string, unknown>).inputTokens, undefined, 'Object.prototype must not gain counters');
+	assert.equal(Object.prototype.hasOwnProperty.call(entry.modelEfficiency ?? {}, '__proto__'), false);
+	assert.equal(Object.prototype.hasOwnProperty.call(entry.modelEfficiency ?? {}, 'constructor'), false);
+});
+
+test('accumulateDayAndEditorModelCounters: a prototype-polluting model id is dropped from both the day and the editor slice', () => {
+	const entry = emptyDay();
+	const efficiency: ModelEfficiencyUsage = JSON.parse('{"__proto__": {"calls": 3, "toolCalls": 0, "editTurns": 2, "oneShotEditTurns": 0, "retries": 0, "selfCorrections": 0, "inputTokens": 100, "outputTokens": 0, "cachedReadTokens": 0, "cacheCreationTokens": 0, "cost": 0}}');
+	assert.ok(Object.prototype.hasOwnProperty.call(efficiency, '__proto__'), 'fixture must carry a real own __proto__ key');
+
+	accumulateDayAndEditorModelCounters(entry, 'VS Code', {
+		modelEfficiency: efficiency,
+		modelUsage: parsedModelUsage('__proto__'),
+		activeDurationMs: 1000, linesAdded: 1, linesRemoved: 0, applies: 0, codeBlocks: 0,
+	});
+
+	assert.equal((({}) as Record<string, unknown>).calls, undefined, 'Object.prototype must not gain counters');
+	assert.equal(Object.prototype.hasOwnProperty.call(entry.modelEfficiency ?? {}, '__proto__'), false);
+	assert.equal(Object.prototype.hasOwnProperty.call(entry.editorModelEfficiency?.['VS Code'] ?? {}, '__proto__'), false);
 });
