@@ -111,7 +111,8 @@ result is marked partial.
 | Listing errored or timed out | Pages collected before the failure are still counted; records retained; per-repo error shown; tab marked partial |
 | Cloud-agent detail budget exhausted | Undetailed tasks stay "owed"; tab marked partial |
 | Cloud-agent detail call failed | No aggregate stored for that task — a failure is never remembered as zero usage; the task's row and the tab are marked partial; retried next pass, with its consecutive-failure count |
-| Both listings disagree about a task's repository | The repo-scoped listing wins the row attribution, but the task is treated as uncacheable for that pass — a stale aggregate can never land on the wrong repository |
+| Both listings disagree about a task's repository or its `updated_at` | The repo-scoped listing wins the row attribution, but the task is treated as uncacheable for that pass. A repository disagreement would let a stale aggregate land on the wrong row; a timestamp disagreement means the other listing has already seen the task change, so reusing the cached state would break the `updated_at` contract |
+| A repo's listing errored after collecting some pages | The counts it did collect are shown, with the error noted beside them. A row is blanked to an error-only line only when the listing produced nothing — the banner already calls the figures a lower bound, so hiding them would contradict it |
 
 **Retained records are cached, not counted.** A record kept only because the listing was incomplete
 stays in the cache so the next pass can reuse it, but it is deliberately left out of the numbers on
@@ -135,16 +136,31 @@ recreating the Usage Analysis panel cannot repopulate it from data that was just
 cleanup covers the `*.snapshot.json.<pid>.tmp` files an interrupted atomic write can leave behind,
 which hold a complete envelope.
 
+An open panel is cleared too, not just the host's copies. The Usage Analysis view is created with
+`retainContextWhenHidden`, so it keeps its own rendered rows across a discard — dropping only the
+host state would leave the previous identity's repository names and counts on screen, which is the
+leak the scoping exists to prevent, one layer up. Every discard therefore pushes an empty,
+never-fetched snapshot to the panel; because it carries no `fetchedAt`, the panel also re-arms its
+lazy loader so the tab asks for the new identity's data instead of considering itself loaded.
+
 Neither touches the session-parsing caches' lock files or another window's coordination state. One
 known limit: a *different* VS Code window that already holds an in-memory snapshot keeps showing it
 until its next revalidation notices the file is gone — the stale display is transient, but it is not
 invalidated across windows synchronously.
 
+A refresh that is *mid-write* when a discard lands is caught on the other side too: the scope and
+generation are re-checked **after** the awaited write, and the file the atomic rename just
+recreated is removed rather than published. Checking only before the write would let the rename put
+back a file that Clear Cache had already deleted.
+
 ### Identity changes mid-flight
 
 The in-memory snapshots are tagged with the scope they were collected under. Switching account or
 Enterprise host discards them rather than publishing the previous identity's repository names and
-counts to the new session. A collection pass that spans a sign-out, a switch or a Clear Cache has
+counts to the new session. The snapshot *read* on each serve path is scoped from the session that
+call just resolved, never from the extension's `githubSession` field — that field lags an account
+switch until the auth listener catches up, and reading through it would serve the previous
+identity's file. A collection pass that spans a sign-out, a switch or a Clear Cache has
 its result discarded instead of written — otherwise it would recreate a deliberately deleted file
 under an identity that is no longer signed in.
 

@@ -8,6 +8,8 @@ import {
 	REFRESH_GITHUB_ACTIVITY_ACTION,
 	REFRESH_GITHUB_ACTIVITY_COMMAND,
 	REPO_PR_PARTIAL_NOTE_KEY,
+	isEmptyActivitySnapshot,
+	shouldRenderErrorOnlyRow,
 	snapshotFreshnessHtml,
 } from './snapshotFreshness';
 import { escapeHtml, formatCompact, formatCost, formatDurationShort, formatFileSize, formatFixed, formatNumber, formatPercent, getTimeSince, safeSectionHtml, setFormatLocale } from '../shared/formatUtils';
@@ -2538,12 +2540,19 @@ const AI_PR_LABEL: Record<string, string> = {
 /** Renders one repository row of the Repository PRs table. */
 function renderRepoPrRow(r: RepoPrInfo, cell: string, cellCenter: string): string {
 	const repoLink = `<a href="${escapeHtml(r.repoUrl)}" target="_blank" rel="noopener noreferrer" style="color:var(--link-color); font-family:'Courier New',monospace; font-size:12px;">${escapeHtml(r.owner)}/${escapeHtml(r.repo)}</a>`;
-	if (r.error) {
+	// Only take the error-only row when the listing produced nothing. A listing that got some pages
+	// and then failed keeps those PRs on purpose, and the freshness banner is already telling the
+	// user the figures are a lower bound — blanking the counts here would contradict it, and would
+	// throw away the one piece of information the failed pass did manage to collect.
+	if (shouldRenderErrorOnlyRow(r.error, r.totalPrs)) {
 		return `<tr>
 			<td style="${cell} font-family:'Courier New',monospace; font-size:12px;">${repoLink}</td>
-			<td colspan="4" style="${cell} color:var(--text-secondary); font-style:italic; font-size:12px;">${escapeHtml(r.error)}</td>
+			<td colspan="4" style="${cell} color:var(--text-secondary); font-style:italic; font-size:12px;">${escapeHtml(r.error ?? '')}</td>
 		</tr>`;
 	}
+	const errorNote = r.error
+		? `<div style="margin-top:2px; color:var(--text-secondary); font-style:italic; font-size:11px;">${escapeHtml(r.error)}</div>`
+		: '';
 	// Collapsible detail list
 	let detailsHtml = '';
 	if (r.aiDetails.length > 0) {
@@ -2560,7 +2569,7 @@ function renderRepoPrRow(r: RepoPrInfo, cell: string, cellCenter: string): strin
 		? `<span style="font-weight:600;">${r.userMergedPrs ?? 0} / ${r.userAuthoredPrs}</span>`
 		: '0';
 	return `<tr>
-		<td style="${cell} font-family:'Courier New',monospace; font-size:12px;">${repoLink}${detailsHtml}</td>
+		<td style="${cell} font-family:'Courier New',monospace; font-size:12px;">${repoLink}${errorNote}${detailsHtml}</td>
 		<td style="${cellCenter} font-weight:600;">${r.totalPrs}</td>
 		<td style="${cellCenter}">${yours}</td>
 		<td style="${cellCenter}">${r.aiAuthoredPrs > 0 ? `<span style="font-weight:600;">${r.aiAuthoredPrs}</span>` : '0'}</td>
@@ -2670,12 +2679,18 @@ function buildAgentSessionRows(data: AgentSessionsResult, cell: string, cellCent
   return data.repos.map((r) => {
     // r.owner, r.repo, r.repoUrl and r.error are pre-sanitized by sanitizeAgentSessionsData
     const label = agentRepoLabelHtml(r);
-    if (r.error) {
+    // Error-only row only when the listing produced nothing. A listing that collected some pages
+    // and then failed keeps those tasks deliberately, and the banner already calls the figures a
+    // lower bound — blanking them here would contradict it and discard what the pass did collect.
+    if (shouldRenderErrorOnlyRow(r.error, r.totalTasks + r.totalSessions)) {
       return `<tr>
         <td style="${cell}">${label}</td>
         <td colspan="3" style="${cell} color:var(--text-secondary); font-style:italic; font-size:12px;">${r.error}</td>
       </tr>`;
     }
+    const errorNote = r.error
+      ? `<div style="margin-top:2px; color:var(--text-secondary); font-style:italic; font-size:11px;">${r.error}</div>`
+      : '';
     const partialNote = r.partial
       ? ` <span title="Showing ${r.tasksScanned} of ${r.tasksTotal} tasks — capped to limit API usage" style="color:var(--text-muted); font-size:10px;">(${r.tasksScanned}/${r.tasksTotal} tasks scanned)</span>`
       : '';
@@ -2683,7 +2698,7 @@ function buildAgentSessionRows(data: AgentSessionsResult, cell: string, cellCent
       ? r.totalCredits.toFixed(1)
       : r.totalPremiumRequests > 0 ? `${r.totalPremiumRequests.toFixed(1)} PR` : '—';
     return `<tr>
-      <td style="${cell}">${label}${partialNote}</td>
+      <td style="${cell}">${label}${partialNote}${errorNote}</td>
       <td style="${cellCenter} font-weight:600;">${r.totalTasks}</td>
       <td style="${cellCenter} font-weight:600;">${r.totalSessions}</td>
       <td style="${cellCenter}">${credits}</td>
@@ -2715,17 +2730,17 @@ function renderAgentSessionsContent(data: AgentSessionsResult): string {
 	const cell = 'padding: 6px 8px; border-bottom: 1px solid var(--border-subtle);';
 	const cellCenter = `${cell} text-align: center;`;
 
+	// An errored repo can still carry the tasks it collected before the failure, so its totals are
+	// summed like any other. They are a lower bound, which is exactly what the banner says.
 	const summaryTotals = data.repos.reduce((acc, r) => {
-		if (!r.error) {
-			acc.tasks += r.totalTasks;
-			acc.sessions += r.totalSessions;
-			acc.credits += r.totalCredits;
-			acc.premiumRequests += r.totalPremiumRequests;
-		}
+		acc.tasks += r.totalTasks;
+		acc.sessions += r.totalSessions;
+		acc.credits += r.totalCredits;
+		acc.premiumRequests += r.totalPremiumRequests;
 		return acc;
 	}, { tasks: 0, sessions: 0, credits: 0, premiumRequests: 0 });
 
-	const hasPartial = data.repos.some(r => r.partial && !r.error);
+	const hasPartial = data.repos.some(r => r.partial || r.error);
 	const rows = buildAgentSessionRows(data, cell, cellCenter);
 	const tile = 'background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; padding:12px 20px; text-align:center; min-width:80px;';
 
@@ -5817,7 +5832,7 @@ function handleHighlightUnknownTools(): void {
 
 function handleRepoPrStatsLoaded(data: any): void {
 	repoPrStatsData = sanitizeRepoPrStatsData(data);
-	if (!repoPrStatsData.authenticated) { repoPrStatsLoaded = false; }
+	if (isEmptyActivitySnapshot(repoPrStatsData)) { repoPrStatsLoaded = false; }
 	// Only the failure is worth a log line: a successful render is visible in the panel, but a
 	// payload that arrives and renders nothing looks identical to one that never arrived.
 	if (!updateReposPrPanel(repoPrStatsData)) {
@@ -5831,7 +5846,7 @@ function handleRepoPrStatsLoaded(data: any): void {
 function handleAgentSessionsLoaded(data: any): void {
 	if (!data || typeof data !== 'object') { return; }
 	agentSessionsData = sanitizeAgentSessionsData(data);
-	if (!agentSessionsData.authenticated) { agentSessionsLoaded = false; }
+	if (isEmptyActivitySnapshot(agentSessionsData)) { agentSessionsLoaded = false; }
 	if (!updateAgentSessionsPanel(agentSessionsData)) {
 		traceToHost('agentSessionsLoaded.notRendered', { authenticated: agentSessionsData.authenticated });
 	}

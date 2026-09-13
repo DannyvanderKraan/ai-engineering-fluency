@@ -193,6 +193,31 @@ test('readAgentTaskRecords drops records that could never be matched again', () 
 	assert.deepEqual(readAgentTaskRecords(envelope).map((r) => r.id), ['task-1']);
 });
 
+test('readAgentTaskRecords drops a record whose aggregate is not all numbers', () => {
+	// A present aggregate is summed straight into the tab's credits and session counts, so one
+	// string or undefined in there turns a repo's totals into NaN. Refetching the detail is the
+	// cheap outcome; a NaN on screen is not.
+	const envelope = makeEnvelope({
+		tasks: [
+			makeTaskRecord(),
+			makeTaskRecord({ key: 'k2', id: 'string-credits', aggregate: { tasks: 1, sessions: 1, credits: '3' as any, premiumRequests: 0 } }),
+			makeTaskRecord({ key: 'k3', id: 'missing-field', aggregate: { tasks: 1, sessions: 1, credits: 3 } as any }),
+			makeTaskRecord({ key: 'k4', id: 'nan-credits', aggregate: { tasks: 1, sessions: 1, credits: NaN, premiumRequests: 0 } }),
+			makeTaskRecord({ key: 'k5', id: 'not-an-object', aggregate: 'nope' as any }),
+		],
+	});
+	assert.deepEqual(readAgentTaskRecords(envelope).map((r) => r.id), ['task-1']);
+});
+
+test('readAgentTaskRecords keeps a record that is still owed its detail', () => {
+	// An absent aggregate means "must be fetched", never "zero" — such a record is kept so its
+	// retry history survives, and partitionByCacheHit() refuses to treat it as a hit.
+	const owed = makeTaskRecord({ id: 'owed', aggregate: undefined, detailOk: false, detailAttempts: 2 });
+	const [record] = readAgentTaskRecords(makeEnvelope({ tasks: [owed] }));
+	assert.equal(record.id, 'owed');
+	assert.equal(record.detailAttempts, 2);
+});
+
 test('readAgentTaskRecords canonicalizes updatedAt so an alternate ISO spelling still hits', () => {
 	// Task reuse is exact string equality against a canonical listing timestamp, so a record stored
 	// with a valid-but-different spelling would validate and then be re-detailed on every pass —

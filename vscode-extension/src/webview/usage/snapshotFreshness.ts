@@ -50,13 +50,21 @@ export interface SnapshotFreshness {
 /** Which state the banner is in, split out so it can be asserted without parsing HTML. */
 export type SnapshotFreshnessState = 'never-fetched' | 'fresh' | 'stale';
 
-/** Classify a snapshot for the banner. A snapshot with no known interval never reads as stale. */
+/**
+ * Classify a snapshot for the banner. A snapshot with no known interval never reads as stale.
+ *
+ * This deliberately mirrors the host's own `isRepoPrSnapshotFresh()` / `isAgentTasksSnapshotFresh()`,
+ * including the clock-skew rule: a `fetchedAt` more than one interval in the *future* counts as
+ * stale. The host revalidates such a snapshot on every open, so a banner that called it fresh would
+ * report a next-refresh time in the future while a refresh ran behind it every single time.
+ */
 export function snapshotFreshnessState(data: SnapshotFreshness, now: number): SnapshotFreshnessState {
 	if (!data.fetchedAt) { return 'never-fetched'; }
 	const fetchedMs = Date.parse(data.fetchedAt);
 	const intervalMs = data.refreshIntervalMs ?? 0;
 	if (!Number.isFinite(fetchedMs) || intervalMs <= 0) { return 'fresh'; }
-	return now >= fetchedMs + intervalMs ? 'stale' : 'fresh';
+	const age = now - fetchedMs;
+	return age >= intervalMs || age < -intervalMs ? 'stale' : 'fresh';
 }
 
 /**
@@ -115,6 +123,30 @@ export function snapshotFreshnessHtml(
     ${escapeHtml(localize('usage.githubActivity.cachePolicy'))}${refreshButtonHtml()}
     ${partial}
   </div>`;
+}
+
+/**
+ * Whether a payload means "this identity has nothing cached yet" rather than "here is its data".
+ *
+ * The host pushes an empty, never-fetched snapshot whenever it discards the GitHub activity caches
+ * — a sign-out, an account or Enterprise-host switch, or Clear Cache. The Usage Analysis panel is
+ * created with `retainContextWhenHidden`, so its own copy of the previous identity's rows survives
+ * that discard; without re-arming the lazy-load flag on this signal the tab would consider itself
+ * already loaded and never ask for the new identity's data.
+ */
+export function isEmptyActivitySnapshot(data: { fetchedAt?: string; authenticated?: boolean }): boolean {
+	return !data.authenticated || !data.fetchedAt;
+}
+
+/**
+ * Whether a repo row should show *only* its error, with no counts.
+ *
+ * Only when the listing produced nothing. A listing that collected some pages and then failed keeps
+ * those entities deliberately, and the freshness banner is already calling the figures a lower
+ * bound — blanking them would contradict it and discard the one thing the failed pass did collect.
+ */
+export function shouldRenderErrorOnlyRow(error: string | undefined, collected: number): boolean {
+	return Boolean(error) && collected <= 0;
 }
 
 /** Localization key for why the Repository PRs figures can be a lower bound. */

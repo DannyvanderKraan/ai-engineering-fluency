@@ -68,8 +68,25 @@ export function readAgentTaskRecords(envelope: AgentTasksCacheEnvelope | undefin
 		&& typeof record.key === 'string' && record.key !== ''
 		&& typeof record.id === 'string'
 		&& parseEntityTimestamp(record.updatedAt) !== undefined
+		&& isUsableTaskAggregate(record.aggregate)
 	// The filter has already proved the timestamp parses, so the `!` below cannot be hit.
 	)).map((record) => ({ ...record, updatedAt: parseEntityTimestamp(record.updatedAt)! }));
+}
+
+/**
+ * Whether a record's aggregate can be added to a row's totals.
+ *
+ * Absent is legitimate — it means "the detail fetch is still owed", never "zero". But a *present*
+ * aggregate is summed straight into the tab's credits and session counts, so every field has to be
+ * a real number. A record that reached disk with a string or an undefined in there (a hand-edited
+ * file, a truncated write, an older shape) would otherwise satisfy the cache-hit check and quietly
+ * turn a repo's totals into `NaN` — which is far worse than refetching the task's detail.
+ */
+function isUsableTaskAggregate(aggregate: AgentTaskRecord['aggregate']): boolean {
+	if (aggregate === undefined || aggregate === null) { return true; }
+	if (typeof aggregate !== 'object') { return false; }
+	return (['tasks', 'sessions', 'credits', 'premiumRequests'] as const)
+		.every((field) => Number.isFinite(aggregate[field]));
 }
 
 /**

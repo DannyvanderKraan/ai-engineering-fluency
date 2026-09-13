@@ -719,7 +719,17 @@ export function isCacheableRepoPrRecord(record: RepoPrRecord | undefined): recor
 	return Boolean(record)
 		&& typeof record!.number === 'number' && Number.isFinite(record!.number) && record!.number > 0
 		&& parseEntityTimestamp(record!.updatedAt) !== undefined
-		&& parseEntityTimestamp(record!.createdAt) !== undefined;
+		&& parseEntityTimestamp(record!.createdAt) !== undefined
+		// The projection has to be whole, not just correctly keyed. `summarizeRepoPrRecords()`
+		// iterates `reviewerAiTypes` and reads the string fields directly, so a record that
+		// reached disk malformed (a hand-edited file, a truncated write, a future shape) would
+		// otherwise be reused on a matching timestamp and throw — turning a cache read into a
+		// failure where recomputing the PR from the listing would have cost one projection.
+		&& Array.isArray(record!.reviewerAiTypes)
+		&& typeof record!.authorLogin === 'string'
+		&& typeof record!.title === 'string'
+		&& typeof record!.url === 'string'
+		&& typeof record!.state === 'string';
 }
 
 /**

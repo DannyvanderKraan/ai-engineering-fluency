@@ -780,13 +780,21 @@ async function collectAccountTasks(
 		upsertRow(rows, key, resolved?.owner ?? '', resolved?.repo ?? '', 'account');
 		if (existingCandidate) {
 			if (existingCandidate.discovery !== 'account') { existingCandidate.discovery = 'both'; }
-			// The two listings disagree about which repository this task belongs to — it moved, or
-			// was re-attributed once its bare repository ID resolved. The repo-scoped listing is the
-			// more specific source, so the row attribution stays as it is, but the cached aggregate
-			// under the contested key can no longer be trusted to describe current usage. Marking
-			// the candidate uncacheable forces a fresh detail fetch and keeps the stale aggregate
-			// from being folded into (or re-persisted for) the wrong repository's row.
-			if (resolved && repoKey(resolved.owner, resolved.repo) !== existingCandidate.key) {
+			// Any disagreement between the two listings makes the repo-scoped candidate uncacheable.
+			// The repo-scoped listing is the more specific source, so it keeps the row attribution,
+			// but a cached aggregate under a contested key can no longer be trusted to describe
+			// current usage — marking the candidate uncacheable forces a fresh detail fetch.
+			//
+			// - **Repository**: the task moved, or was re-attributed once its bare repository ID
+			//   resolved, so a stale aggregate could be folded into the wrong repository's row.
+			// - **Timestamp**: the two listings were fetched moments apart, so a task updated in
+			//   between reports two different `updated_at` values. Reusing the older one would
+			//   break the contract this cache rests on — that a reused record cannot be showing a
+			//   superseded state — because the newer listing has already said it changed. An
+			//   account timestamp that is itself uncacheable ('' here) counts as a disagreement
+			//   too: it cannot confirm the repo-scoped one.
+			const contestedRepo = Boolean(resolved) && repoKey(resolved!.owner, resolved!.repo) !== existingCandidate.key;
+			if (contestedRepo || taskUpdatedAt(task) !== existingCandidate.updatedAt) {
 				existingCandidate.updatedAt = '';
 			}
 			continue;

@@ -202,6 +202,24 @@ test('readRepoPrRecords drops records that could never be matched again', () => 
 	assert.deepEqual(readRepoPrRecords(envelope, 'rajbos/repo').map((r) => r.number), [1]);
 });
 
+test('readRepoPrRecords drops a record whose projection is malformed, not just mis-keyed', () => {
+	// summarizeRepoPrRecords() iterates reviewerAiTypes and reads the string fields directly, so a
+	// record that reached disk malformed would be reused on a matching timestamp and throw —
+	// turning a cache read into a failure where recomputing the PR costs one projection.
+	const envelope = makeEnvelope({
+		prs: {
+			'rajbos/repo': [
+				makePrRecord({ number: 1 }),
+				makePrRecord({ number: 2, reviewerAiTypes: null as any }),
+				makePrRecord({ number: 3, reviewerAiTypes: 'copilot' as any }),
+				makePrRecord({ number: 4, authorLogin: undefined as any }),
+				makePrRecord({ number: 5, title: 42 as any }),
+			],
+		},
+	});
+	assert.deepEqual(readRepoPrRecords(envelope, 'rajbos/repo').map((r) => r.number), [1]);
+});
+
 test('readRepoPrRecords canonicalizes timestamps so an alternate ISO spelling still hits', () => {
 	// Reuse is exact string equality against a canonical listing timestamp. A record written with a
 	// valid-but-different spelling (no millis, or an offset instead of Z) would pass validation and

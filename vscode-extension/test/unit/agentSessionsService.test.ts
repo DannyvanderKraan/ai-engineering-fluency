@@ -903,6 +903,56 @@ test('collectAgentSessions: an unparseable updated_at falls back to created_at f
 	assert.deepEqual(detailed, ['broken'], 'the recently created task wins the budget');
 });
 
+test('collectAgentSessions: a task the two listings timestamp differently is refetched, not reused', async () => {
+	// The two listings are fetched moments apart, so a task updated in between reports two
+	// different `updated_at` values. The repo-scoped one keeps the row, but reusing its cached
+	// aggregate would break the contract this cache rests on — the account listing has already
+	// said the task changed, so the cached state is superseded.
+	const task = (updatedAt: string) => ({
+		id: 't1', name: 'Task t1', state: 'completed',
+		updated_at: updatedAt, created_at: '2026-08-01T00:00:00Z',
+		repository: { full_name: 'octo/local-repo' },
+	});
+	const detailed: string[] = [];
+	const cached = [cachedRecordFor('t1', 'octo/local-repo', '2026-08-01T00:00:00Z')];
+	const result = await collectAgentSessions({
+		token: 'token',
+		since: SINCE,
+		workspaceRepos: [{ owner: 'octo', repo: 'local-repo' }],
+		cachedTasks: cached,
+		fetchTaskPage: async ({ page, archived }) => (!archived && page === 1 ? { tasks: [task('2026-08-01T00:00:00Z')] } : { tasks: [] }),
+		fetchAccountTaskPage: async ({ page, archived }) => (!archived && page === 1 ? { tasks: [task('2026-08-02T00:00:00Z')] } : { tasks: [] }),
+		fetchTaskDetail: async (_owner, _repo, taskId) => { detailed.push(taskId); return { sessions: [makeSession('cloud-model', 4)] }; },
+		fetchAccountTaskDetail: async (taskId) => { detailed.push(taskId); return { sessions: [] }; },
+	});
+	assert.deepEqual(detailed, ['t1'], 'a contested timestamp must force a fresh detail fetch');
+	assert.equal(result.totalCredits, 4, 'the fresh detail is what counts, not the stale 7 credits');
+});
+
+test('collectAgentSessions: a task both listings agree on completely is still served from cache', async () => {
+	// The guard above must not fire on agreement, or every task seen by both listings would be
+	// refetched and the cache would save nothing on exactly the tasks it sees twice.
+	const task = () => ({
+		id: 't1', name: 'Task t1', state: 'completed',
+		updated_at: '2026-08-01T00:00:00Z', created_at: '2026-08-01T00:00:00Z',
+		repository: { full_name: 'octo/local-repo' },
+	});
+	const detailed: string[] = [];
+	const cached = [cachedRecordFor('t1', 'octo/local-repo', '2026-08-01T00:00:00Z')];
+	const result = await collectAgentSessions({
+		token: 'token',
+		since: SINCE,
+		workspaceRepos: [{ owner: 'octo', repo: 'local-repo' }],
+		cachedTasks: cached,
+		fetchTaskPage: async ({ page, archived }) => (!archived && page === 1 ? { tasks: [task()] } : { tasks: [] }),
+		fetchAccountTaskPage: async ({ page, archived }) => (!archived && page === 1 ? { tasks: [task()] } : { tasks: [] }),
+		fetchTaskDetail: async (_owner, _repo, taskId) => { detailed.push(taskId); return { sessions: [makeSession('cloud-model', 4)] }; },
+		fetchAccountTaskDetail: async (taskId) => { detailed.push(taskId); return { sessions: [] }; },
+	});
+	assert.deepEqual(detailed, [], 'no detail call — the cached aggregate is still valid');
+	assert.equal(result.totalCredits, 7, 'the cached 7 credits are reused');
+});
+
 test('collectAgentSessions: a task both listings disagree about is refetched, not reused', async () => {
 	// The repo-scoped listing puts the task in `local-repo`; the account listing resolves it to
 	// `moved-repo`. The cached aggregate under the contested key can no longer be trusted to
