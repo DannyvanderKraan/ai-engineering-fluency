@@ -10596,6 +10596,12 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     this.diagnosticsPanel.onDidDispose(() => {
       this.log("🔍 Diagnostic Report closed");
       this.diagnosticsPanel = undefined;
+      // Bump the generation *before* aborting: aborting alone only tears down the transport, it
+      // doesn't invalidate diagHandleRefreshMistralCloudSessions' own generation check. Without
+      // this, a quick dispose-then-recreate (a new diagnosticsPanel object) would let the old,
+      // now-aborted refresh's still-current generation pass that check once its promise settles,
+      // posting a stale error result through the *new* panel instead of a no-op.
+      this._mistralCloudRefreshGeneration++;
       // A fetch left running after the panel is gone would keep issuing serial page requests
       // (up to MAX_PAGES/20s) against the beta endpoint for a UI nobody can see anymore.
       this.abortInFlightMistralCloudSessionsFetch();
@@ -11026,6 +11032,12 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       return;
     }
     if (!apiKey) {
+      // A previous refresh's fetch (under a key that has since been removed through some path
+      // other than diagHandleClearMistralApiKey/diagHandleSetMistralApiKey, which already abort
+      // this themselves) could still be running — its generation is already superseded so its
+      // eventual result would be discarded, but the transport itself would otherwise keep sending
+      // the stale credential and issuing paginated requests in the background regardless.
+      this.abortInFlightMistralCloudSessionsFetch();
       this._lastMistralCloudSessions = this.buildEmptyMistralCloudSessionsResult();
       this._lastMistralCloudSessionsKeyFingerprint = undefined;
       this.diagnosticsPanel.webview.postMessage({ command: 'mistralCloudSessionsResult', result: this._lastMistralCloudSessions });
@@ -12252,6 +12264,13 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       // the tab permanently stuck on "Checking…" with no way to recover.
       panel.webview.postMessage({ command: "mistralCloudSessionsStatusCheckFailed" });
       return;
+    }
+    if (!mistralCloudSessionsStatus.apiKeyConfigured) {
+      // A status read observing the key has disappeared (e.g. removed in another VS Code window)
+      // only reports that to the webview — it doesn't by itself stop an existing collection still
+      // running under the now-removed key, which would otherwise keep sending that credential and
+      // issuing paginated requests in the background regardless of what this window now shows.
+      this.abortInFlightMistralCloudSessionsFetch();
     }
     panel.webview.postMessage({ command: "mistralCloudSessionsStatus", mistralCloudSessionsStatus });
     if (mistralCloudSessionsStatus.apiKeyConfigured) {
