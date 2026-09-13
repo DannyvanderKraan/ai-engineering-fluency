@@ -64,6 +64,17 @@ export interface WebviewLocalization {
 	'logviewer.summary.started': string;
 	'logviewer.summary.lastActivity': string;
 
+	// HydraFusion Routing section + Session Steps Overview leg toggle
+	'logviewer.hydrafusion.cost': string;
+	'logviewer.hydrafusion.costForTurn': string;
+	'logviewer.hydrafusion.jumpToStepTitle': string;
+	'logviewer.hydrafusion.jumpToStepLabel': string;
+	'logviewer.hydrafusion.turnDetailIntro': string;
+	'logviewer.hydrafusion.toggleLegsAriaLabel': string;
+	'logviewer.hydrafusion.showLegsTitle': string;
+	'logviewer.hydrafusion.legsCaptionTotal': string;
+	'logviewer.hydrafusion.modelChangedTitle': string;
+	'logviewer.hydrafusion.expandStepNote': string;
 	// Efficiency view — scope toolbar (time presets, resolution, drill-down, filters)
 	'efficiency.scope.timeRangeGroup': string;
 	'efficiency.range.last30d': string;
@@ -144,6 +155,16 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'logviewer.summary.timeline': 'Timeline',
 	'logviewer.summary.started': 'Started',
 	'logviewer.summary.lastActivity': 'Last activity',
+	'logviewer.hydrafusion.cost': 'Cost',
+	'logviewer.hydrafusion.costForTurn': 'Cost for this turn',
+	'logviewer.hydrafusion.jumpToStepTitle': 'Jump to step #{0} in the Session Steps Overview below',
+	'logviewer.hydrafusion.jumpToStepLabel': 'step #{0}',
+	'logviewer.hydrafusion.turnDetailIntro': 'Expand a turn to see each leg, what it decided, and what it cost. ● marks the leg whose output you actually received; ✗ marks a leg a judge rejected. The same legs also appear under their step in the Session Steps Overview below.',
+	'logviewer.hydrafusion.toggleLegsAriaLabel': 'Toggle HydraFusion legs for step #{0}',
+	'logviewer.hydrafusion.showLegsTitle': 'Show the HydraFusion legs behind this step',
+	'logviewer.hydrafusion.legsCaptionTotal': '⚡ HydraFusion legs for step #{0} — total',
+	'logviewer.hydrafusion.modelChangedTitle': 'Model changed from the previous step',
+	'logviewer.hydrafusion.expandStepNote': '⚡ expand a step to see the HydraFusion legs behind it',
 	// Efficiency view — scope toolbar
 	'efficiency.scope.timeRangeGroup': 'Time range',
 	'efficiency.range.last30d': '30 days',
