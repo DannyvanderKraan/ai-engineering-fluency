@@ -1483,8 +1483,12 @@ export interface MistralCloudConversation {
 
 /**
  * Result of loading Mistral Vibe cloud (web) sessions via the beta Agents Conversations API.
- * `authenticated` mirrors the GitHub AgentSessionsResult convention: false when no API key
- * is configured (or the user declined to provide one) — callers should show the connect UI.
+ * `authenticated` mirrors the GitHub AgentSessionsResult convention: true only when an API key
+ * is configured AND the listing call succeeded (even partially). `false` covers both "no key
+ * configured / user declined to provide one" AND any fetch failure (HTTP error, transport
+ * failure, timeout, parse error) that occurred while a key was configured — so callers MUST
+ * inspect `error` before treating `false` as "no key": a non-empty `error` means a key may still
+ * be there and the connect UI should NOT be offered (show retry/error instead).
  */
 export interface MistralCloudSessionsResult {
   /**
