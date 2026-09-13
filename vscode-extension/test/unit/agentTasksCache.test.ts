@@ -193,6 +193,14 @@ test('readAgentTaskRecords drops records that could never be matched again', () 
 	assert.deepEqual(readAgentTaskRecords(envelope).map((r) => r.id), ['task-1']);
 });
 
+test('readAgentTaskRecords canonicalizes updatedAt so an alternate ISO spelling still hits', () => {
+	// Task reuse is exact string equality against a canonical listing timestamp, so a record stored
+	// with a valid-but-different spelling would validate and then be re-detailed on every pass —
+	// paying the full detail cost forever with nothing in the UI to explain it.
+	const envelope = makeEnvelope({ tasks: [makeTaskRecord({ updatedAt: '2026-08-28T12:00:00+00:00' })] });
+	assert.equal(readAgentTaskRecords(envelope)[0].updatedAt, '2026-08-28T12:00:00.000Z');
+});
+
 test('readAgentTaskRecords tolerates an envelope written before task records existed', () => {
 	assert.deepEqual(readAgentTaskRecords(makeEnvelope()), []);
 	assert.deepEqual(readAgentTaskRecords(undefined), []);

@@ -2,7 +2,7 @@ import * as https from 'https';
 import * as childProcess from 'child_process';
 import { getGitHubApiEndpoints, GITHUB_API_USER_AGENT, GITHUB_API_ACCEPT_V3, GITHUB_API_VERSION, attachRequestFailureHandling } from './githubApiConfig';
 import { withTimeout } from './utils/promises';
-import { parseEntityTimestamp } from './githubActivityCache';
+import { entityTimestampsMatch, parseEntityTimestamp } from './githubActivityCache';
 
 export type RepoPrDetail = {
 	number: number;
@@ -864,7 +864,7 @@ function projectListedPrs(
 		}
 		seen.add(fresh.number);
 		const previous = cachedByNumber.get(fresh.number);
-		const hit = previous?.updatedAt === fresh.updatedAt;
+		const hit = entityTimestampsMatch(previous?.updatedAt, fresh.updatedAt);
 		records.push(hit ? previous! : fresh);
 		if (hit) { reused++; } else { recomputed++; }
 	}

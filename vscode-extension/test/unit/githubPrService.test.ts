@@ -762,6 +762,17 @@ test('reconcileRepoPrRecords does not count an uncacheable PR twice', () => {
 	assert.equal(result.retainedUnverified, 0);
 });
 
+test('reconcileRepoPrRecords reuses a cached record stored with an alternate ISO spelling', () => {
+	// Reuse goes through entityTimestampsMatch(), which compares canonicalized timestamps. A record
+	// that reached the cache spelled `...:00+00:00` still names the same instant as the listing's
+	// `...:00.000Z`, and re-fetching it would be work done for a difference that does not exist.
+	const cached = [{ ...toRepoPrRecord(rawPr({ number: 1, title: 'Cached' }))!, updatedAt: '2026-08-20T10:00:00+00:00' }];
+	const result = reconcileRepoPrRecords(cached, [rawPr({ number: 1, title: 'Fresh', updated_at: '2026-08-20T10:00:00.000Z' })], { listingComplete: true });
+	assert.equal(result.reused, 1);
+	assert.equal(result.recomputed, 0);
+	assert.equal(result.listed[0].title, 'Cached');
+});
+
 test('reconcileRepoPrRecords drops a retained record that has aged out of the window', () => {
 	const since = new Date('2026-08-01T00:00:00Z');
 	const inWindow = toRepoPrRecord(rawPr({ number: 1, created_at: '2026-08-10T00:00:00Z' }))!;

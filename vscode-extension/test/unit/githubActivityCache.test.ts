@@ -6,6 +6,7 @@ import * as path from 'path';
 import {
 	GITHUB_ACTIVITY_MANUAL_REFRESH_COOLDOWN_MS,
 	applyRecordBudget,
+	approximateRecordBytes,
 	buildGitHubActivityScope,
 	deleteGitHubActivityCacheFiles,
 	entityTimestampsMatch,
@@ -148,6 +149,24 @@ test('applyRecordBudget stops at the byte budget but always keeps at least one r
 	// Even an impossibly small budget keeps the newest record rather than storing nothing.
 	const tiny = applyRecordBudget(records, { maxRecords: 100, maxBytes: 1 }, (r) => r.at);
 	assert.deepEqual(tiny.kept.map((r) => r.id), ['r9']);
+});
+
+test('applyRecordBudget charges the byte budget to what sizeOf names, not the wrapper', () => {
+	// A caller that flattens records into a wrapper (to carry a grouping key) must be able to say
+	// what actually gets persisted, or every entry pays for bookkeeping that never reaches the file.
+	const wrapped = Array.from({ length: 4 }, (_, i) => ({
+		key: 'k'.repeat(500),
+		record: { id: `r${i}`, at: i },
+	}));
+	const payloadBytes = wrapped.reduce((sum, w) => sum + Buffer.byteLength(JSON.stringify(w.record), 'utf8'), 0);
+
+	const measured = applyRecordBudget(wrapped, { maxRecords: 100, maxBytes: payloadBytes }, (w) => w.record.at, (w) => approximateRecordBytes(w.record));
+	assert.deepEqual(measured.kept.map((w) => w.record.id), ['r3', 'r2', 'r1', 'r0']);
+	assert.equal(measured.evicted, 0);
+
+	// Without the hook the huge key is charged to every entry and the same set is evicted away.
+	const unmeasured = applyRecordBudget(wrapped, { maxRecords: 100, maxBytes: payloadBytes }, (w) => w.record.at);
+	assert.equal(unmeasured.kept.length, 1);
 });
 
 test('applyRecordBudget handles an empty set and a zero record cap', () => {

@@ -155,11 +155,17 @@ export interface RecordBudget {
  * — an incomplete listing keeps its records instead (see the two cache modules' reconcilers).
  *
  * @param rank Sort key for a record; higher is kept first (callers pass the parsed `updated_at`).
+ * @param sizeOf What to measure against the byte budget. Defaults to the record itself, which is
+ *   right when the caller budgets exactly what it persists. A caller that budgets a *wrapper* (to
+ *   carry a grouping key alongside the record) must pass the payload instead, or every entry is
+ *   charged for bookkeeping that never reaches the file and eviction bites earlier than the
+ *   budget advertises.
  */
 export function applyRecordBudget<T>(
 	records: readonly T[],
 	budget: RecordBudget,
 	rank: (record: T) => number,
+	sizeOf: (record: T) => number = approximateRecordBytes,
 ): { kept: T[]; evicted: number } {
 	// Normalize the rank: this helper is generic, and a caller whose `rank()` returns NaN would
 	// otherwise make the comparator non-transitive and eviction order non-deterministic.
@@ -172,7 +178,7 @@ export function applyRecordBudget<T>(
 	const kept: T[] = [];
 	let bytes = 0;
 	for (const record of withinCount) {
-		const size = approximateRecordBytes(record);
+		const size = sizeOf(record);
 		if (kept.length > 0 && bytes + size > budget.maxBytes) { break; }
 		kept.push(record);
 		bytes += size;
@@ -181,7 +187,7 @@ export function applyRecordBudget<T>(
 }
 
 /** Serialized size of one record, used by the byte budget. Unserializable records count as 0. */
-function approximateRecordBytes(record: unknown): number {
+export function approximateRecordBytes(record: unknown): number {
 	try {
 		return Buffer.byteLength(JSON.stringify(record) ?? '', 'utf8');
 	} catch {

@@ -15,7 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { RepoPrRecord, RepoPrStatsResult } from './githubPrService';
 import { isCacheableRepoPrRecord } from './githubPrService';
-import { applyRecordBudget, type RecordBudget } from './githubActivityCache';
+import { applyRecordBudget, approximateRecordBytes, parseEntityTimestamp, type RecordBudget } from './githubActivityCache';
 
 /** How often the repository-PRs snapshot may be refreshed from the GitHub API: once an hour. */
 export const REPO_PRS_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
@@ -59,11 +59,22 @@ export interface RepoPrCacheEnvelope {
  * The cached records for one repository, filtered to the ones that are actually reusable — the same
  * predicate the writer uses, so a record can never be stored under a rule the reader disagrees with.
  * Anything that fails it is treated as absent and recomputed.
+ *
+ * Timestamps are **canonicalized here**, at the one boundary where a record can arrive in a form
+ * this code did not write. Reuse is decided by exact string equality against a listing timestamp
+ * that is always canonical, so a valid-but-differently-spelled `2026-01-02T03:04:05Z` on disk would
+ * otherwise pass the filter and then never match — a permanent, invisible cache miss. Normalizing
+ * on read keeps that spelling out of the comparison *and* out of what the next pass persists.
  */
 export function readRepoPrRecords(envelope: RepoPrCacheEnvelope | undefined, repoKey: string): RepoPrRecord[] {
 	const records = envelope?.prs?.[repoKey];
 	if (!Array.isArray(records)) { return []; }
-	return records.filter(isCacheableRepoPrRecord);
+	// The filter has already proved both timestamps parse, so the `!` below cannot be hit.
+	return records.filter(isCacheableRepoPrRecord).map((record) => ({
+		...record,
+		createdAt: parseEntityTimestamp(record.createdAt)!,
+		updatedAt: parseEntityTimestamp(record.updatedAt)!,
+	}));
 }
 
 /**
@@ -84,6 +95,10 @@ export function pruneRepoPrRecords(
 		flattened,
 		budget,
 		(entry) => Date.parse(entry.record.updatedAt) || 0,
+		// Measure the record, not the `{ repoKey, record }` wrapper this function flattens into.
+		// The repo key is stored once per repo as an object key, not once per PR, so charging it to
+		// every record would make the budget bite well before the bytes it names.
+		(entry) => approximateRecordBytes(entry.record),
 	);
 	const pruned: Record<string, RepoPrRecord[]> = {};
 	for (const { repoKey, record } of kept) {

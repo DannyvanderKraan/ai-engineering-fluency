@@ -1,7 +1,7 @@
 import * as https from 'https';
 import { getGitHubApiEndpoints, buildGitHubApiHeaders, attachRequestFailureHandling } from './githubApiConfig';
 import { withTimeout } from './utils/promises';
-import { parseEntityTimestamp } from './githubActivityCache';
+import { entityTimestampsMatch, parseEntityTimestamp } from './githubActivityCache';
 import type {
 	AgentRepoDiscovery,
 	AgentRepoSummary,
@@ -962,7 +962,7 @@ function partitionByCacheHit(
 		const cached = cachedByKey.get(candidate.cacheKey);
 		const hit = Boolean(
 			cached && cached.detailOk && cached.aggregate
-			&& candidate.updatedAt !== '' && cached.updatedAt === candidate.updatedAt,
+			&& entityTimestampsMatch(cached.updatedAt, candidate.updatedAt),
 		);
 		(hit ? reusable : needsDetail).push(candidate);
 	}

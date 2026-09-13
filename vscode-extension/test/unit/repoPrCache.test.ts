@@ -202,6 +202,37 @@ test('readRepoPrRecords drops records that could never be matched again', () => 
 	assert.deepEqual(readRepoPrRecords(envelope, 'rajbos/repo').map((r) => r.number), [1]);
 });
 
+test('readRepoPrRecords canonicalizes timestamps so an alternate ISO spelling still hits', () => {
+	// Reuse is exact string equality against a canonical listing timestamp. A record written with a
+	// valid-but-different spelling (no millis, or an offset instead of Z) would pass validation and
+	// then silently never match again — a permanent cache miss with nothing to see in the UI.
+	const envelope = makeEnvelope({
+		prs: {
+			'rajbos/repo': [makePrRecord({
+				number: 1,
+				createdAt: '2026-08-01T00:00:00Z',
+				updatedAt: '2026-08-02T03:04:05+00:00',
+			})],
+		},
+	});
+	const [record] = readRepoPrRecords(envelope, 'rajbos/repo');
+	assert.equal(record.createdAt, '2026-08-01T00:00:00.000Z');
+	assert.equal(record.updatedAt, '2026-08-02T03:04:05.000Z');
+});
+
+test('pruneRepoPrRecords budgets the record, not the repo key it is grouped under', () => {
+	// The flattened `{ repoKey, record }` wrapper is bookkeeping — the repo key is stored once per
+	// repo as an object key, never once per PR. Charging it to every record would make the byte
+	// budget bite well before the size it advertises, and the longer the repo name the worse.
+	// Two records, so the "always keep at least one" floor cannot mask the difference.
+	const records = [makePrRecord({ number: 1 }), makePrRecord({ number: 2 })];
+	const recordBytes = records.reduce((sum, r) => sum + Buffer.byteLength(JSON.stringify(r), 'utf8'), 0);
+	const longKey = `rajbos/${'a'.repeat(200)}`;
+	const pruned = pruneRepoPrRecords({ [longKey]: records }, { maxRecords: 100, maxBytes: recordBytes });
+	assert.equal(pruned.evicted, 0);
+	assert.deepEqual(pruned.prs[longKey].map((r) => r.number), [1, 2]);
+});
+
 test('readRepoPrRecords tolerates a snapshot written before per-PR records existed', () => {
 	assert.deepEqual(readRepoPrRecords(makeEnvelope(), 'rajbos/repo'), []);
 	assert.deepEqual(readRepoPrRecords(undefined, 'rajbos/repo'), []);

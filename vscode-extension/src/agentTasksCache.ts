@@ -53,7 +53,14 @@ export interface AgentTasksCacheEnvelope {
 	tasks?: AgentTaskRecord[];
 }
 
-/** The cached task records of an envelope, filtered to the ones that are actually reusable. */
+/**
+ * The cached task records of an envelope, filtered to the ones that are actually reusable.
+ *
+ * `updatedAt` is canonicalized here, at the one boundary where a record can arrive in a form this
+ * code did not write: reuse is exact string equality against a listing timestamp that is always
+ * canonical, so a valid-but-differently-spelled timestamp on disk would pass the filter and then
+ * never match — a task re-detailed on every pass, at full cost, for no visible reason.
+ */
 export function readAgentTaskRecords(envelope: AgentTasksCacheEnvelope | undefined): AgentTaskRecord[] {
 	if (!envelope || !Array.isArray(envelope.tasks)) { return []; }
 	return envelope.tasks.filter((record): record is AgentTaskRecord => (
@@ -61,7 +68,8 @@ export function readAgentTaskRecords(envelope: AgentTasksCacheEnvelope | undefin
 		&& typeof record.key === 'string' && record.key !== ''
 		&& typeof record.id === 'string'
 		&& parseEntityTimestamp(record.updatedAt) !== undefined
-	));
+	// The filter has already proved the timestamp parses, so the `!` below cannot be hit.
+	)).map((record) => ({ ...record, updatedAt: parseEntityTimestamp(record.updatedAt)! }));
 }
 
 /**
