@@ -4212,6 +4212,18 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'logviewer.summary.timeline': l10n.t('logviewer.summary.timeline'),
 			'logviewer.summary.started': l10n.t('logviewer.summary.started'),
 			'logviewer.summary.lastActivity': l10n.t('logviewer.summary.lastActivity'),
+			// HydraFusion Routing section + Session Steps Overview leg toggle. Templates
+			// with {0} are resolved webview-side by localizeFormat().
+			'logviewer.hydrafusion.cost': l10n.t('logviewer.hydrafusion.cost'),
+			'logviewer.hydrafusion.costForTurn': l10n.t('logviewer.hydrafusion.costForTurn'),
+			'logviewer.hydrafusion.jumpToStepTitle': l10n.t('logviewer.hydrafusion.jumpToStepTitle'),
+			'logviewer.hydrafusion.jumpToStepLabel': l10n.t('logviewer.hydrafusion.jumpToStepLabel'),
+			'logviewer.hydrafusion.turnDetailIntro': l10n.t('logviewer.hydrafusion.turnDetailIntro'),
+			'logviewer.hydrafusion.toggleLegsAriaLabel': l10n.t('logviewer.hydrafusion.toggleLegsAriaLabel'),
+			'logviewer.hydrafusion.showLegsTitle': l10n.t('logviewer.hydrafusion.showLegsTitle'),
+			'logviewer.hydrafusion.legsCaptionTotal': l10n.t('logviewer.hydrafusion.legsCaptionTotal'),
+			'logviewer.hydrafusion.modelChangedTitle': l10n.t('logviewer.hydrafusion.modelChangedTitle'),
+			'logviewer.hydrafusion.expandStepNote': l10n.t('logviewer.hydrafusion.expandStepNote'),
 			// Efficiency view — Combined tab filters. Templates with {0} placeholders are
 			// resolved webview-side by localizeFormat(), so they pass through unformatted.
 			'efficiency.combined.filtersLegend': l10n.t('efficiency.combined.filtersLegend'),
@@ -4239,19 +4251,6 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'efficiency.combined.seriesLoc': l10n.t('efficiency.combined.seriesLoc'),
 			'efficiency.combined.axisIndex': l10n.t('efficiency.combined.axisIndex'),
 			'efficiency.combined.axisLoc': l10n.t('efficiency.combined.axisLoc'),
-			// HydraFusion Routing section (log viewer) and its Session Steps Overview integration.
-			// Templates with {0} are resolved webview-side by localizeFormat(), so they are passed
-			// through unformatted here.
-			'hydrafusion.table.cost': l10n.t('hydrafusion.table.cost'),
-			'hydrafusion.turn.costTooltip': l10n.t('hydrafusion.turn.costTooltip'),
-			'hydrafusion.turn.jumpToStepTooltip': l10n.t('hydrafusion.turn.jumpToStepTooltip'),
-			'hydrafusion.turn.jumpToStepLabel': l10n.t('hydrafusion.turn.jumpToStepLabel'),
-			'hydrafusion.turnsPanel.subtitle': l10n.t('hydrafusion.turnsPanel.subtitle'),
-			'hydrafusion.overview.toggleLegsAriaLabel': l10n.t('hydrafusion.overview.toggleLegsAriaLabel'),
-			'hydrafusion.overview.showLegsTooltip': l10n.t('hydrafusion.overview.showLegsTooltip'),
-			'hydrafusion.overview.legsCaption': l10n.t('hydrafusion.overview.legsCaption'),
-			'hydrafusion.overview.modelChangedTooltip': l10n.t('hydrafusion.overview.modelChangedTooltip'),
-			'hydrafusion.overview.expandHint': l10n.t('hydrafusion.overview.expandHint'),
 			// Current language for reference
 			'__language__': language
 		};
