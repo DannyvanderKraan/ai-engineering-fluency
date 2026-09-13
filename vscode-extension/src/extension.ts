@@ -10992,9 +10992,19 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
    * configured".
    */
   private async getMistralCloudSessionsStatusMessageField(panel: vscode.WebviewPanel): Promise<{ mistralCloudSessionsStatus?: { apiKeyConfigured: boolean } }> {
+    const generationBefore = this._mistralCloudRefreshGeneration;
     const status = await this.getFreshMistralCloudSessionsStatus();
     if (status?.apiKeyConfigured) {
       await this.rehydrateOrInvalidateMistralCloudSessionsCache(panel);
+    }
+    // The rehydrate await above can span a local Remove/Set, which bumps
+    // _mistralCloudRefreshGeneration and posts its own authoritative status. The snapshot
+    // captured before that await is now stale — re-read (generation-guarded) so the
+    // diagnosticDataLoaded message carries the current key state instead of resurrecting a
+    // removed key and flipping the webview back to Refresh/Remove after the key was removed.
+    if (this._mistralCloudRefreshGeneration !== generationBefore) {
+      const refreshedStatus = await this.getFreshMistralCloudSessionsStatus();
+      return refreshedStatus ? { mistralCloudSessionsStatus: refreshedStatus } : {};
     }
     return status ? { mistralCloudSessionsStatus: status } : {};
   }
