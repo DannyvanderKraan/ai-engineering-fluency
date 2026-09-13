@@ -267,6 +267,7 @@ import {
   extractMcpServerName as _extractMcpServerName,
   normalizePath as _normalizePath,
   normalizePathForDedup as _normalizePathForDedup,
+  dedupeByNormalizedKeyKeepGreatest as _dedupeByNormalizedKeyKeepGreatest,
   normalizeToRepoRoot as _normalizeToRepoRoot,
   getRepoNameFromWorkspacePath as _getRepoNameFromWorkspacePath,
   resolveDebugLogCandidatePaths as _resolveDebugLogCandidatePaths,
@@ -836,8 +837,25 @@ class CopilotTokenTracker implements vscode.Disposable {
 	public githubSession: vscode.AuthenticationSession | undefined;
 	// Promise that resolves when the startup session restore completes
 	private _sessionRestorePromise: Promise<void> | undefined;
-	// Promise that resolves when the initial cache load from disk completes
+	// Promise that resolves when the initial cache load from disk completes, INCLUDING the
+	// OpenCode DB probe chained after it (queueMissingOpenCodeDbSessionsFromCache(), which does
+	// its own SQLite I/O). Callers that need the full startup sequence (the real refresh) await
+	// this one.
 	private _cacheLoadPromise: Promise<void> | undefined;
+	// Promise that resolves as soon as the on-disk cache *file* itself has been read — before the
+	// OpenCode DB probe chained onto _cacheLoadPromise runs. renderInstantStatsFromCache() awaits
+	// this one instead of _cacheLoadPromise, so it never blocks on OpenCode's SQLite I/O and stays
+	// a true no-filesystem-scan first paint.
+	private _cacheFileLoadPromise: Promise<void> | undefined;
+	/**
+	 * Set once a real (discover→parse→verify) refresh has published its results. Guards
+	 * renderInstantStatsFromCache(): it runs fire-and-forget, concurrently with the real refresh
+	 * that starts 3s later in scheduleInitialUpdate() — normally far faster (pure in-memory
+	 * aggregation vs. filesystem discovery+parsing), but with no hard ordering guarantee. Without
+	 * this check, an instant paint that happened to take longer than the real refresh could finish
+	 * last and silently overwrite verified, freshly discovered stats with older cache-only ones.
+	 */
+	private _hasCompletedRealRefresh = false;
 	/**
 	 * OpenCode DB virtual session paths discovered at startup that are missing from the
 	 * persisted cache. These paths bypass the mtime cutoff once so new DB sessions are
@@ -1350,9 +1368,15 @@ class CopilotTokenTracker implements vscode.Disposable {
 		this.lastEfficiencySessionInputs = undefined;
 		const results: LocalViewRegressionResult[] = [];
 		let dataSourceLabel = 'local session data';
+		// Populated once setupRegressionSessionFiles() resolves, so the finally block can evict
+		// exactly these entries from cacheManager.cache — see the finally block's comment for why.
+		let regressionSessionFiles: string[] = [];
+		let usedBundledFixtures = false;
 		try {
 			const setup = await this.setupRegressionSessionFiles(dataSourceLabel);
 			dataSourceLabel = setup.dataSourceLabel;
+			regressionSessionFiles = setup.sessionFiles;
+			usedBundledFixtures = setup.usedBundledFixtures;
 			this.log(`🧪 Starting local view regression using ${dataSourceLabel}. Found ${setup.sessionFiles.length} session file(s).`);
 			const stats = await this.computeRegressionStats(dataSourceLabel, setup.sessionFiles);
 			const cases = this.buildLocalViewRegressionCases(stats, setup.sessionFiles);
@@ -1364,22 +1388,77 @@ class CopilotTokenTracker implements vscode.Disposable {
 			this.pendingLocalViewRegressionProbe = undefined;
 			this.localRegressionSampleDataDir = previousSampleDir;
 			this.sessionDiscovery.clearCache();
+			// setupRegressionSessionFiles() falls back to the bundled fixture directory only when
+			// this machine has zero real session files (the common case in a clean CI runner —
+			// exactly where the visual-view-diff/screenshot harness runs); computeRegressionStats()
+			// then parses those fixture files through the normal pipeline, which unconditionally
+			// populates cacheManager.cache (getSessionFileDataCached() -> setCachedSessionData()).
+			// persistRefreshResult()/maybeCheckpointCache() being skipped in sample-data mode only
+			// stops that from reaching disk — it does nothing about the in-memory cache, which
+			// getDeduplicatedCacheEntries() (the cache-only instant paint, the cache-seeded preload
+			// queue) reads directly. Without evicting here, the very next normal refresh in this
+			// same session — no restart needed — would seed/paint from these fixture entries
+			// alongside or instead of real ones.
+			//
+			// Only run this eviction when fixtures were actually used (usedBundledFixtures). When a
+			// developer runs this locally on a machine WITH real session data, regressionSessionFiles
+			// is that real, entire discovered set — tombstoning it isn't merely "one avoidable
+			// reparse" (deleteCachedSessionData() persists past this run): buildMergedSnapshotEntries()
+			// excludes tombstoned paths from every subsequent save, so a normal refresh's checkpoint
+			// or snapshot publish landing before the next full re-parse completes would wipe those
+			// real sessions from the shared on-disk snapshot too, not just this window's memory.
+			if (usedBundledFixtures) {
+				await this.evictRegressionSessionFilesFromCache(regressionSessionFiles);
+			}
 			this.lastDetailedStats = this.lastDailyStats = this.lastFullDailyStats = this.lastUsageAnalysisStats = this.lastDashboardData = undefined;
 			this.lastEfficiencySessionInputs = undefined;
 		}
 		await this.reportLocalViewRegressionResults(results, dataSourceLabel);
 	}
 
-	private async setupRegressionSessionFiles(defaultLabel: string): Promise<{ sessionFiles: string[]; dataSourceLabel: string }> {
+	// Called only when usedBundledFixtures is true (see runLocalViewRegression()'s finally block):
+	// evicting real discovered sessions unconditionally isn't just "one avoidable reparse" —
+	// deleteCachedSessionData() tombstones the path, and buildMergedSnapshotEntries() excludes every
+	// tombstoned path from every subsequent save, so a normal refresh's checkpoint/publish landing
+	// before the next full re-parse completes would wipe those real sessions from the shared
+	// on-disk snapshot too, not just this window's memory.
+	private async evictRegressionSessionFilesFromCache(regressionSessionFiles: string[]): Promise<void> {
+		// Swept by normalized key, not the exact raw strings setupRegressionSessionFiles() returned:
+		// a same-file spelling variant already sitting in the cache under a different raw key
+		// (case/separator) would otherwise survive this eviction and still be readable by the very
+		// next getDeduplicatedCacheEntries() call.
+		const regressionKeys = new Set(regressionSessionFiles.map(f => _normalizePathForDedup(f)));
+		if (regressionKeys.size === 0) { return; }
+		let evictedAny = false;
+		for (const rawPath of Array.from(this.cacheManager.cache.keys())) {
+			if (regressionKeys.has(_normalizePathForDedup(rawPath))) {
+				this.cacheManager.deleteCachedSessionData(rawPath);
+				evictedAny = true;
+			}
+		}
+		// The eviction above only tombstones these paths in memory. A prior run (before the
+		// sample-mode save guards existed, or a checkpoint that raced this eviction) could have
+		// already written fixture entries to the shared on-disk snapshot; those would otherwise
+		// linger untouched until some later save happens to occur, and the next process boot would
+		// instant-paint them as real usage in the meantime. Persist now, while sample mode is
+		// confirmed off again (runLocalViewRegression()'s finally block just restored the previous
+		// sample dir before calling this), so the tombstones actually reach disk.
+		if (evictedAny && !this.isSampleDataModeActive()) {
+			try { await this.saveCacheToStorage(); }
+			catch (err) { console.error(`Failed to persist regression cache eviction: ${err}`); }
+		}
+	}
+
+	private async setupRegressionSessionFiles(defaultLabel: string): Promise<{ sessionFiles: string[]; dataSourceLabel: string; usedBundledFixtures: boolean }> {
 		let sessionFiles = await this.sessionDiscovery.getCopilotSessionFiles();
-		if (sessionFiles.length > 0) { return { sessionFiles, dataSourceLabel: defaultLabel }; }
+		if (sessionFiles.length > 0) { return { sessionFiles, dataSourceLabel: defaultLabel, usedBundledFixtures: false }; }
 		let sampleDir: string;
 		try { sampleDir = await this.ensureLocalViewRegressionSampleDir(); }
 		catch { throw new Error('Bundled sample session data was not found. Expected test fixtures under vscode-extension\\test\\fixtures\\sample-session-data\\chatSessions.'); }
 		this.localRegressionSampleDataDir = sampleDir;
 		this.sessionDiscovery.clearCache();
 		sessionFiles = await this.sessionDiscovery.getCopilotSessionFiles();
-		return { sessionFiles, dataSourceLabel: `bundled sample data (${sampleDir})` };
+		return { sessionFiles, dataSourceLabel: `bundled sample data (${sampleDir})`, usedBundledFixtures: true };
 	}
 
 	private async computeRegressionStats(dataSourceLabel: string, sessionFiles: string[]): Promise<{ detailedStats: any; dailyStats: any; usageStats: any; maturityData: any; diagnosticReport: string; fluencyLevelData: any; chartTotals: any }> {
@@ -1548,7 +1627,11 @@ class CopilotTokenTracker implements vscode.Disposable {
 		this.context = context;
 		this.initializeAdapters(extensionUri, context);
 		this.initializeOutputChannel(context);
-		this._cacheLoadPromise = this.cacheManager.loadCacheFromStorage().then(async () => {
+		const cacheFileLoad = this.cacheManager.loadCacheFromStorage();
+		this._cacheFileLoadPromise = cacheFileLoad.finally(() => {
+			this._cacheFileLoadPromise = undefined;
+		});
+		this._cacheLoadPromise = cacheFileLoad.then(async () => {
 			await this.queueMissingOpenCodeDbSessionsFromCache();
 		}).finally(() => {
 			this._cacheLoadPromise = undefined;
@@ -1976,6 +2059,12 @@ class CopilotTokenTracker implements vscode.Disposable {
 
 	private scheduleInitialUpdate(): void {
 		this.log('🚀 Starting token usage analysis...');
+		// Paint real numbers from the on-disk cache immediately, before the real
+		// discover→parse pass (below) even starts. No filesystem discovery, no
+		// fs.stat, no parsing — just the cache already loaded into memory — so a
+		// cold boot shows a real status bar within a second or two instead of
+		// blank/zero for however long the full scan takes. See issue #2018 fix #2.
+		void this.renderInstantStatsFromCache();
 		// Use a longer delay (3 s) so that:
 		// 1. VS Code and other extensions finish their own startup work first.
 		// 2. On macOS, the TCC privacy framework has time to resolve any first-time
@@ -1997,6 +2086,158 @@ class CopilotTokenTracker implements vscode.Disposable {
 				this.error('Error in initial update:', error);
 			}
 		}, 3000);
+	}
+
+	/**
+	 * Mirrors SessionDiscovery.tryGetSampleDataFiles()'s effective-sample-dir check — precedence,
+	 * empty-string handling, AND the directory (not just existence) gate:
+	 *
+	 * - Precedence: `sampleDataDirectoryOverride?.() ?? configured`. The override function
+	 *   (`() => this.localRegressionSampleDataDir`) is always defined once constructed, so `??`
+	 *   only ever falls through to the config setting while the override itself has never been
+	 *   set (`undefined`) — NOT whenever it happens to be falsy. runLocalViewRegression() sets it
+	 *   to `''` (not undefined) while it deliberately tries real discovery first; treating `''` as
+	 *   "no override, fall back to config" (a plain truthy check) disagrees with that and would
+	 *   wrongly suppress the cache-only paint/seeding during that phase whenever the user also
+	 *   happens to have a `sampleDataDirectory` setting configured for something else.
+	 * - tryGetSampleDataFiles() returns `undefined` (falls back to real adapter discovery) for a
+	 *   configured-but-missing/stale directory, or one whose `readdir()` fails (e.g. it names a
+	 *   file, not a directory) — an existence-only check disagrees with both and would wrongly
+	 *   suppress the cache-only instant paint/seeding on an otherwise normal warm boot.
+	 *
+	 * In sample mode SessionDiscovery bypasses every adapter and returns only the fixture's files
+	 * — callers that read the real on-disk cache directly must not mix real user sessions into
+	 * what is meant to be a clean, deterministic fixture run.
+	 */
+	private isSampleDataModeActive(): boolean {
+		const overrideValue = this.localRegressionSampleDataDir;
+		const sampleDir = overrideValue !== undefined ? overrideValue : vscode.workspace.getConfiguration('aiEngineeringFluency').get<string>('sampleDataDirectory');
+		if (!sampleDir || sampleDir.trim().length === 0) { return false; }
+		try {
+			return fs.statSync(sampleDir.trim()).isDirectory();
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Returns the on-disk cache's entries deduplicated by _normalizePathForDedup() key, keeping
+	 * whichever raw-path variant has the newer mtime for a given physical file. The cache
+	 * snapshot is keyed by whatever raw path string was recorded at write time — possibly across
+	 * different adapter runs/history — so two spelling variants of the same file (differing only
+	 * in separator/case, e.g. on Windows) can coexist as separate Map entries;
+	 * buildMergedSnapshotEntries() only merges entries that share the exact same key string, so
+	 * it never collapses these. The normal discover→parse pass never surfaces this, because
+	 * adapters always report one canonical spelling per real scan — only a fresh discovery's own
+	 * spelling is ever looked up. Any caller that reads the cache directly instead (the
+	 * cache-only instant paint, the cache-seeded preload queue) must dedupe through this, or it
+	 * will double-count that file's tokens.
+	 */
+	private getDeduplicatedCacheEntries(): [string, SessionFileCache][] {
+		return _dedupeByNormalizedKeyKeepGreatest(this.cacheManager.cache, data => data.mtime);
+	}
+
+	/**
+	 * Paints the status bar (and any already-open Details/Chart panels) straight
+	 * from the on-disk cache — no filesystem discovery, no fs.stat, no parsing —
+	 * so a cold boot shows real numbers within a second or two instead of sitting
+	 * blank/zero for the full discover→parse pass. The real pass kicked off right
+	 * after this in scheduleInitialUpdate() still runs and overwrites this with
+	 * verified, reconciled data; this is a provisional first paint only (see issue
+	 * #2018, fix #2: "Render last-known stats from the loaded snapshot before the
+	 * parse finishes").
+	 */
+	/**
+	 * Whether renderInstantStatsFromCache() must abandon its cache-only paint after awaiting
+	 * _cacheFileLoadPromise: sample mode could have turned on while that await was suspended (e.g.
+	 * runLocalViewRegression() started concurrently) — the check at the top of the caller only
+	 * reflects the state at the very start of the call, not at the point the cache is actually
+	 * read — or the window could have been disposed (dispose() tears down statusBarItem/
+	 * detailsPanel/chartPanel synchronously, so resuming into aggregation/UI-publish afterward
+	 * would touch disposed VS Code objects).
+	 */
+	private shouldAbandonInstantPaintAfterCacheLoad(): boolean {
+		return this.isSampleDataModeActive() || this._disposed;
+	}
+
+	/**
+	 * Whether a cache entry is usable for the instant cache-only paint: it has a finite, positive
+	 * interaction count (a persisted snapshot is just parsed JSON — an untyped `!== 0` check would
+	 * accept a NaN or negative `interactions` value, since neither strictly equals 0, letting it
+	 * propagate as a NaN/negative count into the provisional status/chart data), a finite mtime
+	 * (a malformed one would make `new Date(...).toISOString()` throw deeper in
+	 * renderInstantStatsFromCache(), aborting the entire paint over one bad record instead of just
+	 * skipping it), and falls within the same recency window the real refresh bounds `preloaded` to
+	 * (`cutoffMs`) — without that last check, this provisional paint could include cache entries the
+	 * real refresh's own `preloaded` excludes, showing a higher, more-inclusive number that then
+	 * visibly drops once the verified refresh (which never counted those older entries) overwrites
+	 * it moments later.
+	 */
+	private isUsableForInstantPaint(sessionData: SessionFileCache | undefined, cutoffMs: number): sessionData is SessionFileCache {
+		return !!sessionData
+			&& Number.isFinite(sessionData.interactions) && sessionData.interactions > 0
+			&& Number.isFinite(sessionData.mtime) && sessionData.mtime >= cutoffMs;
+	}
+
+	private async renderInstantStatsFromCache(): Promise<void> {
+		try {
+			// Sample-data mode (screenshot/regression fixtures, see runLocalViewRegression()
+			// and the aiEngineeringFluency.sampleDataDirectory setting) intentionally bypasses
+			// all adapters and shows only the fixture's files. Rendering from the real,
+			// unrelated on-disk cache here would paint real user data over (or alongside) the
+			// fixture before the real fixture-only pass runs. Skip entirely.
+			if (this.isSampleDataModeActive()) { return; }
+			// Await only the raw cache-file read, not the OpenCode DB probe chained onto
+			// _cacheLoadPromise (queueMissingOpenCodeDbSessionsFromCache() does its own SQLite
+			// I/O) — awaiting that would defeat the point of a no-filesystem-scan first paint.
+			if (this._cacheFileLoadPromise) {
+				try { await this._cacheFileLoadPromise; } catch { /* already logged in loadCacheFromStorage */ }
+			}
+			if (this.shouldAbandonInstantPaintAfterCacheLoad()) { return; }
+			if (this.cacheManager.cache.size === 0) { return; }
+
+			// Same window the real refresh bounds `preloaded` to (see _preloadSessionFiles()'s own
+			// fileLoadCutoffMs) — without it, this provisional paint could include cache entries the
+			// real refresh's preloaded array excludes, so calculateDetailedStats() would show a
+			// higher, more-inclusive number here that then visibly drops once the verified refresh
+			// (which never counted those older entries) overwrites it moments later.
+			const { last30DaysStartMs: instantLast30DaysStartMs, lastMonthStartMs: instantLastMonthStartMs } = computeUtcDateRanges(new Date());
+			const instantPaintCutoffMs = Math.min(instantLast30DaysStartMs, instantLastMonthStartMs);
+
+			const preloaded: SessionFilePreload[] = [];
+			for (const [sessionFile, sessionData] of this.getDeduplicatedCacheEntries()) {
+				if (!this.isUsableForInstantPaint(sessionData, instantPaintCutoffMs)) { continue; }
+				const stat = { size: sessionData.size ?? 0, mtime: new Date(sessionData.mtime) } as unknown as import('fs').Stats;
+				preloaded.push({
+					sessionFile,
+					mtime: sessionData.mtime,
+					fileSize: sessionData.size ?? 0,
+					sessionData,
+					wasCached: true,
+					details: this.buildMinimalPreloadDetails(sessionFile, stat, sessionData),
+				});
+			}
+			if (preloaded.length === 0) { return; }
+
+			const { stats, dailyStats } = await this.calculateDetailedStats(undefined, preloaded);
+			// The real refresh (kicked off 3s later in scheduleInitialUpdate()) runs concurrently
+			// with this and is normally far faster to actually publish results once it starts, but
+			// there's no hard ordering guarantee. If it already committed verified data while this
+			// was still aggregating, never overwrite it with these older, cache-only numbers.
+			// Also bail if the window closed, or sample-data mode turned on (e.g. runLocalViewRegression()
+			// started during this same, potentially slow aggregation) — publishing real cached stats now
+			// would contaminate a regression/screenshot run that expects only its fixture data.
+			if (this._hasCompletedRealRefresh || this._disposed || this.isSampleDataModeActive()) { return; }
+			this.lastDetailedStats = stats;
+			this.lastDailyStats = dailyStats;
+			this.mergeIntoFullDailyStats(dailyStats);
+			this.updateStatusBarAndTooltip(stats);
+			this.updateDetailsPanelIfOpen(stats, true);
+			this.updateChartPanelIfOpen(true);
+			this.log(`⚡ Instant first paint from ${preloaded.length} cached session file(s) (provisional — full scan still running)`);
+		} catch (error) {
+			this.warn(`Instant cache-only render failed, waiting for full scan instead: ${error}`);
+		}
 	}
 
 	private async queueMissingOpenCodeDbSessionsFromCache(): Promise<void> {
@@ -3122,6 +3363,105 @@ class CopilotTokenTracker implements vscode.Disposable {
 	}
 
 	/**
+	 * Seeds a preload queue with the on-disk cache's known file paths before adapter
+	 * discovery (a full filesystem walk across ~15 adapters) even starts, so the
+	 * worker pool begins stat+cache-validating files from tick zero instead of
+	 * waiting for the slowest adapter's directory walk to stream its first batch.
+	 * This is the "persist the discovery list ... render from it immediately,
+	 * re-discover in the background and reconcile" fix from issue #2018: on a warm
+	 * cache, most of the ~6500-file backlog is already known.
+	 *
+	 * Seeded paths are added to `seen` (keyed by _normalizePathForDedup(), the same
+	 * normalization SessionDiscovery.addDedupedBatch() uses across adapters — separators and case
+	 * can otherwise differ between a cache-recorded key and what a fresh adapter scan reports for
+	 * the same physical file, e.g. on Windows) so the caller's discovery-batch handler can dedupe
+	 * against them — a file is still only ever processed once; newly-added or previously uncached
+	 * files still arrive through normal streaming discovery. A cached path for a file deleted
+	 * since the last run simply fails its stat with ENOENT, which
+	 * processPreloadQueueFileWithCrashLog already swallows — no different from any other file
+	 * that disappears mid-scan today.
+	 *
+	 * Skipped entirely in sample-data mode (see isSampleDataModeActive()): SessionDiscovery
+	 * bypasses every adapter in that mode and returns only the fixture's files, so seeding real
+	 * cached sessions here would contaminate a screenshot/regression run with unrelated data.
+	 *
+	 * A seeded file that still exists but a clean, successful discovery pass no longer recognizes
+	 * (an adapter's rules changed, an integration got disabled) is reconciled back out of the
+	 * returned `preloaded` array by the caller, `_preloadSessionFiles()`, once the real discovery
+	 * result is known — this method only seeds the fast warm path, it doesn't know discovery's
+	 * outcome yet.
+	 *
+	 * Filtered to entries at or after `cutoffMs` — the same recency window `preloaded` itself is
+	 * bounded to (~30 days) — not the full, snapshot-capped (20,000-entry) cache. The worker pool's
+	 * concurrency is finite and this queue is a simple FIFO with no priority: seeding every cache
+	 * entry regardless of age would let a large, long-lived cache's old-but-still-valid backlog
+	 * occupy every worker ahead of the files that actually matter for this refresh's stats (today/
+	 * last30Days), delaying exactly the fast, relevant results this method exists to speed up. An
+	 * excluded older entry isn't lost — it still exists on disk, so normal streaming discovery finds
+	 * it and its cache hit resolves just as fast, only later in the queue instead of dominating the
+	 * front of it.
+	 *
+	 * Returns the number of paths seeded (for the caller's totalDiscovered count).
+	 */
+	private seedPreloadQueueFromCache(queue: string[], seen: Set<string>, cutoffMs: number, editorSet?: Set<string>): number {
+		if (this.isSampleDataModeActive()) { return 0; }
+		const cachedPaths = this.getDeduplicatedCacheEntries()
+			.filter(([, data]) => data.mtime >= cutoffMs)
+			.map(([filePath]) => filePath);
+		if (cachedPaths.length === 0) { return 0; }
+		for (const p of cachedPaths) { seen.add(_normalizePathForDedup(p)); }
+		if (editorSet) {
+			for (const file of cachedPaths) {
+				const editor = this.detectEditorSource(file);
+				if (editor && editor !== 'Unknown') { editorSet.add(editor); }
+			}
+		}
+		queue.push(...cachedPaths);
+		return cachedPaths.length;
+	}
+
+	/**
+	 * A cache-seeded file that still exists on disk but is no longer recognized by ANY current
+	 * adapter (e.g. an adapter's matching rules changed, an integration got disabled/uninstalled)
+	 * would otherwise keep contributing its stale stats to every refresh forever — unlike an
+	 * outright-deleted file, clearExpiredCache() has no way to detect this "un-discovered while
+	 * still readable" case. Only trust this run's discovery enough to drop such entries when it
+	 * actually completed cleanly (no adapter erroring, and it found *something*) — a
+	 * partial/flaky scan must never silently zero out real, still-valid cached sessions just
+	 * because one adapter hiccuped.
+	 *
+	 * Unconfirmed entries are evicted via cacheManager.deleteCachedSessionData() (which tombstones
+	 * the path so writeSharedSnapshot()'s merge — which starts from whatever is already on disk —
+	 * cannot silently resurrect it on the very next save) rather than filtered out of the returned
+	 * array alone — otherwise this run's own `preloaded`/stats are correct, but the *next* boot's
+	 * cache-only instant paint (which reads the cache directly, before any discovery has even run)
+	 * would still resurrect the same stale entry.
+	 *
+	 * Every raw cache key that normalizes to an unconfirmed path is evicted — swept directly from
+	 * `cacheManager.cache`, not derived from `preloaded`. `preloaded` only holds files that passed
+	 * the refresh cutoff and parsed successfully; a cache-seeded entry that was too old for this
+	 * cutoff, or whose stat/parse failed this run, never reaches `preloaded` at all but would still
+	 * be sitting in the cache — confirming it against `confirmedKeys` directly is the only way to
+	 * catch those too, not just the dedup winner a same-file spelling variant happened to produce.
+	 *
+	 * Must bail out in sample-data mode too, same as seedPreloadQueueFromCache()/
+	 * persistRefreshResult(): SessionDiscovery deliberately returns only the fixture directory's
+	 * files as `sessionFiles` in that mode, so `confirmedKeys` would contain nothing but fixture
+	 * paths — sweeping the whole cache against that would tombstone every real session the user
+	 * actually has, not just reconcile fixture-related entries.
+	 */
+	private reconcilePreloadedAgainstDiscovery(preloaded: SessionFilePreload[], sessionFiles: string[]): SessionFilePreload[] {
+		if (this.isSampleDataModeActive() || this.sessionDiscovery.lastDiscoveryHadError || sessionFiles.length === 0) { return preloaded; }
+		const confirmedKeys = new Set(sessionFiles.map(f => _normalizePathForDedup(f)));
+		for (const rawPath of Array.from(this.cacheManager.cache.keys())) {
+			if (!confirmedKeys.has(_normalizePathForDedup(rawPath))) {
+				this.cacheManager.deleteCachedSessionData(rawPath);
+			}
+		}
+		return preloaded.filter(p => confirmedKeys.has(_normalizePathForDedup(p.sessionFile)));
+	}
+
+	/**
 	 * Discover all session files, stat them, and load (or cache-hit) their parsed data.
 	 * Returns a `SessionFilePreload[]` that both calculateDetailedStats and
 	 * calculateUsageAnalysisStats can consume, eliminating a second filesystem scan.
@@ -3139,7 +3479,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		let readIndex = 0;
 		let discoveryDone = false;
 		let totalDiscovered = 0;
-		const preloaded: SessionFilePreload[] = [];
+		let preloaded: SessionFilePreload[] = [];
 		let processed = 0;
 		const CONCURRENCY = 20;
 		this._deferredSessionPreloadCount = 0;
@@ -3149,6 +3489,12 @@ class CopilotTokenTracker implements vscode.Disposable {
 		const gate = createWakeupGate();
 
 		const analyzeStartMs = Date.now();
+
+		// Seed the queue from the on-disk cache's known file list before discovery
+		// starts (see seedPreloadQueueFromCache doc comment for why).
+		const seen = new Set<string>();
+		const seededCount = this.seedPreloadQueueFromCache(queue, seen, cutoffMs, editorSet);
+		totalDiscovered += seededCount;
 
 		// Discovery fills the queue via onBatch callback
 		const discoveryPromise = (async () => {
@@ -3160,8 +3506,15 @@ class CopilotTokenTracker implements vscode.Disposable {
 							if (editor && editor !== 'Unknown') { editorSet.add(editor); }
 						}
 					}
-					queue.push(...batch);
-					totalDiscovered += batch.length;
+					// Normalize with the same key SessionDiscovery.addDedupedBatch() uses across
+					// adapters (see seedPreloadQueueFromCache doc comment) so a cache-seeded path
+					// that differs only in separator/case from a freshly discovered one is still
+					// recognized as the same file, not queued (and counted) twice.
+					const newFiles = batch.filter(f => !seen.has(_normalizePathForDedup(f)));
+					if (newFiles.length === 0) { return; }
+					for (const f of newFiles) { seen.add(_normalizePathForDedup(f)); }
+					queue.push(...newFiles);
+					totalDiscovered += newFiles.length;
 					gate.signal();
 				});
 			} finally {
@@ -3185,8 +3538,10 @@ class CopilotTokenTracker implements vscode.Disposable {
 				await this.processPreloadQueueFileWithCrashLog(sessionFile, cutoffMs, preloaded, missBudget);
 				processed++;
 				if (progressCallback) { progressCallback(processed, totalDiscovered); }
-				// Checkpoint cache periodically during long-running preload
-				if (processed % 25 === 0) {
+				// Checkpoint cache periodically during long-running preload. Skipped in sample-data
+				// mode for the same reason persistRefreshResult() never saves there — a mid-parse
+				// checkpoint writes straight to the shared on-disk snapshot too, bypassing that guard.
+				if (processed % 25 === 0 && !this.isSampleDataModeActive()) {
 					this.cacheManager.maybeCheckpointCache();
 				}
 			}
@@ -3198,15 +3553,29 @@ class CopilotTokenTracker implements vscode.Disposable {
 			...Array.from({ length: CONCURRENCY }, () => worker()),
 		]);
 
+		preloaded = this.reconcilePreloadedAgainstDiscovery(preloaded, sessionFiles);
+
+		// Defer expired-cache cleanup to avoid blocking discovery/workers startup. Scheduled
+		// unconditionally (not only on a successful, non-empty scan) so a cached entry for a file
+		// that was genuinely deleted still gets pruned even on a run where every adapter otherwise
+		// returned nothing — otherwise it would keep sitting in the cache indefinitely, available
+		// for a future boot's cache-only instant paint to resurrect.
+		void Promise.resolve().then(() => this.cacheManager.clearExpiredCache());
+
 		if (sessionFiles.length === 0) {
-			this.warn('⚠️ No session files found - Have you used GitHub Copilot Chat yet?');
-			return { sessionFiles, preloaded: [] };
+			// `sessionFiles` only reflects this run's adapter discovery — it does not include the
+			// cache-seeded backlog (see seedPreloadQueueFromCache()). If adapters transiently
+			// returned nothing (e.g. every adapter errored) while the cache still holds valid,
+			// already-processed entries, `preloaded` can be non-empty here; returning it (instead
+			// of hardcoding []) keeps those real, already-computed results instead of discarding
+			// them and regressing the instant cache-only paint back to zero stats.
+			if (preloaded.length === 0) {
+				this.warn('⚠️ No session files found - Have you used GitHub Copilot Chat yet?');
+			}
+			return { sessionFiles, preloaded };
 		}
 
 		this.logPreloadSessionFileSummary(sessionFiles, preloaded, analyzeStartMs);
-
-		// Defer expired-cache cleanup to avoid blocking discovery/workers startup
-		void Promise.resolve().then(() => this.cacheManager.clearExpiredCache());
 
 		return { sessionFiles, preloaded };
 	}
@@ -3389,6 +3758,31 @@ class CopilotTokenTracker implements vscode.Disposable {
 		}
 	}
 
+	/**
+	 * Whether this run's discovery can't be trusted to be complete, and the one-time full-year
+	 * chart backfill (calculateDailyStats(365, sessionFiles)) must therefore be skipped.
+	 *
+	 * Two cases: the "sessionFiles came back empty but we still have real cached data" case (see
+	 * reconcilePreloadedAgainstDiscovery()), or lastDiscoveryHadError — set whenever any single
+	 * adapter throws, even if other adapters still returned a non-empty partial sessionFiles list.
+	 * Either way, calculateDailyStats(365, sessionFiles) would compute and store a
+	 * truncated/incomplete year and, since an empty *or partial* array is truthy, showChart()'s
+	 * `!!this.lastFullDailyStats` / `?? this.lastDailyStats` checks would treat that as complete
+	 * data and get stuck instead of falling back to the real lastDailyStats or retrying on a later,
+	 * successful refresh. A genuine first-ever user with zero session files (sessionFiles and the
+	 * cache both empty, no discovery error) is unaffected.
+	 *
+	 * "We still have real cached data" is judged by the cache itself, not `preloaded` — `preloaded`
+	 * only holds entries within `fileLoadCutoffMs` (~30 days), far narrower than this 365-day
+	 * backfill. A dormant user with real data older than that window would have an empty `preloaded`
+	 * on a transient empty-discovery run too, and still hit the exact bug this guard exists to avoid
+	 * if only `preloaded` were checked.
+	 */
+	private isDiscoveryUntrustworthyForBackfill(sessionFiles: string[], preloaded: SessionFilePreload[]): boolean {
+		return this.sessionDiscovery.lastDiscoveryHadError
+			|| (sessionFiles.length === 0 && (preloaded.length > 0 || this.cacheManager.cache.size > 0));
+	}
+
 	/** Core discover → parse → compute → render → persist pass for one refresh. */
 	private async _runRefreshCore(silent: boolean, isLeader: boolean): Promise<DetailedStats | undefined> {
 		this.log(isLeader ? 'Updating token stats (leader)...' : 'Updating token stats (follower)...');
@@ -3426,6 +3820,12 @@ class CopilotTokenTracker implements vscode.Disposable {
 		if (!silent && !this._detailsPanelIsLoading) { this.statusBarItem.tooltip = this.buildLoadingTooltipMarkdown('computing'); }
 
 		const { stats: detailedStats, dailyStats } = await this.calculateDetailedStats(undefined, preloaded);
+		// Set as soon as the verified result exists, before any of the (some awaited, some
+		// network-bound — see computeAndUploadFluencyScore below) publication steps that follow.
+		// renderInstantStatsFromCache() (if still in flight) checks this right before committing
+		// its own, older cache-only results — it must never see this as false once real data has
+		// already started being published, or it can overwrite an already-correct status bar.
+		this._hasCompletedRealRefresh = true;
 		this.lastDailyStats = dailyStats;
 		this.mergeIntoFullDailyStats(dailyStats);
 
@@ -3443,7 +3843,16 @@ class CopilotTokenTracker implements vscode.Disposable {
 
 		this.persistRefreshResult(isLeader);
 
-		if (!this.lastFullDailyStats && !this.chartPanel) {
+		// Skip the one-time full-year backfill when this run's discovery can't be trusted to be
+		// complete — see isDiscoveryUntrustworthyForBackfill() for why. Leader-only: unlike the
+		// regular refresh above, calculateDailyStats() has no missBudget/follower awareness at all —
+		// it reparses every discovered session file unconditionally. Running it on every follower
+		// window's first refresh would launch a full, unbounded reparse in parallel with the leader's
+		// own preload, defeating FOLLOWER_MISS_BUDGET's stampede protection and the very cold-boot
+		// cost this PR exists to cut. A follower that skips this still renders correctly: every
+		// lastFullDailyStats read elsewhere already falls back to lastDailyStats or computes its own
+		// full-year data lazily on demand (e.g. when Chart is opened).
+		if (isLeader && !this.lastFullDailyStats && !this.chartPanel && !this.isDiscoveryUntrustworthyForBackfill(sessionFiles, preloaded)) {
 			void this.calculateDailyStats(365, sessionFiles);
 		}
 
@@ -3454,9 +3863,20 @@ class CopilotTokenTracker implements vscode.Disposable {
 	 * Persist results after a refresh. Only the leader publishes the shared
 	 * snapshot (so a follower's partial cache can never regress it); a follower
 	 * instead schedules a bounded resync to pick up the leader's snapshot.
+	 *
+	 * Never persists during sample-data mode (runLocalViewRegression(), the visual-view-diff
+	 * harness): that refresh's cache entries are fixture data, parsed under the SAME 'dev' cache
+	 * identity a real debug session uses (getCacheIdentifier() doesn't distinguish sample runs).
+	 * Saving them to the shared on-disk snapshot would let them survive past
+	 * localRegressionSampleDataDir being restored to '' — the cache-only instant paint and
+	 * cache-seeded preload queue (see isSampleDataModeActive()'s doc comment) read that same
+	 * snapshot directly on the *next* normal boot and would then display fixture data as real
+	 * stats. The regression tool only needs its results in memory (lastDetailedStats etc.) for
+	 * that one verification pass, never on disk.
 	 */
 	private persistRefreshResult(isLeader: boolean): void {
 		if (isLeader) {
+			if (this.isSampleDataModeActive()) { return; }
 			void (async () => {
 				try { await this.saveCacheToStorage(); }
 				catch (err) { this.warn(`Failed to save cache: ${err}`); }
@@ -12833,14 +13253,22 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     // Save cache to storage before disposing (fire-and-forget async operation)
     // Note: Cache loss during abnormal shutdown is acceptable as it will rebuild on next startup
     // We can't await here since dispose() is synchronous
-    void (async () => {
-      try {
-        await this.saveCacheToStorage();
-      } catch (err) {
-        // Output channel will be disposed, so log to console as fallback
-        console.error("Error saving cache during disposal:", err);
-      }
-    })();
+    //
+    // Must skip this save in sample-data mode, same as persistRefreshResult() does before its own
+    // saveCacheToStorage() call: if the Extension Development Host closes while
+    // runLocalViewRegression() is still mid-flight (fixture entries already in cacheManager.cache,
+    // but its own finally block hasn't evicted them yet), this unconditional save would otherwise
+    // persist fixture data into the developer's real, shared production snapshot.
+    if (!this.isSampleDataModeActive()) {
+      void (async () => {
+        try {
+          await this.saveCacheToStorage();
+        } catch (err) {
+          // Output channel will be disposed, so log to console as fallback
+          console.error("Error saving cache during disposal:", err);
+        }
+      })();
+    }
     if (this.logViewerPanel) {
       this.logViewerPanel.dispose();
     }
