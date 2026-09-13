@@ -11575,6 +11575,14 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     let reconciledApiKeyConfigured: boolean | undefined;
     if (status?.apiKeyConfigured) {
       reconciledApiKeyConfigured = await this.rehydrateOrInvalidateMistralCloudSessionsCache(panel);
+    } else if (status && !status.apiKeyConfigured) {
+      // Mirrors postMistralCloudSessionsStatusEarly: this fresh read can be the first place in the
+      // whole diagnostics pipeline to observe the key is gone (e.g. removed in another VS Code
+      // window after the early status check already passed). Reporting that alone doesn't stop an
+      // existing collection still running under the now-removed key, which would otherwise keep
+      // sending that credential and issuing paginated requests in the background regardless of
+      // what this diagnosticDataLoaded message now says.
+      this.abortInFlightMistralCloudSessionsFetch();
     }
     // The rehydrate await above can span a local Remove/Set, which bumps
     // _mistralCloudRefreshGeneration and posts its own authoritative status. The snapshot
