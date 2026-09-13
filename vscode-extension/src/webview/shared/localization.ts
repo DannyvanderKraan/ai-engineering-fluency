@@ -76,11 +76,13 @@ export interface WebviewLocalization {
 	'mistral.status.configured': string;
 	'mistral.status.notConfigured': string;
 	'mistral.status.checking': string;
+	'mistral.status.checkFailed': string;
 	'mistral.summary.conversations': string;
 	'mistral.summary.ofCount': string;
 	'mistral.summary.lastFetched': string;
 	'mistral.error.label': string;
 	'mistral.button.refresh': string;
+	'mistral.button.retry': string;
 	'mistral.button.removeApiKey': string;
 	'mistral.button.connectApiKey': string;
 	'mistral.table.id': string;
@@ -169,11 +171,13 @@ const DEFAULT_LOCALIZATION: WebviewLocalization = {
 	'mistral.status.configured': 'API key configured',
 	'mistral.status.notConfigured': 'No API key configured',
 	'mistral.status.checking': 'Checking…',
+	'mistral.status.checkFailed': "Couldn't check whether an API key is configured.",
 	'mistral.summary.conversations': 'Conversations',
 	'mistral.summary.ofCount': '{0} of {1}',
 	'mistral.summary.lastFetched': 'Last fetched',
 	'mistral.error.label': 'Error:',
 	'mistral.button.refresh': 'Refresh',
+	'mistral.button.retry': 'Retry',
 	'mistral.button.removeApiKey': 'Remove API key',
 	'mistral.button.connectApiKey': 'Connect Mistral API key',
 	'mistral.table.id': 'ID',

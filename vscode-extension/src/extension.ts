@@ -4267,6 +4267,8 @@ class CopilotTokenTracker implements vscode.Disposable {
 			'mistral.status.configured': l10n.t('mistral.status.configured'),
 			'mistral.status.notConfigured': l10n.t('mistral.status.notConfigured'),
 			'mistral.status.checking': l10n.t('mistral.status.checking'),
+			'mistral.status.checkFailed': l10n.t('mistral.status.checkFailed'),
+			'mistral.button.retry': l10n.t('mistral.button.retry'),
 			'mistral.summary.conversations': l10n.t('mistral.summary.conversations'),
 			'mistral.summary.ofCount': l10n.t('mistral.summary.ofCount'),
 			'mistral.summary.lastFetched': l10n.t('mistral.summary.lastFetched'),
@@ -10619,6 +10621,7 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       refreshMistralCloudSessions: () => this.dispatch('refreshMistralCloudSessions:diagnostics', () => this.diagHandleRefreshMistralCloudSessions()),
       promptMistralApiKey: () => this.dispatch('promptMistralApiKey:diagnostics', () => this.diagHandlePromptMistralApiKey()),
       clearMistralApiKey: () => this.dispatch('clearMistralApiKey:diagnostics', () => this.diagHandleClearMistralApiKey()),
+      retryMistralCloudSessionsStatus: () => this.dispatch('retryMistralCloudSessionsStatus:diagnostics', () => this.diagHandleRetryMistralCloudSessionsStatus()),
     };
     if (simpleCommands[message.command]) { await simpleCommands[message.command](); return; }
     await this.handleDiagnosticConditionalCommand(message);
@@ -10799,6 +10802,18 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     if (signIn) { await this.authenticateWithGitHub(); } else { await this.signOutFromGitHub(); }
     if (this.diagnosticsPanel) {
       this.diagnosticsPanel.webview.postMessage({ command: 'githubAuthUpdated', githubAuth: this.getGitHubAuthStatus() });
+    }
+  }
+
+  /**
+   * BETA: re-attempt the SecretStorage status read after `postMistralCloudSessionsStatusEarly`
+   * (or the final diagnostics pipeline read) failed — the webview offers this as a Retry action
+   * since neither Connect nor Refresh ever render while the status is unknown, so a persistently
+   * failing read would otherwise leave the tab permanently stuck with no way to recover.
+   */
+  private async diagHandleRetryMistralCloudSessionsStatus(): Promise<void> {
+    if (this.diagnosticsPanel && this.isPanelOpen(this.diagnosticsPanel)) {
+      await this.postMistralCloudSessionsStatusEarly(this.diagnosticsPanel);
     }
   }
 
@@ -12205,10 +12220,15 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
   private async postMistralCloudSessionsStatusEarly(panel: vscode.WebviewPanel): Promise<void> {
     const mistralCloudSessionsStatus = await this.getFreshMistralCloudSessionsStatus();
     if (!this.isPanelOpen(panel)) { return; }
-    // Omitted (rather than a synthesized `apiKeyConfigured: false`) when the read failed, so
-    // the webview leaves its last-known/"not yet known" state alone instead of downgrading it
-    // and rendering Connect over a key that may still be there.
-    if (!mistralCloudSessionsStatus) { return; }
+    if (!mistralCloudSessionsStatus) {
+      // A synthesized `apiKeyConfigured: false` would render Connect over a key that may still be
+      // there, so the key status itself stays unknown — but the read failure must still reach the
+      // webview (rather than being dropped entirely) so it can offer a retry, since neither button
+      // renders while the status is unknown and a persistently failing read would otherwise leave
+      // the tab permanently stuck on "Checking…" with no way to recover.
+      panel.webview.postMessage({ command: "mistralCloudSessionsStatusCheckFailed" });
+      return;
+    }
     panel.webview.postMessage({ command: "mistralCloudSessionsStatus", mistralCloudSessionsStatus });
     if (mistralCloudSessionsStatus.apiKeyConfigured) {
       await this.rehydrateOrInvalidateMistralCloudSessionsCache(panel);
@@ -12251,10 +12271,13 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     this._lastMistralCloudSessions = undefined;
     this._lastMistralCloudSessionsKeyFingerprint = undefined;
     // The webview may already be showing this stale listing from an earlier message (e.g. a
-    // previous panel-open rehydration) — the status message alongside this still reports a key
-    // configured (just a different one), so the webview's own "clear on unconfigured" path never
-    // fires; explicitly clear the display instead of leaving it until manual Refresh.
-    panel.webview.postMessage({ command: "mistralCloudSessionsResult", result: this.buildEmptyMistralCloudSessionsResult() });
+    // previous panel-open rehydration) — explicitly clear the display instead of leaving it until
+    // manual Refresh. This is a distinct message from `mistralCloudSessionsResult`, not an empty
+    // result: the status message alongside this still (correctly) reports a key configured — just
+    // a different one — and `mistralCloudSessionsResult`'s own "empty, no error" shape is what the
+    // webview reads as "no key configured" for a genuine unconfigured result; reusing it here would
+    // flip the tab to Connect over a key that is, in fact, still configured.
+    panel.webview.postMessage({ command: "mistralCloudSessionsCacheInvalidated" });
   }
 
   /**

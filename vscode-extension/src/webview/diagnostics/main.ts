@@ -291,6 +291,10 @@ let currentMistralApiKeyConfigured: boolean | undefined;
 // cancelled Connect prompt, mistralCloudPromptCancelled — comes back. Guards against rapid clicks
 // firing concurrent requests against the beta API's rate limits.
 let mistralCloudRequestInFlight = false;
+// True when the extension host's SecretStorage read failed rather than resolving to a real
+// configured/not-configured status. Neither Connect nor Refresh render while the status is
+// unknown, so this drives a Retry affordance instead of leaving the tab stuck indefinitely.
+let mistralStatusCheckFailed = false;
 let currentModelUsageTimeRange = "all";
 
 function removeSessionFilesSection(reportText: string): string {
@@ -2630,6 +2634,8 @@ const DIAG_MESSAGE_HANDLERS: Record<string, (message: DiagMessage) => void> = {
   modelUsageResult: handleModelUsageResult,
   ttftResult: handleTtftResult,
   mistralCloudSessionsResult: handleMistralCloudSessionsResult,
+  mistralCloudSessionsCacheInvalidated: handleMistralCloudSessionsCacheInvalidated,
+  mistralCloudSessionsStatusCheckFailed: handleMistralCloudSessionsStatusCheckFailed,
   mistralCloudPromptCancelled: handleMistralCloudPromptCancelled,
 };
 
@@ -3444,11 +3450,17 @@ function renderMistralCloudSummaryCards(result: MistralCloudSessionsResult | und
 </div>`;
 }
 
-function renderMistralCloudButtons(configured: boolean, requestInFlight: boolean, statusKnown: boolean): string {
+function renderMistralCloudButtons(configured: boolean, requestInFlight: boolean, statusKnown: boolean, statusCheckFailed: boolean): string {
   // Before the first status/result message arrives, rendering "Connect" by default would let a
   // user with an existing key click it and overwrite that key moments before the real
   // (already "configured") status shows up — render nothing until the status is actually known.
-  if (!statusKnown) { return ""; }
+  if (!statusKnown) {
+    // ...except when the read itself failed: neither button can ever become known-safe to render
+    // on its own in that case, so without an explicit way out the tab would stay stuck forever.
+    return statusCheckFailed
+      ? `<button class="button secondary" id="btn-mistral-retry-status"><span>🔄</span><span>${localize("mistral.button.retry")}</span></button>`
+      : "";
+  }
   const disabledAttr = requestInFlight ? " disabled" : "";
   return configured
     ? `<button class="button" id="btn-mistral-refresh"${disabledAttr}><span>🔄</span><span>${localize("mistral.button.refresh")}</span></button>
@@ -3460,6 +3472,7 @@ function renderMistralCloudTab(
   result: MistralCloudSessionsResult | undefined,
   apiKeyConfigured: boolean | undefined,
   requestInFlight: boolean,
+  statusCheckFailed: boolean,
 ): string {
   const betaLabel = localize("mistral.betaBadge");
   const betaBadge = `<span class="beta-badge" title="${escapeHtml(betaLabel)}">${escapeHtml(betaLabel)}</span>`;
@@ -3471,8 +3484,9 @@ function renderMistralCloudTab(
   // whether a key is configured, rendering Connect over a key that may still be there.
   const statusKnown = apiKeyConfigured !== undefined;
   const configured = !!apiKeyConfigured || !!result?.authenticated;
-  const errorBox = result?.error
-    ? `<div class="info-box" style="border-left:4px solid #d9534f;"><div><b>${localize("mistral.error.label")}</b> ${escapeHtml(result.error)}</div></div>`
+  const errorText = result?.error || (!statusKnown && statusCheckFailed ? localize("mistral.status.checkFailed") : "");
+  const errorBox = errorText
+    ? `<div class="info-box" style="border-left:4px solid #d9534f;"><div><b>${localize("mistral.error.label")}</b> ${escapeHtml(errorText)}</div></div>`
     : "";
   const introText = localizeFormat("mistral.description.intro", "<code>GET /v1/conversations</code>", "<code>api.mistral.ai</code>");
   const scopeText = localizeFormat("mistral.description.scope", `<b>${localize("mistral.description.undocumented")}</b>`);
@@ -3487,7 +3501,7 @@ ${introText} ${scopeText} ${keyStorageText}
 ${renderMistralCloudSummaryCards(result, configured, statusKnown)}
 ${errorBox}
 <div class="button-group" id="mistral-cloud-buttons">
-${renderMistralCloudButtons(configured, requestInFlight, statusKnown)}
+${renderMistralCloudButtons(configured, requestInFlight, statusKnown, statusCheckFailed)}
 </div>
 ${renderMistralConversationTable(result?.conversations ?? [])}
 </div>`;
@@ -3497,6 +3511,7 @@ function setupMistralCloudHandlers(): void {
   const connect = document.getElementById("btn-mistral-connect");
   const disconnect = document.getElementById("btn-mistral-disconnect");
   const refresh = document.getElementById("btn-mistral-refresh");
+  const retryStatus = document.getElementById("btn-mistral-retry-status");
   // The API key is a sensitive credential, so it is collected by the extension
   // host via vscode.window.showInputBox({ password: true }) — never via a
   // clear-text window.prompt() inside the webview.
@@ -3515,10 +3530,15 @@ function setupMistralCloudHandlers(): void {
     rerenderMistralCloudTab();
     vscode.postMessage({ command: "refreshMistralCloudSessions" });
   });
+  retryStatus?.addEventListener("click", () => {
+    mistralStatusCheckFailed = false;
+    rerenderMistralCloudTab();
+    vscode.postMessage({ command: "retryMistralCloudSessionsStatus" });
+  });
 }
 
 function rerenderMistralCloudTab(): void {
-  replaceTabContent("mistral-cloud", renderMistralCloudTab(currentMistralCloudSessions, currentMistralApiKeyConfigured, mistralCloudRequestInFlight), setupMistralCloudHandlers);
+  replaceTabContent("mistral-cloud", renderMistralCloudTab(currentMistralCloudSessions, currentMistralApiKeyConfigured, mistralCloudRequestInFlight, mistralStatusCheckFailed), setupMistralCloudHandlers);
 }
 
 function handleMistralCloudSessionsResult(message: DiagMessage): void {
@@ -3539,6 +3559,7 @@ function handleMistralCloudSessionsResult(message: DiagMessage): void {
 function handleMistralCloudSessionsStatus(message: DiagMessage): void {
   const status = message.mistralCloudSessionsStatus as { apiKeyConfigured: boolean } | undefined;
   if (!status) { return; }
+  mistralStatusCheckFailed = false;
   currentMistralApiKeyConfigured = !!status.apiKeyConfigured;
   // Always reset the cached result when the key isn't configured — not just when there is no
   // cached result yet. Otherwise a prior successful (authenticated: true) result lingers and
@@ -3547,7 +3568,30 @@ function handleMistralCloudSessionsStatus(message: DiagMessage): void {
   // was removed (e.g. from another window), instead of falling back to the Connect state.
   if (!currentMistralApiKeyConfigured) {
     currentMistralCloudSessions = { conversations: [], totalCount: 0, authenticated: false, fetchedAt: "", error: "" };
+    // A refresh/connect that was in flight for the now-removed key can no longer produce a message
+    // this window will treat as terminal — the host silently discards a superseded generation
+    // (see diagHandleRefreshMistralCloudSessions) rather than posting a final result — so Connect
+    // would otherwise stay disabled forever, waiting for a message that may never arrive.
+    mistralCloudRequestInFlight = false;
   }
+  rerenderMistralCloudTab();
+}
+
+/** The extension host's SecretStorage status read failed (not "no key" — genuinely unknown).
+ * Neither Connect nor Refresh render while the status is unknown, so surface a Retry affordance
+ * instead of leaving the tab stuck with no way to recover. */
+function handleMistralCloudSessionsStatusCheckFailed(): void {
+  mistralStatusCheckFailed = true;
+  rerenderMistralCloudTab();
+}
+
+/** A cached conversation listing no longer belongs to the currently configured key (e.g. the key
+ * was changed in another VS Code window) and was cleared host-side. This is deliberately not a
+ * `mistralCloudSessionsResult` — that message's "empty, no error" shape means "no key configured"
+ * to handleMistralCloudSessionsResult, which would incorrectly flip a still-configured key to
+ * Connect; the status message already in effect is left untouched. */
+function handleMistralCloudSessionsCacheInvalidated(): void {
+  currentMistralCloudSessions = undefined;
   rerenderMistralCloudTab();
 }
 
@@ -3717,7 +3761,7 @@ ${renderModelUsageTab(detailedFiles, isLoading)}
 ${renderToolAnalysisTab(data.toolCallStats, data.toolFamilies)}
 ${renderSkillUsageTab(data.skillCallStats, data.skillCallsByEditor, data.skillDescriptions, skillUsageEditorFilter)}
 ${renderOtelDeltaTab(data.otelComparison)}
-${renderMistralCloudTab(currentMistralCloudSessions, currentMistralApiKeyConfigured, mistralCloudRequestInFlight)}
+${renderMistralCloudTab(currentMistralCloudSessions, currentMistralApiKeyConfigured, mistralCloudRequestInFlight, mistralStatusCheckFailed)}
 ${renderTtftTab()}
 </div>
 `;

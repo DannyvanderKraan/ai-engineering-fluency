@@ -484,6 +484,79 @@ test('Mistral Cloud tab: a status update reporting the key removed clears a prev
 	assert.equal(harness.window.document.getElementById('btn-mistral-refresh'), null, 'Refresh must not remain after the key is reported removed');
 });
 
+test('Mistral Cloud tab: a cache-invalidated message clears the stale listing without flipping to Connect', async () => {
+	// Distinct from the "key removed" case above: here the key is still configured (just a
+	// different one than the cached listing belongs to), so the tab must stay in the
+	// Refresh/Remove state, not fall back to Connect.
+	await preloadBundle();
+	const harness = bootWebviewUnsettled(buildInitialData({ mistralCloudSessionsStatus: { apiKeyConfigured: true } }));
+	await harness.settle();
+
+	harness.post({
+		command: 'mistralCloudSessionsResult',
+		result: {
+			conversations: [{
+				id: 'conv-123', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z',
+				agentId: 'agent-1', name: 'Old account conversation', description: null, agentVersion: '1',
+			}],
+			totalCount: 1,
+			authenticated: true,
+			fetchedAt: '2026-01-02T00:00:00Z',
+			error: '',
+		},
+	});
+	await harness.settle();
+	assert.ok(harness.text('#tab-mistral-cloud')?.includes('Old account conversation'));
+
+	harness.post({ command: 'mistralCloudSessionsCacheInvalidated' });
+	await harness.settle();
+
+	const rendered = harness.text('#tab-mistral-cloud');
+	assert.ok(!rendered?.includes('Old account conversation'), `expected the stale conversation to be cleared, got: ${rendered}`);
+	assert.ok(harness.window.document.getElementById('btn-mistral-refresh'), 'expected Refresh to remain — the key is still configured, just a different one');
+	assert.equal(harness.window.document.getElementById('btn-mistral-connect'), null, 'Connect must not render — a key is still configured');
+});
+
+test('Mistral Cloud tab: a status update reporting the key removed mid-refresh does not leave Connect stuck disabled', async () => {
+	await preloadBundle();
+	const harness = bootWebviewUnsettled(buildInitialData({ mistralCloudSessionsStatus: { apiKeyConfigured: true } }));
+	await harness.settle();
+	const refreshButton = () => harness.window.document.getElementById('btn-mistral-refresh') as HTMLButtonElement | null;
+	const connectButton = () => harness.window.document.getElementById('btn-mistral-connect') as HTMLButtonElement | null;
+
+	assert.ok(refreshButton(), 'expected a Refresh button when a key is configured');
+	refreshButton()!.click();
+	await harness.settle();
+	assert.equal(refreshButton()?.disabled, true, 'expected Refresh to disable itself while the request is in flight');
+
+	// The key is removed (e.g. from another VS Code window) while this window's refresh is still
+	// in flight. The host silently discards a superseded generation rather than posting a final
+	// result, so this status message may be the only signal this window ever gets.
+	harness.post({ command: 'mistralCloudSessionsStatus', mistralCloudSessionsStatus: { apiKeyConfigured: false } });
+	await harness.settle();
+
+	assert.ok(connectButton(), 'expected Connect to render after the key is reported removed');
+	assert.equal(connectButton()?.disabled, false, 'expected Connect to be clickable, not stuck disabled by the superseded in-flight refresh');
+});
+
+test('Mistral Cloud tab: a status-check failure renders a Retry control that re-requests the status', async () => {
+	await preloadBundle();
+	const harness = bootWebviewUnsettled(buildInitialData());
+	await harness.settle();
+	assert.equal(harness.window.document.getElementById('btn-mistral-retry-status'), null, 'no Retry control before any failure is reported');
+
+	harness.post({ command: 'mistralCloudSessionsStatusCheckFailed' });
+	await harness.settle();
+
+	const retryButton = harness.window.document.getElementById('btn-mistral-retry-status') as HTMLButtonElement | null;
+	assert.ok(retryButton, 'expected a Retry control once the status check is reported as failed');
+	assert.equal(harness.window.document.getElementById('btn-mistral-connect'), null, 'Connect must still not render — the status remains unknown, not "not configured"');
+
+	retryButton!.click();
+	const posted = harness.posted.find((m) => m.command === 'retryMistralCloudSessionsStatus');
+	assert.ok(posted, `expected a retryMistralCloudSessionsStatus message, got: ${JSON.stringify(harness.posted)}`);
+});
+
 test('Mistral Cloud tab: an error result rerenders the tab with the error box, not stale success state', async () => {
 	await preloadBundle();
 	const harness = bootWebviewUnsettled(buildInitialData({ mistralCloudSessionsStatus: { apiKeyConfigured: true } }));
