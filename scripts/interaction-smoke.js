@@ -341,6 +341,7 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
   for (let pass = 0; pass < maxPasses; pass++) {
     const controls = await page.evaluate(TAG_CONTROLS, INTERACTIVE_SELECTOR);
     let exercised = 0;
+    let stoppedOnStaleTag = false;
     for (const control of controls) {
       const deep = maxPasses > 1;
       if (deep && visited.has(controlKey(control))) { continue; }
@@ -357,6 +358,7 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
       if (deep && outcome.status === 'skipped') {
         // The tag went stale when something earlier re-rendered the page. Leave
         // it unvisited: the next pass re-tags and reaches it for real.
+        stoppedOnStaleTag = true;
         break;
       }
       if (deep) { visited.add(controlKey(control)); }
@@ -400,8 +402,10 @@ async function smokeView({ browser, view, defaults, handledCommands, isolate }) 
       // This control replaced the page body, so every remaining tag is stale.
       if (deep && outcome.domChanged) { break; }
     }
-    // A pass that reached nothing new means the crawl has converged.
-    if (exercised === 0) { break; }
+    // A pass that reached nothing new means the crawl has converged — unless it
+    // stopped on a stale tag before reaching anything, which is precisely the
+    // case a re-tagged pass fixes rather than a reason to give up early.
+    if (exercised === 0 && !stoppedOnStaleTag) { break; }
   }
 
   await page.close();
