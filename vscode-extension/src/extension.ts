@@ -11483,13 +11483,28 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
     return { conversations: [], totalCount: 0, totalIsLowerBound: false, authenticated: false, fetchedAt: '', error: '' };
   }
 
+  // BETA: random, process-local key for fingerprintMistralApiKey's HMAC — generated once per
+  // extension host lifetime, never persisted or exposed. Plain `sha256(apiKey)` would let anyone
+  // who ever saw a fingerprint (e.g. in a future log line or crash dump) attempt to recover the
+  // key via a rainbow table, since API keys are a fairly low-entropy, fixed-format secret; keying
+  // the digest with a secret only this process knows means the fingerprint reveals nothing about
+  // the key on its own, while still comparing equal for equal keys within this session.
+  private static _mistralFingerprintHmacKey?: Buffer;
+
+  private static getMistralFingerprintHmacKey(): Buffer {
+    if (!CopilotTokenTracker._mistralFingerprintHmacKey) {
+      CopilotTokenTracker._mistralFingerprintHmacKey = crypto.randomBytes(32);
+    }
+    return CopilotTokenTracker._mistralFingerprintHmacKey;
+  }
+
   /**
    * BETA: cheap non-reversible fingerprint of an API key, used only to detect whether
    * `_lastMistralCloudSessions` still belongs to the currently configured key — never used for
    * authentication, logged, or persisted anywhere.
    */
   private static fingerprintMistralApiKey(key: string): string {
-    return crypto.createHash('sha256').update(key).digest('hex');
+    return crypto.createHmac('sha256', CopilotTokenTracker.getMistralFingerprintHmacKey()).update(key).digest('hex');
   }
 
   /**
