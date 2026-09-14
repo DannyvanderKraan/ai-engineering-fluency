@@ -712,10 +712,17 @@ export class CacheManager {
 			await fs.promises.mkdir(path.dirname(snapshotPath), { recursive: true });
 			await fs.promises.writeFile(tmpPath, JSON.stringify(envelope));
 			await fs.promises.rename(tmpPath, snapshotPath);
-			// Record our own write so we don't redundantly reload it later.
+			// Record our own write so we don't redundantly reload it later. Round DOWN to the
+			// previous integer millisecond so the bookmark never exceeds the mtime of a snapshot
+			// written by another window in the same fs timestamp tick: filesystems with coarse
+			// mtime granularity (e.g. NTFS can report identical mtimes for writes milliseconds
+			// apart) would otherwise let an exactly-equal bookmark suppress a same-tick
+			// republish by another window via loadSharedSnapshotIfChanged()'s `<=` check —
+			// silently discarding that window's newer data. Losing up to 1ms only means we may
+			// re-read our own just-written snapshot once, which merges zero entries.
 			try {
 				const stat = await fs.promises.stat(snapshotPath);
-				this.lastLoadedSnapshotMtime = stat.mtimeMs;
+				this.lastLoadedSnapshotMtime = Math.max(0, stat.mtimeMs - 1);
 			} catch { /* best-effort */ }
 		} catch (error) {
 			this.deps.warn(`Failed to write shared cache snapshot: ${error}`);
