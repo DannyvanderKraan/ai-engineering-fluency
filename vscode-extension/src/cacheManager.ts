@@ -862,6 +862,16 @@ export class CacheManager {
 	 * schema/cache version.
 	 */
 	async readSharedSnapshot(): Promise<Record<string, SessionFileCache> | undefined> {
+		return (await this.readSnapshotWithSeq())?.entries;
+	}
+
+	/**
+	 * Read the shared snapshot body together with the publishSeq embedded in it. Used by the
+	 * stat-tie path to confirm the body matches the sidecar generation before merging — the
+	 * sidecar is written before the body, so on a tie a reader can otherwise see the new seq
+	 * alongside the previous body and bookmark a generation it never actually loaded.
+	 */
+	private async readSnapshotWithSeq(): Promise<{ entries: Record<string, SessionFileCache>; publishSeq: number } | undefined> {
 		const snapshotPath = this.getSharedSnapshotPath();
 		try {
 			const content = await fs.promises.readFile(snapshotPath, 'utf-8');
@@ -874,7 +884,11 @@ export class CacheManager {
 			) {
 				return undefined;
 			}
-			return envelope.entries as Record<string, SessionFileCache>;
+			return {
+				entries: envelope.entries as Record<string, SessionFileCache>,
+				// Bodies written before the marker existed carry no publishSeq; treat as 0.
+				publishSeq: typeof envelope.publishSeq === 'number' ? envelope.publishSeq : 0,
+			};
 		} catch {
 			// Missing or partial/corrupt snapshot — caller falls back to its own data.
 			return undefined;
@@ -924,21 +938,30 @@ export class CacheManager {
 			if (seq <= this.lastLoadedSnapshotPublishSeq) {
 				return 0; // Same (or an older) generation we already loaded.
 			}
-			// A newer generation with a tied stat: reload and merge.
-			const tieEntries = await this.readSharedSnapshot();
-			if (!tieEntries) {
+			// A newer generation with a tied stat: reload, but validate the body actually carries
+			// that generation. The sidecar is written BEFORE the body, so a reader can catch a
+			// publish mid-write — new sidecar seq, previous body. Merging the old body against the
+			// new seq would then let the next poll skip the real publish (seq <= bookmark). When
+			// the body's embedded publishSeq disagrees with the sidecar, leave the bookmark
+			// untouched so a later poll retries once the body catches up.
+			const loaded = await this.readSnapshotWithSeq();
+			if (!loaded) {
 				return 0; // Unreadable/incompatible — leave the bookmark; a valid rewrite will advance the stat.
 			}
-			return this.mergeAndBookmark(tieEntries, mtimeMs, size, seq, loadStartedAt);
+			if (loaded.publishSeq !== seq) {
+				return 0; // Mid-write: sidecar and body generations disagree. Retry next poll.
+			}
+			return this.mergeAndBookmark(loaded.entries, mtimeMs, size, seq, loadStartedAt);
 		}
-		// Newer mtime, or same tick with a different size: reload.
-		const entries = await this.readSharedSnapshot();
-		if (!entries) {
+		// Newer mtime, or same tick with a different size: reload. The mtime advanced, so this is
+		// not the same-tick case the sidecar ordering affects; bookmark the body's own generation.
+		const loaded = await this.readSnapshotWithSeq();
+		if (!loaded) {
 			// Remember the identity so we don't repeatedly retry an incompatible snapshot.
 			this.bookmarkLoadedSnapshot(mtimeMs, size, this.lastLoadedSnapshotPublishSeq);
 			return 0;
 		}
-		return this.mergeAndBookmark(entries, mtimeMs, size, await this.readSnapshotPublishSeq(), loadStartedAt);
+		return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt);
 	}
 
 	/**
