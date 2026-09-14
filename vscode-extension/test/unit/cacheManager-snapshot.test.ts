@@ -798,6 +798,46 @@ test('loadSharedSnapshotIfChanged() retries instead of bookmarking when the side
 	assert.equal(reader.cache.get('/a.json')?.mtime, 5000);
 });
 
+// Migration hazard the reviewer flagged: a pre-sidecar window (old extension version) can
+// republish the schema-1 body WITHOUT touching the sidecar. The body still carries a publishSeq
+// (the field predates the sidecar), so on a same-mtime/same-size tie a reader that trusts only
+// the sidecar would see a stale seq and skip the legacy update forever. When the body's embedded
+// publishSeq is HIGHER than the sidecar's, the body is newer than the sidecar knows — trust it.
+test('loadSharedSnapshotIfChanged() trusts a body whose embedded publishSeq is ahead of the sidecar (legacy pre-sidecar writer)', async () => {
+	const dir = tmpDir();
+	const writer = makeManager(dir);
+	writer.setCachedSessionData('/a.json', entry(1000), 10);
+	await writer.writeSharedSnapshot(); // body + sidecar at generation 1
+
+	const reader = makeManager(dir);
+	await reader.loadSharedSnapshotIfChanged();
+	assert.equal((reader as any).lastLoadedSnapshotPublishSeq, 1, 'reader is at generation 1');
+	reader.cache.delete('/a.json');
+
+	// A legacy (pre-sidecar) writer republishes the body with a HIGHER publishSeq but does NOT
+	// bump the sidecar. Keep the JSON length identical (entry mtime 1000 -> 5000, same digit
+	// count) and pin the mtime to the reader's bookmark, so the stat ties and only the body
+	// reveals the update.
+	const snapshotPath = reader.getSharedSnapshotPath();
+	const seqPath = (reader as any).getSnapshotSeqPath();
+	const body = JSON.parse(await fs.promises.readFile(snapshotPath, 'utf-8'));
+	body.publishSeq = 5; // legacy writer bumps the body generation only
+	body.entries['/a.json'] = entry(5000); // 1000 -> 5000: same digit count, same size
+	await fs.promises.writeFile(snapshotPath, JSON.stringify(body));
+	// Sidecar still says 1 (legacy writer never touched it). Pin the body to the reader's mtime.
+	const bookmarkMtime = (reader as any).lastLoadedSnapshotMtime;
+	const statPre = await fs.promises.stat(snapshotPath);
+	await fs.promises.utimes(snapshotPath, statPre.atimeMs / 1000, bookmarkMtime / 1000);
+	const statAfter = await fs.promises.stat(snapshotPath);
+	(reader as any).lastLoadedSnapshotMtime = statAfter.mtimeMs; // exact mtime tie
+	assert.equal(statAfter.size, (reader as any).lastLoadedSnapshotSize, 'test setup: full stat tie (mtime and size)');
+	assert.equal((await fs.promises.readFile(seqPath, 'utf-8')).trim(), '1', 'test setup: the legacy writer left the sidecar at 1');
+
+	const merged = await reader.loadSharedSnapshotIfChanged();
+	assert.equal(merged, 1, 'a body whose embedded publishSeq is ahead of the sidecar must be merged — a legacy pre-sidecar writer');
+	assert.equal(reader.cache.get('/a.json')?.mtime, 5000);
+});
+
 // Distinct from the "clears a stale tombstone when accepting a NEWER entry" test above: this
 // covers mergeSnapshotEntries()'s own comparison, not just the end-to-end save-after-merge
 // behavior. A tombstoned path has no `existing` in-memory entry to compare against (it was

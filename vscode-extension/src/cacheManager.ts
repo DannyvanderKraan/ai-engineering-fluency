@@ -967,31 +967,7 @@ export class CacheManager {
 			return 0; // Strictly older than what we loaded.
 		}
 		if (mtimeMs === this.lastLoadedSnapshotMtime && size === this.lastLoadedSnapshotSize) {
-			// Full stat tie (the idle case on coarse-mtime filesystems). Compare the cheap
-			// sidecar generation; an unchanged snapshot matches and is skipped without touching
-			// the snapshot body. An UNREADABLE sidecar (undefined, not 0) is unknown, not
-			// "unchanged" — read the body and reconcile from its embedded publishSeq rather than
-			// risk skipping a publish.
-			const seq = await this.readSnapshotPublishSeq();
-			if (seq !== undefined && seq <= this.lastLoadedSnapshotPublishSeq) {
-				return 0; // Same (or an older) generation we already loaded.
-			}
-			// A newer generation (or an unreadable sidecar) with a tied stat: reload, but validate
-			// the body actually carries that generation. The sidecar is written BEFORE the body,
-			// so a reader can catch a publish mid-write — new sidecar seq, previous body. Merging
-			// the old body against the new seq would then let the next poll skip the real publish
-			// (seq <= bookmark). When the sidecar is readable and disagrees with the body's
-			// embedded publishSeq, leave the bookmark untouched so a later poll retries once the
-			// body catches up. When the sidecar is UNREADABLE (undefined), reconcile from the
-			// body itself: merge and bookmark the body's own generation.
-			const loaded = await this.readSnapshotWithSeq();
-			if (!loaded) {
-				return 0; // Unreadable/incompatible — leave the bookmark; a valid rewrite will advance the stat.
-			}
-			if (seq !== undefined && loaded.publishSeq !== seq) {
-				return 0; // Mid-write: sidecar and body generations disagree. Retry next poll.
-			}
-			return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt);
+			return this.loadOnStatTie(mtimeMs, size, loadStartedAt);
 		}
 		// Newer mtime, or same tick with a different size: reload. The mtime advanced, so this is
 		// not the same-tick case the sidecar ordering affects; bookmark the body's own generation.
@@ -1000,6 +976,42 @@ export class CacheManager {
 			// Remember the identity so we don't repeatedly retry an incompatible snapshot.
 			this.bookmarkLoadedSnapshot(mtimeMs, size, this.lastLoadedSnapshotPublishSeq);
 			return 0;
+		}
+		return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt);
+	}
+
+	/**
+	 * Handle a full stat tie (same mtime AND size): decide via the publish generation whether
+	 * the snapshot changed. An unchanged snapshot is skipped using only the cheap sidecar read;
+	 * a republish (even same-tick, same-size) is detected by its higher generation. The body is
+	 * read only when the sidecar indicates a change OR when a legacy pre-sidecar writer may have
+	 * republished the body (with a higher embedded publishSeq) without touching the sidecar.
+	 */
+	private async loadOnStatTie(mtimeMs: number, size: number, loadStartedAt: number): Promise<number> {
+		const seq = await this.readSnapshotPublishSeq();
+		if (seq !== undefined && seq > this.lastLoadedSnapshotPublishSeq) {
+			// Newer sidecar generation: reload, but validate the body actually carries it (the
+			// sidecar is written before the body, so a mid-write publish shows a new seq with the
+			// previous body — retry next poll rather than bookmark a generation we never loaded).
+			const loaded = await this.readSnapshotWithSeq();
+			if (!loaded) {
+				return 0; // Unreadable/incompatible — leave the bookmark; a valid rewrite will advance the stat.
+			}
+			if (loaded.publishSeq < seq) {
+				return 0; // Mid-write: sidecar ahead of the body. Retry next poll.
+			}
+			return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt);
+		}
+		// Sidecar absent/unreadable or at-or-below our bookmark. A pre-sidecar (legacy) writer can
+		// republish the schema-1 body without touching the sidecar — the body still carries a
+		// publishSeq, and if it is higher than the sidecar's, the body is newer than the sidecar
+		// knows. Read the body and trust its generation in that case.
+		const loaded = await this.readSnapshotWithSeq();
+		if (!loaded) {
+			return 0; // Unreadable/incompatible — leave the bookmark.
+		}
+		if (loaded.publishSeq <= this.lastLoadedSnapshotPublishSeq) {
+			return 0; // Genuinely unchanged (or no newer than what we loaded).
 		}
 		return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt);
 	}
