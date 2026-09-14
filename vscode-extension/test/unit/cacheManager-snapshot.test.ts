@@ -98,7 +98,8 @@ test('writeSharedSnapshot() recovers the publish generation from the snapshot bo
 	await writer.writeSharedSnapshot(); // generation 1
 	const seqPath = (writer as any).getSnapshotSeqPath();
 
-	// Corrupt the sidecar (exists but unparseable) — readSnapshotPublishSeq() returns undefined.
+	// Corrupt the sidecar with a numeric prefix — parseInt('4garbage') === 4, which would bypass
+	// the recovery path and publish a wrong sequence. Strict validation must treat it as unknown.
 	await fs.promises.writeFile(seqPath, 'not-a-number');
 
 	// The next write must continue from the body's generation (1 -> 2), not restart at 1.
@@ -106,6 +107,24 @@ test('writeSharedSnapshot() recovers the publish generation from the snapshot bo
 	await writer.writeSharedSnapshot();
 	const seq = await fs.promises.readFile(seqPath, 'utf-8');
 	assert.equal(seq.trim(), '2', 'an unreadable sidecar must recover the generation from the body, not restart at 1');
+});
+
+// A sidecar whose contents have a numeric prefix (e.g. '4garbage') must be treated as corrupt
+// (undefined -> recover from the body), not parsed as generation 4 via parseInt's prefix matching.
+test('writeSharedSnapshot() treats a numeric-prefix sidecar as corrupt and recovers from the body', async () => {
+	const dir = tmpDir();
+	const writer = makeManager(dir);
+	writer.setCachedSessionData('/a.json', entry(1000), 10);
+	await writer.writeSharedSnapshot(); // generation 1
+	const seqPath = (writer as any).getSnapshotSeqPath();
+
+	// '4garbage' would parseInt to 4 — strictly validating the whole value must reject it.
+	await fs.promises.writeFile(seqPath, '4garbage');
+
+	writer.setCachedSessionData('/b.json', entry(2000), 10);
+	await writer.writeSharedSnapshot();
+	const seq = await fs.promises.readFile(seqPath, 'utf-8');
+	assert.equal(seq.trim(), '2', 'a numeric-prefix sidecar must be treated as corrupt and recovered from the body (1 -> 2), not parsed as 4');
 });
 
 test('loadSharedSnapshotIfChanged merges fresher entries and is idempotent', async () => {

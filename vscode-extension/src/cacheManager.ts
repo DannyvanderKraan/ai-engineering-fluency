@@ -750,8 +750,16 @@ export class CacheManager {
 			}
 			return undefined; // Exists but unreadable — unknown, not zero.
 		}
-		const seq = parseInt(raw.trim(), 10);
-		return Number.isFinite(seq) && seq >= 0 ? seq : undefined;
+		// Validate the ENTIRE trimmed value as a non-negative safe integer. parseInt alone accepts
+		// a numeric prefix (e.g. "4garbage" -> 4), which would bypass the recovery path and let a
+		// writer publish a sequence no greater than a peer's bookmark, causing a same-mtime/
+		// same-size update to be skipped. Treat any non-clean value as unknown (undefined).
+		const trimmed = raw.trim();
+		if (!/^\d+$/.test(trimmed)) {
+			return undefined;
+		}
+		const seq = Number(trimmed);
+		return Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
 	}
 
 	/**
