@@ -127,6 +127,34 @@ test('writeSharedSnapshot() treats a numeric-prefix sidecar as corrupt and recov
 	assert.equal(seq.trim(), '2', 'a numeric-prefix sidecar must be treated as corrupt and recovered from the body (1 -> 2), not parsed as 4');
 });
 
+// A legacy/pre-sidecar writer can leave the body's embedded publishSeq AHEAD of the sidecar. If
+// the next new writer continued from the sidecar alone, it would publish a sequence a peer
+// already bookmarked, and a same-mtime/same-size replacement would be skipped. The writer must
+// continue from the MAX of the readable sidecar and the body's generation.
+test('writeSharedSnapshot() continues from the max of sidecar and body generations (legacy body ahead of sidecar)', async () => {
+	const dir = tmpDir();
+	const writer = makeManager(dir);
+	writer.setCachedSessionData('/a.json', entry(1000), 10);
+	await writer.writeSharedSnapshot(); // generation 1
+
+	// A legacy writer bumps the body's publishSeq to 5 but leaves the sidecar at 1.
+	const snapshotPath = writer.getSharedSnapshotPath();
+	const seqPath = (writer as any).getSnapshotSeqPath();
+	const body = JSON.parse(await fs.promises.readFile(snapshotPath, 'utf-8'));
+	body.publishSeq = 5;
+	await fs.promises.writeFile(snapshotPath, JSON.stringify(body));
+	assert.equal((await fs.promises.readFile(seqPath, 'utf-8')).trim(), '1', 'test setup: sidecar still at 1');
+
+	// The next new write must publish 6 (max(1, 5) + 1), not 2 — so a peer bookmarked at 5 is
+	// still superseded.
+	writer.setCachedSessionData('/b.json', entry(2000), 10);
+	await writer.writeSharedSnapshot();
+	const seq = await fs.promises.readFile(seqPath, 'utf-8');
+	assert.equal(seq.trim(), '6', 'the writer must continue from max(sidecar=1, body=5) = 5, publishing 6');
+	const published = JSON.parse(await fs.promises.readFile(snapshotPath, 'utf-8'));
+	assert.equal(published.publishSeq, 6, 'the published body carries generation 6');
+});
+
 test('loadSharedSnapshotIfChanged merges fresher entries and is idempotent', async () => {
 	const dir = tmpDir();
 	const writer = makeManager(dir);
@@ -339,7 +367,9 @@ test('loadCacheFromStorage() bookmarks the pre-read identity, so a mid-read repu
 	let preReadMtime = 0;
 	const statMock = mock.method(fs.promises, 'stat', async (p: any, opts?: any) => {
 		const s = await realStat.call(fs.promises, p, opts);
-		if (s && typeof p === 'string' && p === snapshotPath && preReadMtime === 0) {
+		// Capture only the reader's pre-republish stat (before the interleave fires); the
+		// republisher's own write is also mocked here and must not overwrite it.
+		if (s && typeof p === 'string' && p === snapshotPath && preReadMtime === 0 && !interleaved) {
 			preReadMtime = Number(s.mtimeMs);
 		}
 		return s;
@@ -814,24 +844,25 @@ test('loadSharedSnapshotIfChanged() trusts a body whose embedded publishSeq is a
 	assert.equal((reader as any).lastLoadedSnapshotPublishSeq, 1, 'reader is at generation 1');
 	reader.cache.delete('/a.json');
 
-	// A legacy (pre-sidecar) writer republishes the body with a HIGHER publishSeq but does NOT
-	// bump the sidecar. Keep the JSON length identical (entry mtime 1000 -> 5000, same digit
-	// count) and pin the mtime to the reader's bookmark, so the stat ties and only the body
-	// reveals the update.
+	// A legacy (pre-sidecar) writer predates the sidecar entirely, so remove it, then republish
+	// the body with a HIGHER publishSeq. Keep the JSON length identical (entry mtime 1000 ->
+	// 5000, same digit count) and pin the mtime to the reader's bookmark, so the stat ties and
+	// only the body reveals the update.
 	const snapshotPath = reader.getSharedSnapshotPath();
 	const seqPath = (reader as any).getSnapshotSeqPath();
+	await fs.promises.unlink(seqPath); // legacy deployment: no sidecar exists
 	const body = JSON.parse(await fs.promises.readFile(snapshotPath, 'utf-8'));
 	body.publishSeq = 5; // legacy writer bumps the body generation only
 	body.entries['/a.json'] = entry(5000); // 1000 -> 5000: same digit count, same size
 	await fs.promises.writeFile(snapshotPath, JSON.stringify(body));
-	// Sidecar still says 1 (legacy writer never touched it). Pin the body to the reader's mtime.
+	// Pin the body to the reader's mtime so the stat ties.
 	const bookmarkMtime = (reader as any).lastLoadedSnapshotMtime;
 	const statPre = await fs.promises.stat(snapshotPath);
 	await fs.promises.utimes(snapshotPath, statPre.atimeMs / 1000, bookmarkMtime / 1000);
 	const statAfter = await fs.promises.stat(snapshotPath);
 	(reader as any).lastLoadedSnapshotMtime = statAfter.mtimeMs; // exact mtime tie
 	assert.equal(statAfter.size, (reader as any).lastLoadedSnapshotSize, 'test setup: full stat tie (mtime and size)');
-	assert.equal((await fs.promises.readFile(seqPath, 'utf-8')).trim(), '1', 'test setup: the legacy writer left the sidecar at 1');
+	assert.ok(!fs.existsSync(seqPath), 'test setup: no sidecar exists in the legacy deployment');
 
 	const merged = await reader.loadSharedSnapshotIfChanged();
 	assert.equal(merged, 1, 'a body whose embedded publishSeq is ahead of the sidecar must be merged — a legacy pre-sidecar writer');

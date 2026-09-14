@@ -780,18 +780,24 @@ export class CacheManager {
 			// Monotonic publish generation, bumped from the sidecar (durable across snapshot
 			// delete/recreate, unlike a value embedded in the snapshot which would restart at 1).
 			// Every publish gets a distinct, cheap identity even when the filesystem reports an
-			// identical mtime and the JSON length is unchanged. Fail closed when the sidecar is
-			// unreadable/corrupt: recovering the generation from the existing snapshot body, or
-			// throwing if neither is available, never restarting at 1 after peers loaded higher.
-			let priorSeq = await this.readSnapshotPublishSeq();
-			if (priorSeq === undefined) {
-				// Sidecar exists but is unreadable/corrupt. Recover the last published generation
-				// from the current snapshot body (which embeds publishSeq) so we continue from it.
-				const existing = await this.readSnapshotWithSeq();
-				priorSeq = existing?.publishSeq;
-			}
-			if (priorSeq === undefined) {
-				throw new Error('Cannot determine the next publish generation: sidecar unreadable and no readable snapshot to recover from');
+			// identical mtime and the JSON length is unchanged. Take the MAX of the readable
+			// sidecar and the body's embedded publishSeq: a legacy/pre-sidecar writer can leave
+			// the body ahead of the sidecar, and continuing from the sidecar alone would publish
+			// a sequence a peer already bookmarked. Fail closed only when the sidecar is
+			// unreadable/corrupt AND no body can be recovered — never restart at 1.
+			const sidecarSeq = await this.readSnapshotPublishSeq();
+			const existing = await this.readSnapshotWithSeq();
+			const bodySeq = existing?.publishSeq ?? 0;
+			let priorSeq: number;
+			if (sidecarSeq === undefined) {
+				// Sidecar exists but is unreadable/corrupt: recover from the body if possible.
+				if (existing === undefined) {
+					throw new Error('Cannot determine the next publish generation: sidecar unreadable and no readable snapshot to recover from');
+				}
+				priorSeq = bodySeq;
+			} else {
+				// Both readable (or sidecar absent=0): never go below the body's generation.
+				priorSeq = Math.max(sidecarSeq, bodySeq);
 			}
 			const publishSeq = priorSeq + 1;
 			const envelope = {
@@ -1002,10 +1008,15 @@ export class CacheManager {
 			}
 			return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt);
 		}
-		// Sidecar absent/unreadable or at-or-below our bookmark. A pre-sidecar (legacy) writer can
-		// republish the schema-1 body without touching the sidecar — the body still carries a
-		// publishSeq, and if it is higher than the sidecar's, the body is newer than the sidecar
-		// knows. Read the body and trust its generation in that case.
+		// Sidecar is valid and no newer than our bookmark: the unchanged idle case. Skip WITHOUT
+		// re-reading the body — this is the cheap fast path the sidecar exists for.
+		if (seq !== undefined && seq > 0) {
+			return 0;
+		}
+		// No usable sidecar (absent, or unreadable). Either a fresh/legacy snapshot that predates
+		// the sidecar, or a legacy pre-sidecar writer that republished the body without touching
+		// it — the body still carries a publishSeq, and if it is higher than our bookmark the
+		// body is newer than the sidecar knows. Only here do we read the body to reconcile.
 		const loaded = await this.readSnapshotWithSeq();
 		if (!loaded) {
 			return 0; // Unreadable/incompatible — leave the bookmark.
