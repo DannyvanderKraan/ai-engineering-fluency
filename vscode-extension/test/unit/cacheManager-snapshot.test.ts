@@ -370,6 +370,37 @@ test('deleteSharedSnapshot: removes the snapshot file', async () => {
 	assert.equal(fs.existsSync(m.getSharedSnapshotPath()), false, 'snapshot should be removed');
 });
 
+// The publish generation lives in a sidecar that deleteSharedSnapshot() deliberately keeps, so a
+// recreated snapshot continues the sequence instead of restarting at 1. Otherwise a window that
+// already loaded generation N would see the recreated file's generation restart below N and skip
+// it (publishSeq <= N) on a same-mtime/same-size recreate. This covers clear-in-one-window while
+// another polls.
+test('deleteSharedSnapshot: a recreated snapshot continues the publish generation, so a polling window still picks it up', async () => {
+	const dir = tmpDir();
+	const clearer = makeManager(dir);
+	clearer.setCachedSessionData('/a.json', entry(1000), 10);
+	await clearer.writeSharedSnapshot(); // generation 1
+
+	// A polling window loads generation 1.
+	const poller = makeManager(dir);
+	await poller.loadCacheFromStorage();
+	assert.equal((poller as any).lastLoadedSnapshotPublishSeq, 1, 'poller loaded generation 1');
+
+	// The clearer deletes the snapshot (clearCache) and a window recreates it with new content.
+	await clearer.deleteSharedSnapshot();
+	const recreator = makeManager(dir);
+	recreator.setCachedSessionData('/a.json', entry(5000), 10);
+	await recreator.writeSharedSnapshot(); // must be generation 2, not a restart at 1
+
+	assert.equal((recreator as any).lastLoadedSnapshotPublishSeq, 2,
+		'the recreated snapshot must continue the generation, not restart at 1 (the sidecar survives delete)');
+
+	// The polling window detects and merges the recreated snapshot despite the delete/recreate.
+	const merged = await poller.loadSharedSnapshotIfChanged();
+	assert.equal(merged, 1, 'a recreated snapshot must be picked up by a window that loaded the pre-delete generation');
+	assert.equal(poller.cache.get('/a.json')?.mtime, 5000);
+});
+
 test('deleteSharedSnapshot: is a no-op when snapshot does not exist', async () => {
 	const dir = tmpDir();
 	const m = makeManager(dir);
