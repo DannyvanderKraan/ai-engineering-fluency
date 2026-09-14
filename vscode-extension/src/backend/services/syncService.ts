@@ -1236,13 +1236,15 @@ return true;
 			editorTypeByFile: Map<string, string>;
 		}
 	): Promise<void> {
-		const fileMtimeMs = await this.statSessionFileForRollup(sessionFile, ctx);
-		if (fileMtimeMs === undefined) { return; }
-		// Always classify the editor type once for the blob-upload map, even when
-		// the rollup itself doesn't use the editor dimension.  This avoids a
-		// second full classification pass in performBlobUploadIfNeeded.
+		// Classify the editor type before the lookback filter so that every
+		// discovered file — including ones older than the lookback window —
+		// gets an entry in the blob-upload map.  The upload list is the full
+		// discovery list, not just files within the lookback.
 		const editorForFile = this.getEditorForFile(sessionFile, true);
 		if (editorForFile) { ctx.editorTypeByFile.set(sessionFile, editorForFile); }
+
+		const fileMtimeMs = await this.statSessionFileForRollup(sessionFile, ctx);
+		if (fileMtimeMs === undefined) { return; }
 		const editorForRollup = ctx.includeEditorDimension ? editorForFile : undefined;
 		if (this.isVSSessionFileType(sessionFile)) { ctx.progress.filesSkipped++; return; }
 		const sessionArgs = this.makeSessionRollupArgs(ctx.machineId, ctx.userId, editorForRollup, ctx.workspaceNamesById, ctx.rollups, ctx.startMs);
