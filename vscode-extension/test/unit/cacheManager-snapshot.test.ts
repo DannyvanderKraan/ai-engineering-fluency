@@ -271,18 +271,36 @@ test('loadCacheFromStorage() bookmarks the pre-read identity, so a mid-read repu
 
 	// Interleave a republish between the pre-read stat and the readFile inside
 	// loadCacheFromStorage(): the first readFile of the snapshot triggers a republish with a
-	// NEWER entry that keeps the JSON length identical (mtime 1000 -> 5000, same digit count).
+	// NEWER entry that keeps the JSON length identical (mtime 1000 -> 5000, same digit count),
+	// then pins the republished file's mtime back to the reader's pre-read value — the
+	// coarse-mtime tie. With the stat fields identical, ONLY the publish generation can reveal
+	// the republish; a post-read-stat implementation would have bookmarked the new identity and
+	// the next load would wrongly skip it.
 	const republisher = makeManager(dir);
 	republisher.setCachedSessionData('/a.json', entry(5000), 10);
 	const realReadFile = fs.promises.readFile;
+	const realStat = fs.promises.stat;
+	// The snapshot's true pre-read mtime — captured when the reader stats it inside
+	// loadCacheFromStorage(), before the republish fires.
+	let preReadMtime = 0;
+	const statMock = mock.method(fs.promises, 'stat', async (p: any, opts?: any) => {
+		const s = await realStat.call(fs.promises, p, opts);
+		if (s && typeof p === 'string' && p === snapshotPath && preReadMtime === 0) {
+			preReadMtime = Number(s.mtimeMs);
+		}
+		return s;
+	});
 	let interleaved = false;
 	const readFileMock = mock.method(fs.promises, 'readFile', async (p: any, opts?: any) => {
 		const content = await realReadFile.call(fs.promises, p, opts);
 		if (!interleaved && typeof p === 'string' && p === snapshotPath) {
 			interleaved = true;
 			// The reader has already stat()'d (pre-read). Republish now, before returning the
-			// OLD bytes the reader is about to parse — the mid-read window.
+			// OLD bytes the reader is about to parse — the mid-read window — and pin the
+			// republish's mtime to the pre-read value so the stat tie is exercised.
 			await republisher.writeSharedSnapshot();
+			const cur = await realStat.call(fs.promises, snapshotPath);
+			await fs.promises.utimes(snapshotPath, Number(cur?.atimeMs ?? Date.now()) / 1000, preReadMtime / 1000);
 		}
 		return content;
 	});
@@ -291,12 +309,20 @@ test('loadCacheFromStorage() bookmarks the pre-read identity, so a mid-read repu
 		await reader.loadCacheFromStorage();
 	} finally {
 		readFileMock.mock.restore();
+		statMock.mock.restore();
 	}
 
 	assert.ok(interleaved, 'test setup: the republish must be interleaved into the startup read');
-	// The reader loaded the OLD bytes (mtime 1000) but the on-disk file is now the republish
-	// (publishSeq advanced). The next guarded load must detect and merge it.
+	assert.ok(preReadMtime > 0, 'test setup: the pre-read mtime must be captured');
+	// The reader loaded the OLD bytes (mtime 1000); the on-disk file is now the republish. Pin
+	// the republish's mtime to the pre-read value (utimes quantizes ~0.5 µs), then re-stat and
+	// align the reader's mtime bookmark to the produced value so the stat tie is EXACT — only
+	// the publish generation can now reveal the republish.
 	assert.equal(reader.cache.get('/a.json')?.mtime, 1000, 'startup loaded the pre-republish bytes');
+	const afterPin = await fs.promises.stat(snapshotPath);
+	(reader as any).lastLoadedSnapshotMtime = afterPin.mtimeMs; // exact mtime tie
+	const onDisk = await fs.promises.stat(snapshotPath);
+	assert.equal(onDisk.size, (reader as any).lastLoadedSnapshotSize, 'test setup: the republish must keep the same size (stat tie)');
 	const merged = await reader.loadSharedSnapshotIfChanged();
 	assert.equal(merged, 1, 'a mid-read republish must be picked up — a post-read bookmark would have suppressed it');
 	assert.equal(reader.cache.get('/a.json')?.mtime, 5000);

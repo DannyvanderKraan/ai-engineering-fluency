@@ -577,14 +577,12 @@ export class CacheManager {
 			// Load from the shared on-disk snapshot (globalStorageUri).
 			const snapshotPath = this.getSharedSnapshotPath();
 			try {
-				// Capture the file identity (mtime + size) BEFORE reading. Bookmarking exactly
-				// this observed version is race-safe: if another window republishes between this
-				// stat and the read below, the post-read identity differs from what we bookmark,
-				// so loadSharedSnapshotIfChanged() still detects and loads the newer snapshot on
-				// the next refresh. Statting AFTER the read instead would bookmark the newer
+				// Capture the file identity (mtime + size) BEFORE reading. Bookmarking this
+				// observed version is race-safe: a republish between this stat and the read below
+				// changes the post-read identity, so loadSharedSnapshotIfChanged() still detects
+				// and loads it next refresh. Statting AFTER the read would bookmark the newer
 				// file while sessionFileCache still holds the older bytes — permanently skipping
-				// the update (a same-tick publish could even share the mtime, with only the size
-				// differing, which a post-read stat would still wrongly capture).
+				// the update (a same-tick publish could share the mtime, differing only in size).
 				let loadedMtime = 0;
 				let loadedSize = -1;
 				try {
@@ -622,13 +620,17 @@ export class CacheManager {
 				);
 				this.deps.log(`Loaded ${this.sessionFileCache.size} cached session files from disk snapshot (${cacheId}) in ${Date.now() - loadStartedAt}ms`);
 
-				// Record the pre-read snapshot identity (mtime + size + publish generation) so
-				// loadSharedSnapshotIfChanged won't reload it redundantly (see that method's
-				// guard for why the generation is paired in). The generation comes from the
-				// sidecar, which is durable across snapshot delete/recreate.
+				// Record the identity of the snapshot version ACTUALLY loaded. The mtime+size are
+				// captured pre-read (a post-read stat could race a mid-read republish and bookmark
+				// a newer file while sessionFileCache holds older bytes). The generation must come
+				// from the parsed envelope — the bytes actually loaded — NOT from a separate
+				// sidecar read: a republish that bumps the sidecar inside the read window would
+				// otherwise bookmark the newer generation against the older parsed bytes, and a
+				// same-mtime/same-size republish would then be skipped permanently.
 				this.lastLoadedSnapshotMtime = loadedMtime;
 				this.lastLoadedSnapshotSize = loadedSize;
-				this.lastLoadedSnapshotPublishSeq = await this.readSnapshotPublishSeq();
+				this.lastLoadedSnapshotPublishSeq =
+					typeof envelope.publishSeq === 'number' ? envelope.publishSeq : 0;
 
 			} catch (readErr: unknown) {
 				if ((readErr as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -771,14 +773,16 @@ export class CacheManager {
 			};
 			const body = JSON.stringify(envelope);
 			await fs.promises.mkdir(path.dirname(snapshotPath), { recursive: true });
+			// Bump the sidecar generation BEFORE the snapshot body, and fail the whole write if it
+			// can't be persisted. Ordering sidecar-first means a reader can at worst see a seq
+			// ahead of the body it points at (a harmless extra reload), and never a visible new
+			// body with a stale/old seq — which a same-mtime/same-size peer would skip
+			// permanently. A swallowed sidecar failure would be exactly that missed-update case,
+			// so this throws into the catch below rather than publishing a generation-less body.
+			await fs.promises.writeFile(tmpSeqPath, String(publishSeq));
+			await fs.promises.rename(tmpSeqPath, seqPath);
 			await fs.promises.writeFile(tmpPath, body);
 			await fs.promises.rename(tmpPath, snapshotPath);
-			// Bump the sidecar generation after the snapshot so a reader never sees a seq ahead
-			// of the snapshot it points at (a stale-low seq just means an extra reload).
-			try {
-				await fs.promises.writeFile(tmpSeqPath, String(publishSeq));
-				await fs.promises.rename(tmpSeqPath, seqPath);
-			} catch { /* best-effort — a missing/stale seq only costs an extra reload */ }
 			// Record our own write (mtime + size + publish generation) so we don't redundantly
 			// reload it later. See loadSharedSnapshotIfChanged()'s guard for why these are paired.
 			try {
