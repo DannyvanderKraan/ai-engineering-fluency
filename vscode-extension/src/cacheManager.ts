@@ -867,28 +867,29 @@ export class CacheManager {
 		if (mtimeMs < this.lastLoadedSnapshotMtime) {
 			return 0; // Strictly older than what we loaded.
 		}
-		if (mtimeMs === this.lastLoadedSnapshotMtime) {
-			if (size !== this.lastLoadedSnapshotSize) {
-				// Same tick, different content size -> a real republish. Reload.
-			} else if (this.lastLoadedSnapshotDigest === '') {
+		if (mtimeMs === this.lastLoadedSnapshotMtime && size === this.lastLoadedSnapshotSize) {
+			if (this.lastLoadedSnapshotDigest === '') {
 				return 0; // Nothing loaded yet to compare against — treat as unchanged.
-			} else {
-				// Full stat tie: only a content digest can distinguish a byte-identical republish
-				// (skip) from a same-size content change (reload). Read + hash the file.
-				const content = await fs.promises.readFile(snapshotPath);
-				const digest = crypto.createHash('sha256').update(content).digest('hex');
-				if (digest === this.lastLoadedSnapshotDigest) {
-					return 0; // Byte-identical to what we loaded.
-				}
-				const entries = this.parseSnapshotContent(content.toString('utf-8'));
-				if (!entries) {
-					this.bookmarkLoadedSnapshot(mtimeMs, size, digest);
-					return 0;
-				}
-				return this.mergeAndBookmark(entries, mtimeMs, size, digest, loadStartedAt);
 			}
+			// Full stat tie: only a content digest can distinguish a byte-identical republish
+			// (skip) from a same-size content change (reload). Hash what we actually read.
+			const tieContent = await fs.promises.readFile(snapshotPath);
+			const tieDigest = crypto.createHash('sha256').update(tieContent).digest('hex');
+			if (tieDigest === this.lastLoadedSnapshotDigest) {
+				return 0; // Byte-identical to what we loaded.
+			}
+			// Bookmark the bytes we just hashed (not the pre-read stat, which may have raced a
+			// concurrent rewrite) so a later refresh re-detects a version we did not load.
+			const tieEntries = this.parseSnapshotContent(tieContent.toString('utf-8'));
+			if (!tieEntries) {
+				this.bookmarkLoadedSnapshot(mtimeMs, size, tieDigest);
+				return 0;
+			}
+			return this.mergeAndBookmark(tieEntries, mtimeMs, size, tieDigest, loadStartedAt);
 		}
-		// Newer mtime (or same tick with a different size): reload.
+		// Newer mtime, or same tick with a different size: reload. Read once and derive the
+		// bookmark from the bytes actually read, so a concurrent rewrite mid-read can't leave us
+		// bookmarking a version we never loaded.
 		const content = await fs.promises.readFile(snapshotPath);
 		const digest = crypto.createHash('sha256').update(content).digest('hex');
 		const entries = this.parseSnapshotContent(content.toString('utf-8'));
