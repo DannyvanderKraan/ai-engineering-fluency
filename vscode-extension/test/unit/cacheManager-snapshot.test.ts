@@ -252,6 +252,51 @@ test('loadCacheFromStorage: loads entries from existing snapshot', async () => {
 		'should log load duration');
 });
 
+// Regression test for the startup TOCTOU the reviewer flagged: loadCacheFromStorage() used to
+// readFile() the snapshot and only then stat() it, so a same-tick republish landing between the
+// two got bookmarked with the NEWER file's mtime+size while sessionFileCache still held the OLDER
+// bytes — and the next loadSharedSnapshotIfChanged() would see the matching bookmark and skip the
+// update permanently. Bookmarking the identity captured BEFORE the read keeps the newer snapshot
+// detectable. This test drives the real code path (no manual bookmark seeding): it forces the
+// republished snapshot onto the reader's startup-bookmarked mtime and relies on the size
+// difference to prove the reload still happens.
+test('loadCacheFromStorage() bookmarks the pre-read identity, so a same-tick republish after startup is still picked up', async () => {
+	const dir = tmpDir();
+	const writer = makeManager(dir);
+	writer.setCachedSessionData('/a.json', entry(1000), 10);
+	await writer.writeSharedSnapshot();
+
+	const reader = makeManager(dir);
+	await reader.loadCacheFromStorage();
+	assert.equal(reader.cache.get('/a.json')?.mtime, 1000, 'startup loads the published entry');
+	// The startup bookmark must equal the snapshot's on-disk identity (captured before the read).
+	const startupMtime = (reader as any).lastLoadedSnapshotMtime;
+	const startupSize = (reader as any).lastLoadedSnapshotSize;
+	const onDisk = await fs.promises.stat(reader.getSharedSnapshotPath());
+	assert.equal(startupMtime, onDisk.mtimeMs, 'startup bookmarks the snapshot mtime it actually loaded');
+	assert.equal(startupSize, onDisk.size, 'startup bookmarks the snapshot size it actually loaded');
+
+	// Another window republishes NEWER entries with different content (extra entry -> different
+	// size), then we force the snapshot's mtime onto the startup-bookmarked tick and align the
+	// bookmark to the value utimes actually produced (NTFS quantizes ~0.5 µs), making the mtime
+	// tie exact. The size differs, so the mtime+size guard must still reload it.
+	const republisher = makeManager(dir);
+	republisher.setCachedSessionData('/a.json', entry(5000), 10);
+	republisher.setCachedSessionData('/b.json', entry(5000), 10); // extra entry -> different size
+	await republisher.writeSharedSnapshot();
+	const snapshotPath = reader.getSharedSnapshotPath();
+	const statBefore = await fs.promises.stat(snapshotPath);
+	await fs.promises.utimes(snapshotPath, statBefore.atimeMs / 1000, startupMtime / 1000);
+	const republishStat = await fs.promises.stat(snapshotPath);
+	(reader as any).lastLoadedSnapshotMtime = republishStat.mtimeMs; // exact tie
+	assert.notEqual(republishStat.size, startupSize, 'test setup: the republish must differ in size');
+
+	const merged = await reader.loadSharedSnapshotIfChanged();
+	assert.equal(merged, 2, 'a same-tick republish after startup must be picked up — a post-read bookmark would have suppressed it');
+	assert.equal(reader.cache.get('/a.json')?.mtime, 5000);
+	assert.equal(reader.cache.get('/b.json')?.mtime, 5000);
+});
+
 test('loadCacheFromStorage: starts with empty cache when no snapshot exists', async () => {
 	const dir = tmpDir();
 	const m = makeManager(dir);

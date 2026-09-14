@@ -572,6 +572,21 @@ export class CacheManager {
 			// Load from the shared on-disk snapshot (globalStorageUri).
 			const snapshotPath = this.getSharedSnapshotPath();
 			try {
+				// Capture the file identity (mtime + size) BEFORE reading. Bookmarking exactly
+				// this observed version is race-safe: if another window republishes between this
+				// stat and the read below, the post-read identity differs from what we bookmark,
+				// so loadSharedSnapshotIfChanged() still detects and loads the newer snapshot on
+				// the next refresh. Statting AFTER the read instead would bookmark the newer
+				// file while sessionFileCache still holds the older bytes — permanently skipping
+				// the update (a same-tick publish could even share the mtime, with only the size
+				// differing, which a post-read stat would still wrongly capture).
+				let loadedMtime = 0;
+				let loadedSize = -1;
+				try {
+					const preStat = await fs.promises.stat(snapshotPath);
+					loadedMtime = preStat.mtimeMs;
+					loadedSize = preStat.size;
+				} catch { /* fall through — readFile will surface ENOENT below */ }
 				const content = await fs.promises.readFile(snapshotPath, 'utf-8');
 				const envelope = JSON.parse(content);
 
@@ -602,13 +617,10 @@ export class CacheManager {
 				);
 				this.deps.log(`Loaded ${this.sessionFileCache.size} cached session files from disk snapshot (${cacheId}) in ${Date.now() - loadStartedAt}ms`);
 
-				// Record the snapshot mtime and size so loadSharedSnapshotIfChanged won't
+				// Record the pre-read snapshot identity so loadSharedSnapshotIfChanged won't
 				// reload it redundantly (see that method's guard for why size is paired in).
-				try {
-					const stat = await fs.promises.stat(snapshotPath);
-					this.lastLoadedSnapshotMtime = stat.mtimeMs;
-					this.lastLoadedSnapshotSize = stat.size;
-				} catch { /* best-effort */ }
+				this.lastLoadedSnapshotMtime = loadedMtime;
+				this.lastLoadedSnapshotSize = loadedSize;
 
 			} catch (readErr: unknown) {
 				if ((readErr as NodeJS.ErrnoException).code === 'ENOENT') {
