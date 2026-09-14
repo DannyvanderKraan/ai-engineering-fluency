@@ -483,6 +483,44 @@ test('loadSharedSnapshotIfChanged() clears a stale tombstone when accepting a ne
 	assert.equal(entries!['/a.json'].mtime, 5000);
 });
 
+// Regression test for the Windows CI flake: when window B republishes the snapshot within the
+// same filesystem timestamp tick as window A's last write (coarse mtime granularity — NTFS can
+// report identical mtimes for writes milliseconds apart), the file mtime does not advance past
+// the exact value window A bookmarked for its own write, and the
+// `mtimeMs <= lastLoadedSnapshotMtime` guard then suppresses B's publish. The bookmark is
+// therefore rounded down one tick (bookmarkLoadedSnapshotMtime). Here we FORCE the tie with
+// fs.utimes instead of hoping the runner's clock resolution cooperates.
+test('loadSharedSnapshotIfChanged() picks up a same-tick republish from another window (identical file mtime)', async () => {
+	const dir = tmpDir();
+	const windowA = makeManager(dir);
+	windowA.setCachedSessionData('/a.json', entry(1000), 10);
+	await windowA.writeSharedSnapshot();
+	// Record window A's exact write mtime (what a pre-fix exact-mtime bookmark would hold),
+	// independent of whether the production bookmark rounds down.
+	const snapshotPath = windowA.getSharedSnapshotPath();
+	const exactWriteMtimeMs = (await fs.promises.stat(snapshotPath)).mtimeMs;
+	windowA.deleteCachedSessionData('/a.json');
+
+	const windowB = makeManager(dir);
+	windowB.setCachedSessionData('/a.json', entry(5000), 10);
+	await windowB.writeSharedSnapshot();
+
+	// Simulate the coarse-timestamp tie: pin window B's snapshot just below window A's exact
+	// write mtime. NTFS utimes quantizes to ~0.5 µs (max observed overshoot < 0.001 ms) around
+	// the target, so aim 0.002 ms below the exact write mtime: the result stays at-or-below the
+	// value a pre-fix bookmark would hold (so a pre-fix `<=` guard skips the reload) yet
+	// comfortably above the post-fix production bookmark one full millisecond lower.
+	const statBefore = await fs.promises.stat(snapshotPath);
+	await fs.promises.utimes(snapshotPath, statBefore.atimeMs / 1000, (exactWriteMtimeMs - 0.002) / 1000);
+	const statAfter = await fs.promises.stat(snapshotPath);
+	assert.ok(statAfter.mtimeMs <= exactWriteMtimeMs && statAfter.mtimeMs > exactWriteMtimeMs - 1,
+		`test setup: same-tick republish must stay within window A's write tick (got ${statAfter.mtimeMs}, write mtime ${exactWriteMtimeMs})`);
+
+	const merged = await windowA.loadSharedSnapshotIfChanged();
+	assert.equal(merged, 1, 'a same-tick republish must still be merged — an exact-mtime bookmark would suppress it');
+	assert.equal(windowA.cache.get('/a.json')?.mtime, 5000);
+});
+
 // Distinct from the "clears a stale tombstone when accepting a NEWER entry" test above: this
 // covers mergeSnapshotEntries()'s own comparison, not just the end-to-end save-after-merge
 // behavior. A tombstoned path has no `existing` in-memory entry to compare against (it was
