@@ -596,6 +596,45 @@ test('loadSharedSnapshotIfChanged() skips an unchanged snapshot (same mtime and 
 	assert.equal(reader.cache.get('/a.json')?.mtime, 9000, 'a skipped reload must not clobber newer in-memory data');
 });
 
+// The exact loophole the reviewer flagged: a same-tick republish can change content WITHOUT
+// changing the JSON length (here /a.json's mtime goes 1000 -> 5000, both four digits, so the
+// serialized envelope is the same size). An mtime+size guard alone would see both stat fields
+// tie and skip the reload, silently losing the newer entry. The content digest distinguishes
+// this from a byte-identical republish.
+test('loadSharedSnapshotIfChanged() picks up a same-tick, same-size republish via the content digest', async () => {
+	const dir = tmpDir();
+	const writer = makeManager(dir);
+	writer.setCachedSessionData('/a.json', entry(1000), 10);
+	await writer.writeSharedSnapshot();
+
+	const reader = makeManager(dir);
+	const first = await reader.loadSharedSnapshotIfChanged();
+	assert.equal(first, 1, 'the first load merges the published entry');
+	reader.cache.delete('/a.json'); // simulate the entry being dropped locally
+
+	// Republish the SAME path with a value that keeps the JSON length identical (1000 -> 5000:
+	// same digit count), so mtime+size alone cannot tell the republish apart.
+	const republisher = makeManager(dir);
+	republisher.setCachedSessionData('/a.json', entry(5000), 10);
+	await republisher.writeSharedSnapshot();
+	const snapshotPath = reader.getSharedSnapshotPath();
+	const sizeBefore = (await fs.promises.stat(snapshotPath)).size;
+
+	// Force the full stat tie: pin the republish's mtime to the reader's bookmarked value. Size
+	// already matches. Only the content digest can now detect the change.
+	const bookmarkMtime = (reader as any).lastLoadedSnapshotMtime;
+	const statPre = await fs.promises.stat(snapshotPath);
+	await fs.promises.utimes(snapshotPath, statPre.atimeMs / 1000, bookmarkMtime / 1000);
+	const statAfter = await fs.promises.stat(snapshotPath);
+	(reader as any).lastLoadedSnapshotMtime = statAfter.mtimeMs; // exact mtime tie
+	assert.equal(statAfter.size, sizeBefore, 'test setup: the republish must keep the same size');
+	assert.equal(statAfter.size, (reader as any).lastLoadedSnapshotSize, 'test setup: full stat tie (mtime and size)');
+
+	const merged = await reader.loadSharedSnapshotIfChanged();
+	assert.equal(merged, 1, 'a same-size, same-tick republish must be detected via the content digest — mtime+size alone would skip it');
+	assert.equal(reader.cache.get('/a.json')?.mtime, 5000);
+});
+
 // Distinct from the "clears a stale tombstone when accepting a NEWER entry" test above: this
 // covers mergeSnapshotEntries()'s own comparison, not just the end-to-end save-after-merge
 // behavior. A tombstoned path has no `existing` in-memory entry to compare against (it was

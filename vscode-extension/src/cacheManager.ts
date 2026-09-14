@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import type { SessionFileCache } from '../../src/types';
 import { type CachePolicy, VsCodeCachePolicy } from '../../src/cachePolicy';
@@ -52,6 +53,12 @@ export class CacheManager {
 	// -> skip, no re-parse) from a same-tick republish with different content (same mtime but
 	// different size -> reload). See loadSharedSnapshotIfChanged()'s guard comment.
 	private lastLoadedSnapshotSize = -1;
+	// SHA-256 digest of the snapshot content actually loaded. mtime+size can tie even when the
+	// content changed (a same-tick republish that alters a value without changing the JSON
+	// length — e.g. an entry mtime from 1000 to 5000), so when both stat fields tie we fall back
+	// to this content digest: a same-size content change produces a different digest and is
+	// reloaded, while a byte-identical republish matches and is safely skipped.
+	private lastLoadedSnapshotDigest = '';
 	// Checkpoint tracking
 	private lastCheckpointTime = 0;
 	private entriesSinceLastCheckpoint = 0;
@@ -617,10 +624,12 @@ export class CacheManager {
 				);
 				this.deps.log(`Loaded ${this.sessionFileCache.size} cached session files from disk snapshot (${cacheId}) in ${Date.now() - loadStartedAt}ms`);
 
-				// Record the pre-read snapshot identity so loadSharedSnapshotIfChanged won't
-				// reload it redundantly (see that method's guard for why size is paired in).
+				// Record the pre-read snapshot identity (mtime + size + content digest) so
+				// loadSharedSnapshotIfChanged won't reload it redundantly (see that method's
+				// guard for why the digest is paired in).
 				this.lastLoadedSnapshotMtime = loadedMtime;
 				this.lastLoadedSnapshotSize = loadedSize;
+				this.lastLoadedSnapshotDigest = crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
 
 			} catch (readErr: unknown) {
 				if ((readErr as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -728,15 +737,17 @@ export class CacheManager {
 				entryCount: Object.keys(entries).length,
 				entries,
 			};
+			const body = JSON.stringify(envelope);
 			await fs.promises.mkdir(path.dirname(snapshotPath), { recursive: true });
-			await fs.promises.writeFile(tmpPath, JSON.stringify(envelope));
+			await fs.promises.writeFile(tmpPath, body);
 			await fs.promises.rename(tmpPath, snapshotPath);
-			// Record our own write (mtime + size) so we don't redundantly reload it later.
-			// See loadSharedSnapshotIfChanged()'s guard for why size is paired with the mtime.
+			// Record our own write (mtime + size + content digest) so we don't redundantly reload
+			// it later. See loadSharedSnapshotIfChanged()'s guard for why these are paired.
 			try {
 				const stat = await fs.promises.stat(snapshotPath);
 				this.lastLoadedSnapshotMtime = stat.mtimeMs;
 				this.lastLoadedSnapshotSize = stat.size;
+				this.lastLoadedSnapshotDigest = crypto.createHash('sha256').update(body, 'utf-8').digest('hex');
 			} catch { /* best-effort */ }
 		} catch (error) {
 			this.deps.warn(`Failed to write shared cache snapshot: ${error}`);
@@ -753,6 +764,8 @@ export class CacheManager {
 		try {
 			await fs.promises.unlink(snapshotPath);
 			this.lastLoadedSnapshotMtime = 0;
+			this.lastLoadedSnapshotSize = -1;
+			this.lastLoadedSnapshotDigest = '';
 			this.deps.log(`Deleted shared cache snapshot (${this.getCacheIdentifier()})`);
 		} catch (err: unknown) {
 			if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -842,32 +855,99 @@ export class CacheManager {
 		} catch {
 			return 0; // No snapshot yet.
 		}
-		// Skip only a snapshot we provably already loaded: the exact same mtime AND the same
-		// size. An exact-mtime bookmark alone is unsafe on filesystems with coarse mtime
-		// granularity (NTFS can report identical mtimes for writes milliseconds apart) — a
-		// window republishing within the same tick as our last load/write would get an equal
-		// mtime and be wrongly skipped, silently discarding its newer data. Pairing mtime with
-		// size keeps an unchanged snapshot skipped (no re-parse on every refresh) while a
-		// same-tick republish with different content — hence a different size — is reloaded. A
-		// same-tick republish with byte-identical content is idempotent, so skipping it is fine.
-		if (mtimeMs < this.lastLoadedSnapshotMtime ||
-			(mtimeMs === this.lastLoadedSnapshotMtime && size === this.lastLoadedSnapshotSize)) {
-			return 0; // Already loaded this (or a newer) version.
+		// Skip only a snapshot we provably already loaded. An exact-mtime bookmark alone is
+		// unsafe on filesystems with coarse mtime granularity (NTFS can report identical mtimes
+		// for writes milliseconds apart) — a window republishing within the same tick as our
+		// last load/write would get an equal mtime and be wrongly skipped, silently discarding
+		// its newer data. Pairing mtime with size covers the common case (different content ->
+		// different size), but a same-tick republish can change values without changing the JSON
+		// length (e.g. an entry mtime from 1000 to 5000), leaving BOTH stat fields equal. So on
+		// a full stat tie we compare a content digest: a byte-identical republish is idempotent
+		// and safely skipped, while a same-size content change has a different digest and reloads.
+		if (mtimeMs < this.lastLoadedSnapshotMtime) {
+			return 0; // Strictly older than what we loaded.
 		}
-		const entries = await this.readSharedSnapshot();
+		if (mtimeMs === this.lastLoadedSnapshotMtime) {
+			if (size !== this.lastLoadedSnapshotSize) {
+				// Same tick, different content size -> a real republish. Reload.
+			} else if (this.lastLoadedSnapshotDigest === '') {
+				return 0; // Nothing loaded yet to compare against — treat as unchanged.
+			} else {
+				// Full stat tie: only a content digest can distinguish a byte-identical republish
+				// (skip) from a same-size content change (reload). Read + hash the file.
+				const content = await fs.promises.readFile(snapshotPath);
+				const digest = crypto.createHash('sha256').update(content).digest('hex');
+				if (digest === this.lastLoadedSnapshotDigest) {
+					return 0; // Byte-identical to what we loaded.
+				}
+				const entries = this.parseSnapshotContent(content.toString('utf-8'));
+				if (!entries) {
+					this.bookmarkLoadedSnapshot(mtimeMs, size, digest);
+					return 0;
+				}
+				return this.mergeAndBookmark(entries, mtimeMs, size, digest, loadStartedAt);
+			}
+		}
+		// Newer mtime (or same tick with a different size): reload.
+		const content = await fs.promises.readFile(snapshotPath);
+		const digest = crypto.createHash('sha256').update(content).digest('hex');
+		const entries = this.parseSnapshotContent(content.toString('utf-8'));
 		if (!entries) {
-			// Remember the mtime so we don't repeatedly retry an incompatible snapshot.
-			this.lastLoadedSnapshotMtime = mtimeMs;
-			this.lastLoadedSnapshotSize = size;
+			// Remember the identity so we don't repeatedly retry an incompatible snapshot.
+			this.bookmarkLoadedSnapshot(mtimeMs, size, digest);
 			return 0;
 		}
-		const merged = this.mergeSnapshotEntries(entries);
+		return this.mergeAndBookmark(entries, mtimeMs, size, digest, loadStartedAt);
+	}
+
+	/**
+	 * Record the identity (mtime + size + content digest) of the snapshot version that was
+	 * loaded, so the next loadSharedSnapshotIfChanged() can skip an unchanged snapshot.
+	 */
+	private bookmarkLoadedSnapshot(mtimeMs: number, size: number, digest: string): void {
 		this.lastLoadedSnapshotMtime = mtimeMs;
 		this.lastLoadedSnapshotSize = size;
+		this.lastLoadedSnapshotDigest = digest;
+	}
+
+	/**
+	 * Merge already-parsed snapshot entries into the in-memory cache and bookmark the loaded
+	 * identity. Returns the number of entries merged.
+	 */
+	private mergeAndBookmark(
+		entries: Record<string, SessionFileCache>,
+		mtimeMs: number,
+		size: number,
+		digest: string,
+		loadStartedAt: number,
+	): number {
+		const merged = this.mergeSnapshotEntries(entries);
+		this.bookmarkLoadedSnapshot(mtimeMs, size, digest);
 		if (merged > 0) {
 			this.deps.log(`Warmed cache from shared snapshot: merged ${merged} entr${merged === 1 ? 'y' : 'ies'} in ${Date.now() - loadStartedAt}ms`);
 		}
 		return merged;
+	}
+
+	/**
+	 * Parse and validate snapshot JSON into its entries map, or return undefined when the
+	 * content is malformed or written by an incompatible schema/cache version.
+	 */
+	private parseSnapshotContent(content: string): Record<string, SessionFileCache> | undefined {
+		try {
+			const envelope = JSON.parse(content);
+			if (
+				!envelope ||
+				envelope.schemaVersion !== CacheManager.SNAPSHOT_SCHEMA_VERSION ||
+				envelope.cacheVersion !== this.cacheVersion ||
+				typeof envelope.entries !== 'object'
+			) {
+				return undefined;
+			}
+			return envelope.entries as Record<string, SessionFileCache>;
+		} catch {
+			return undefined;
+		}
 	}
 
 	/**
