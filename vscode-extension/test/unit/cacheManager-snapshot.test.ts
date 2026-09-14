@@ -1,5 +1,5 @@
 import './vscode-shim-register';
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -254,47 +254,52 @@ test('loadCacheFromStorage: loads entries from existing snapshot', async () => {
 
 // Regression test for the startup TOCTOU the reviewer flagged: loadCacheFromStorage() used to
 // readFile() the snapshot and only then stat() it, so a same-tick republish landing between the
-// two got bookmarked with the NEWER file's mtime+size while sessionFileCache still held the OLDER
+// two got bookmarked with the NEWER file's identity while sessionFileCache still held the OLDER
 // bytes — and the next loadSharedSnapshotIfChanged() would see the matching bookmark and skip the
-// update permanently. Bookmarking the identity captured BEFORE the read keeps the newer snapshot
-// detectable. This test drives the real code path (no manual bookmark seeding): it forces the
-// republished snapshot onto the reader's startup-bookmarked mtime and relies on the size
-// difference to prove the reload still happens.
-test('loadCacheFromStorage() bookmarks the pre-read identity, so a same-tick republish after startup is still picked up', async () => {
+// update permanently. This test drives a REAL interleave: it wraps fs.promises.readFile so a
+// republish fires after the pre-read stat but before the content is read, then asserts the next
+// guarded load still picks the republished entry up. With the old post-read ordering the bookmark
+// would already match the republished file and the reload would be skipped.
+test('loadCacheFromStorage() bookmarks the pre-read identity, so a mid-read republish is still picked up', async () => {
 	const dir = tmpDir();
 	const writer = makeManager(dir);
 	writer.setCachedSessionData('/a.json', entry(1000), 10);
 	await writer.writeSharedSnapshot();
 
+	const snapshotPath = writer.getSharedSnapshotPath();
 	const reader = makeManager(dir);
-	await reader.loadCacheFromStorage();
-	assert.equal(reader.cache.get('/a.json')?.mtime, 1000, 'startup loads the published entry');
-	// The startup bookmark must equal the snapshot's on-disk identity (captured before the read).
-	const startupMtime = (reader as any).lastLoadedSnapshotMtime;
-	const startupSize = (reader as any).lastLoadedSnapshotSize;
-	const onDisk = await fs.promises.stat(reader.getSharedSnapshotPath());
-	assert.equal(startupMtime, onDisk.mtimeMs, 'startup bookmarks the snapshot mtime it actually loaded');
-	assert.equal(startupSize, onDisk.size, 'startup bookmarks the snapshot size it actually loaded');
 
-	// Another window republishes NEWER entries with different content (extra entry -> different
-	// size), then we force the snapshot's mtime onto the startup-bookmarked tick and align the
-	// bookmark to the value utimes actually produced (NTFS quantizes ~0.5 µs), making the mtime
-	// tie exact. The size differs, so the mtime+size guard must still reload it.
+	// Interleave a republish between the pre-read stat and the readFile inside
+	// loadCacheFromStorage(): the first readFile of the snapshot triggers a republish with a
+	// NEWER entry that keeps the JSON length identical (mtime 1000 -> 5000, same digit count).
 	const republisher = makeManager(dir);
 	republisher.setCachedSessionData('/a.json', entry(5000), 10);
-	republisher.setCachedSessionData('/b.json', entry(5000), 10); // extra entry -> different size
-	await republisher.writeSharedSnapshot();
-	const snapshotPath = reader.getSharedSnapshotPath();
-	const statBefore = await fs.promises.stat(snapshotPath);
-	await fs.promises.utimes(snapshotPath, statBefore.atimeMs / 1000, startupMtime / 1000);
-	const republishStat = await fs.promises.stat(snapshotPath);
-	(reader as any).lastLoadedSnapshotMtime = republishStat.mtimeMs; // exact tie
-	assert.notEqual(republishStat.size, startupSize, 'test setup: the republish must differ in size');
+	const realReadFile = fs.promises.readFile;
+	let interleaved = false;
+	const readFileMock = mock.method(fs.promises, 'readFile', async (p: any, opts?: any) => {
+		const content = await realReadFile.call(fs.promises, p, opts);
+		if (!interleaved && typeof p === 'string' && p === snapshotPath) {
+			interleaved = true;
+			// The reader has already stat()'d (pre-read). Republish now, before returning the
+			// OLD bytes the reader is about to parse — the mid-read window.
+			await republisher.writeSharedSnapshot();
+		}
+		return content;
+	});
 
+	try {
+		await reader.loadCacheFromStorage();
+	} finally {
+		readFileMock.mock.restore();
+	}
+
+	assert.ok(interleaved, 'test setup: the republish must be interleaved into the startup read');
+	// The reader loaded the OLD bytes (mtime 1000) but the on-disk file is now the republish
+	// (publishSeq advanced). The next guarded load must detect and merge it.
+	assert.equal(reader.cache.get('/a.json')?.mtime, 1000, 'startup loaded the pre-republish bytes');
 	const merged = await reader.loadSharedSnapshotIfChanged();
-	assert.equal(merged, 2, 'a same-tick republish after startup must be picked up — a post-read bookmark would have suppressed it');
+	assert.equal(merged, 1, 'a mid-read republish must be picked up — a post-read bookmark would have suppressed it');
 	assert.equal(reader.cache.get('/a.json')?.mtime, 5000);
-	assert.equal(reader.cache.get('/b.json')?.mtime, 5000);
 });
 
 test('loadCacheFromStorage: starts with empty cache when no snapshot exists', async () => {
