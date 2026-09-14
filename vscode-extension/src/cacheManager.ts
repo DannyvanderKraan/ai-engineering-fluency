@@ -253,8 +253,8 @@ export class CacheManager {
 	}
 
 	/**
-	 * Deletes legacy per-session dev-mode cache/lock files (e.g. `cache_dev-<hash>.snapshot.json`)
-	 * left behind by older versions of the extension, which used to mint a new dev-<hash>
+	 * Deletes legacy per-session dev-mode cache/lock files (e.g. `cache_dev-<hash>.snapshot.json`,
+	 * `.lock`, `.seq`) left behind by older versions of the extension, which used to mint a new dev-<hash>
 	 * identifier per Extension Development Host launch — orphaning every past debug session's
 	 * snapshot once that window closed. getCacheIdentifier() now returns a stable 'dev'
 	 * identifier, so no new files matching this legacy pattern are created; this cleanup only
@@ -271,7 +271,7 @@ export class CacheManager {
 			const now = Date.now();
 			let removedCount = 0;
 			for (const name of entries) {
-				if (!/^(cache|refresh|agenttasks|repoprs)_dev-[0-9a-f]+\.(snapshot\.json|lock)$/.test(name)) { continue; }
+				if (!/^(cache|refresh|agenttasks|repoprs)_dev-[0-9a-f]+\.(snapshot\.json|lock|seq)$/.test(name)) { continue; }
 				const filePath = path.join(dir, name);
 				try {
 					const stat = await fs.promises.stat(filePath);
