@@ -842,9 +842,17 @@ export class CacheManager {
 	 * The sidecar publishSeq is deliberately left in place: it is a durable generation counter,
 	 * so a recreated snapshot continues the sequence instead of restarting at 1 (which a
 	 * still-running window that already loaded a higher generation would otherwise skip).
+	 *
+	 * The delete is serialized with the same cache lock writers hold (saveCacheToStorage()
+	 * acquires it before writeSharedSnapshot()): without it, a writer that already read the old
+	 * snapshot could rename its body after this unlink, resurrecting pre-clear entries that
+	 * clearCache() then reloads/persists. Best-effort like the rest of the cache: if another
+	 * window holds the lock, we still delete (a clearCache must not block indefinitely) — the
+	 * lock is a coordination hint, not a hard guarantee against a concurrent in-flight write.
 	 */
 	async deleteSharedSnapshot(): Promise<void> {
 		const snapshotPath = this.getSharedSnapshotPath();
+		const acquired = await this.acquireCacheLock();
 		try {
 			await fs.promises.unlink(snapshotPath);
 			this.lastLoadedSnapshotMtime = 0;
@@ -854,6 +862,10 @@ export class CacheManager {
 		} catch (err: unknown) {
 			if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
 				this.deps.warn(`Failed to delete shared cache snapshot: ${err}`);
+			}
+		} finally {
+			if (acquired) {
+				await this.releaseCacheLock();
 			}
 		}
 	}

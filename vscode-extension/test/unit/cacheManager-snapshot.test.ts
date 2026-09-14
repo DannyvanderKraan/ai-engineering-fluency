@@ -480,6 +480,33 @@ test('deleteSharedSnapshot: removes the snapshot file', async () => {
 	assert.equal(fs.existsSync(m.getSharedSnapshotPath()), false, 'snapshot should be removed');
 });
 
+// Writers hold the cache lock around writeSharedSnapshot(); the delete takes the same lock so a
+// writer that already read the old snapshot cannot rename its body after the unlink and resurrect
+// pre-clear entries that clearCache() would then reload/persist. This verifies the observable
+// contract: the delete completes correctly while another window holds the lock (the lock is a
+// best-effort coordination hint — a clearCache must not deadlock — so this asserts correct
+// behavior under contention, not a hard guarantee).
+test('deleteSharedSnapshot: deletes correctly while a writer holds the cache lock', async () => {
+	const dir = tmpDir();
+	const clearer = makeManager(dir);
+	clearer.setCachedSessionData('/a.json', entry(1000), 10);
+	await clearer.writeSharedSnapshot();
+	assert.ok(fs.existsSync(clearer.getSharedSnapshotPath()), 'snapshot should exist before delete');
+
+	// A writer window holds the cache lock during the delete.
+	const writer = makeManager(dir);
+	assert.equal(await writer.acquireCacheLock(), true, 'writer holds the cache lock');
+	try {
+		await clearer.deleteSharedSnapshot();
+		assert.equal(fs.existsSync(clearer.getSharedSnapshotPath()), false,
+			'the delete must complete (not deadlock) while a writer holds the lock');
+		// The clearer's own bookmark is reset so it won't serve the deleted data.
+		assert.equal((clearer as any).lastLoadedSnapshotPublishSeq, 0, 'clearer bookmark reset after delete');
+	} finally {
+		await writer.releaseCacheLock();
+	}
+});
+
 // The publish generation lives in a sidecar that deleteSharedSnapshot() deliberately keeps, so a
 // recreated snapshot continues the sequence instead of restarting at 1. Otherwise a window that
 // already loaded generation N would see the recreated file's generation restart below N and skip
