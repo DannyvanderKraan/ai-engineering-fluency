@@ -1513,8 +1513,16 @@ return true;
 		try {
 			const machineId = vscode.env.machineId;
 			const uploadSettings = { enabled: settings.blobUploadEnabled, containerName: settings.blobContainerName, uploadFrequencyHours: settings.blobUploadFrequencyHours, compressFiles: settings.blobCompressFiles };
+
+			// Build editor type map so each uploaded blob carries its source editor as metadata.
+			const editorTypeByFile = new Map<string, string>();
+			for (const sessionFile of sessionFiles) {
+				const editorType = this.getEditorForFile(sessionFile, true);
+				if (editorType) { editorTypeByFile.set(sessionFile, editorType); }
+			}
+
 			this.deps.logger.log('Blob upload: starting');
-			const uploadResult = await this.blobUploadService!.uploadSessionFiles(settings.storageAccount, uploadSettings, creds.blobCredential, sessionFiles, machineId, settings.datasetId);
+			const uploadResult = await this.blobUploadService!.uploadSessionFiles(settings.storageAccount, uploadSettings, creds.blobCredential, sessionFiles, machineId, settings.datasetId, editorTypeByFile);
 			if (uploadResult.success) { this.deps.logger.log(`Blob upload: ${uploadResult.message}`); }
 			else { this.deps.logger.warn(`Blob upload: ${uploadResult.message}`); }
 		} catch (blobError: any) {

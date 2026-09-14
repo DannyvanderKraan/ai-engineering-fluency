@@ -304,3 +304,52 @@ test('uploadSessionFiles does not update status when all uploads fail', async ()
 	// Status should not be set since no files were uploaded
 	assert.equal(svc.getUploadStatus('m1'), undefined);
 });
+
+// ── editorType metadata ──────────────────────────────────────────────────
+
+test('uploadSessionFiles passes editorType to uploadFile when provided', async () => {
+	const svc = new BlobUploadService(() => {}, () => {}, makeContext());
+
+	(svc as any).getContainerClient = async () => ({});
+	const receivedEditorTypes: (string | undefined)[] = [];
+	(svc as any).uploadFile = async (_cc: any, _path: string, _machineId: string, _datasetId: string, _compress: boolean, editorType?: string) => {
+		receivedEditorTypes.push(editorType);
+	};
+
+	const editorMap = new Map<string, string>();
+	editorMap.set('/fake/vscode.json', 'VS Code');
+	editorMap.set('/fake/cli.jsonl', 'Copilot CLI');
+
+	await svc.uploadSessionFiles(
+		'teststorage',
+		enabledSettings,
+		{ getToken: async () => ({ token: 't', expiresOnTimestamp: 0 }) } as any,
+		['/fake/vscode.json', '/fake/cli.jsonl'],
+		'm1',
+		'ds1',
+		editorMap
+	);
+
+	assert.deepEqual(receivedEditorTypes, ['VS Code', 'Copilot CLI']);
+});
+
+test('uploadSessionFiles passes undefined editorType when map is not provided', async () => {
+	const svc = new BlobUploadService(() => {}, () => {}, makeContext());
+
+	(svc as any).getContainerClient = async () => ({});
+	const receivedEditorTypes: (string | undefined)[] = [];
+	(svc as any).uploadFile = async (_cc: any, _path: string, _machineId: string, _datasetId: string, _compress: boolean, editorType?: string) => {
+		receivedEditorTypes.push(editorType);
+	};
+
+	await svc.uploadSessionFiles(
+		'teststorage',
+		enabledSettings,
+		{ getToken: async () => ({ token: 't', expiresOnTimestamp: 0 }) } as any,
+		['/fake/a.json'],
+		'm1',
+		'ds1'
+	);
+
+	assert.deepEqual(receivedEditorTypes, [undefined]);
+});
