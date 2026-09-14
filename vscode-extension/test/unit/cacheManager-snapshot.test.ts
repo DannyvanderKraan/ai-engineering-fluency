@@ -73,6 +73,41 @@ test('readSharedSnapshot returns undefined on corrupt snapshot', async () => {
 	assert.equal(entries, undefined);
 });
 
+// `typeof null === 'object'`, so a naive `typeof envelope.entries === 'object'` check accepts
+// `entries: null` and then crashes in Object.entries(null) on every poll. The validation must
+// reject null entries and treat the snapshot as malformed.
+test('readSharedSnapshot returns undefined when entries is null (typeof null === "object")', async () => {
+	const dir = tmpDir();
+	const m = makeManager(dir);
+	fs.mkdirSync(path.dirname(m.getSharedSnapshotPath()), { recursive: true });
+	fs.writeFileSync(m.getSharedSnapshotPath(), JSON.stringify({
+		schemaVersion: 1, cacheVersion: 1, cacheId: 'prod', generatedAt: Date.now(), publishSeq: 1, entryCount: 0, entries: null,
+	}));
+	const entries = await m.readSharedSnapshot();
+	assert.equal(entries, undefined, 'an envelope with entries: null must be rejected as malformed, not crash in Object.entries');
+});
+
+// A transiently unreadable sidecar (EACCES/corrupt, NOT missing) must not make the next writer
+// restart the generation at 1 after peers already loaded a higher seq — on a same-mtime/same-size
+// replacement they'd see seq <= their bookmark and skip the update forever. The writer recovers
+// the generation from the existing snapshot body instead.
+test('writeSharedSnapshot() recovers the publish generation from the snapshot body when the sidecar is unreadable', async () => {
+	const dir = tmpDir();
+	const writer = makeManager(dir);
+	writer.setCachedSessionData('/a.json', entry(1000), 10);
+	await writer.writeSharedSnapshot(); // generation 1
+	const seqPath = (writer as any).getSnapshotSeqPath();
+
+	// Corrupt the sidecar (exists but unparseable) — readSnapshotPublishSeq() returns undefined.
+	await fs.promises.writeFile(seqPath, 'not-a-number');
+
+	// The next write must continue from the body's generation (1 -> 2), not restart at 1.
+	writer.setCachedSessionData('/b.json', entry(2000), 10);
+	await writer.writeSharedSnapshot();
+	const seq = await fs.promises.readFile(seqPath, 'utf-8');
+	assert.equal(seq.trim(), '2', 'an unreadable sidecar must recover the generation from the body, not restart at 1');
+});
+
 test('loadSharedSnapshotIfChanged merges fresher entries and is idempotent', async () => {
 	const dir = tmpDir();
 	const writer = makeManager(dir);

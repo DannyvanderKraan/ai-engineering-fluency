@@ -609,6 +609,7 @@ export class CacheManager {
 
 				if (
 					envelope.schemaVersion !== CacheManager.SNAPSHOT_SCHEMA_VERSION ||
+					!envelope.entries || // typeof null === 'object'; reject it so Object.entries below can't throw
 					typeof envelope.entries !== 'object'
 				) {
 					this.deps.log(`Snapshot schema mismatch or missing entries for ${cacheId}, starting with empty cache`);
@@ -729,17 +730,28 @@ export class CacheManager {
 	}
 
 	/**
-	 * Read the current publish generation from the sidecar file. Returns 0 when the sidecar is
-	 * missing or unreadable (a snapshot written before generations existed, or a fresh cache).
+	 * Read the current publish generation from the sidecar file. Returns:
+	 * - the parsed generation when the sidecar exists and is valid,
+	 * - 0 when the sidecar is genuinely absent (ENOENT) — a fresh cache or a snapshot written
+	 *   before generations existed,
+	 * - `undefined` when the sidecar exists but cannot be read or parsed (transient EACCES/EPERM,
+	 *   corrupt contents). Callers must treat `undefined` as "unknown, do not restart the
+	 *   sequence" — publishing from 0 here would break monotonicity for peers that already
+	 *   loaded a higher generation, and a same-mtime/same-size replacement would be skipped.
 	 */
-	private async readSnapshotPublishSeq(): Promise<number> {
+	private async readSnapshotPublishSeq(): Promise<number | undefined> {
+		let raw: string;
 		try {
-			const raw = await fs.promises.readFile(this.getSnapshotSeqPath(), 'utf-8');
-			const seq = parseInt(raw.trim(), 10);
-			return Number.isFinite(seq) && seq >= 0 ? seq : 0;
-		} catch {
-			return 0;
+			raw = await fs.promises.readFile(this.getSnapshotSeqPath(), 'utf-8');
+		} catch (err: unknown) {
+			// Genuinely absent (or the directory is gone): no generation yet.
+			if ((err as NodeJS.ErrnoException).code === 'ENOENT' || (err as NodeJS.ErrnoException).code === 'ENOTDIR') {
+				return 0;
+			}
+			return undefined; // Exists but unreadable — unknown, not zero.
 		}
+		const seq = parseInt(raw.trim(), 10);
+		return Number.isFinite(seq) && seq >= 0 ? seq : undefined;
 	}
 
 	/**
@@ -760,8 +772,20 @@ export class CacheManager {
 			// Monotonic publish generation, bumped from the sidecar (durable across snapshot
 			// delete/recreate, unlike a value embedded in the snapshot which would restart at 1).
 			// Every publish gets a distinct, cheap identity even when the filesystem reports an
-			// identical mtime and the JSON length is unchanged.
-			const publishSeq = (await this.readSnapshotPublishSeq()) + 1;
+			// identical mtime and the JSON length is unchanged. Fail closed when the sidecar is
+			// unreadable/corrupt: recovering the generation from the existing snapshot body, or
+			// throwing if neither is available, never restarting at 1 after peers loaded higher.
+			let priorSeq = await this.readSnapshotPublishSeq();
+			if (priorSeq === undefined) {
+				// Sidecar exists but is unreadable/corrupt. Recover the last published generation
+				// from the current snapshot body (which embeds publishSeq) so we continue from it.
+				const existing = await this.readSnapshotWithSeq();
+				priorSeq = existing?.publishSeq;
+			}
+			if (priorSeq === undefined) {
+				throw new Error('Cannot determine the next publish generation: sidecar unreadable and no readable snapshot to recover from');
+			}
+			const publishSeq = priorSeq + 1;
 			const envelope = {
 				schemaVersion: CacheManager.SNAPSHOT_SCHEMA_VERSION,
 				cacheVersion: this.cacheVersion,
@@ -880,6 +904,10 @@ export class CacheManager {
 				!envelope ||
 				envelope.schemaVersion !== CacheManager.SNAPSHOT_SCHEMA_VERSION ||
 				envelope.cacheVersion !== this.cacheVersion ||
+				// `typeof null === 'object'`, so reject null explicitly — otherwise a
+				// `{ ..., entries: null }` envelope reaches mergeSnapshotEntries(), where
+				// Object.entries(null) throws on every poll instead of being treated as malformed.
+				!envelope.entries ||
 				typeof envelope.entries !== 'object'
 			) {
 				return undefined;
@@ -933,25 +961,29 @@ export class CacheManager {
 		if (mtimeMs === this.lastLoadedSnapshotMtime && size === this.lastLoadedSnapshotSize) {
 			// Full stat tie (the idle case on coarse-mtime filesystems). Compare the cheap
 			// sidecar generation; an unchanged snapshot matches and is skipped without touching
-			// the snapshot body.
+			// the snapshot body. An UNREADABLE sidecar (undefined, not 0) is unknown, not
+			// "unchanged" — read the body and reconcile from its embedded publishSeq rather than
+			// risk skipping a publish.
 			const seq = await this.readSnapshotPublishSeq();
-			if (seq <= this.lastLoadedSnapshotPublishSeq) {
+			if (seq !== undefined && seq <= this.lastLoadedSnapshotPublishSeq) {
 				return 0; // Same (or an older) generation we already loaded.
 			}
-			// A newer generation with a tied stat: reload, but validate the body actually carries
-			// that generation. The sidecar is written BEFORE the body, so a reader can catch a
-			// publish mid-write — new sidecar seq, previous body. Merging the old body against the
-			// new seq would then let the next poll skip the real publish (seq <= bookmark). When
-			// the body's embedded publishSeq disagrees with the sidecar, leave the bookmark
-			// untouched so a later poll retries once the body catches up.
+			// A newer generation (or an unreadable sidecar) with a tied stat: reload, but validate
+			// the body actually carries that generation. The sidecar is written BEFORE the body,
+			// so a reader can catch a publish mid-write — new sidecar seq, previous body. Merging
+			// the old body against the new seq would then let the next poll skip the real publish
+			// (seq <= bookmark). When the sidecar is readable and disagrees with the body's
+			// embedded publishSeq, leave the bookmark untouched so a later poll retries once the
+			// body catches up. When the sidecar is UNREADABLE (undefined), reconcile from the
+			// body itself: merge and bookmark the body's own generation.
 			const loaded = await this.readSnapshotWithSeq();
 			if (!loaded) {
 				return 0; // Unreadable/incompatible — leave the bookmark; a valid rewrite will advance the stat.
 			}
-			if (loaded.publishSeq !== seq) {
+			if (seq !== undefined && loaded.publishSeq !== seq) {
 				return 0; // Mid-write: sidecar and body generations disagree. Retry next poll.
 			}
-			return this.mergeAndBookmark(loaded.entries, mtimeMs, size, seq, loadStartedAt);
+			return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt);
 		}
 		// Newer mtime, or same tick with a different size: reload. The mtime advanced, so this is
 		// not the same-tick case the sidecar ordering affects; bookmark the body's own generation.
