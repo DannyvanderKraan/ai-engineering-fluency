@@ -47,6 +47,11 @@ export class CacheManager {
 	private readonly cacheVersion: number;
 	private readonly policy: CachePolicy<SessionFileCache>;
 	private lastLoadedSnapshotMtime = 0;
+	// Size of the snapshot file at lastLoadedSnapshotMtime. Combined with the exact mtime this
+	// lets loadSharedSnapshotIfChanged() distinguish an unchanged snapshot (same mtime AND size
+	// -> skip, no re-parse) from a same-tick republish with different content (same mtime but
+	// different size -> reload). See loadSharedSnapshotIfChanged()'s guard comment.
+	private lastLoadedSnapshotSize = -1;
 	// Checkpoint tracking
 	private lastCheckpointTime = 0;
 	private entriesSinceLastCheckpoint = 0;
@@ -597,11 +602,12 @@ export class CacheManager {
 				);
 				this.deps.log(`Loaded ${this.sessionFileCache.size} cached session files from disk snapshot (${cacheId}) in ${Date.now() - loadStartedAt}ms`);
 
-				// Record the snapshot mtime so loadSharedSnapshotIfChanged won't reload it redundantly.
-				// See bookmarkLoadedSnapshotMtime() for why this is rounded down.
+				// Record the snapshot mtime and size so loadSharedSnapshotIfChanged won't
+				// reload it redundantly (see that method's guard for why size is paired in).
 				try {
 					const stat = await fs.promises.stat(snapshotPath);
-					this.lastLoadedSnapshotMtime = CacheManager.bookmarkLoadedSnapshotMtime(stat.mtimeMs);
+					this.lastLoadedSnapshotMtime = stat.mtimeMs;
+					this.lastLoadedSnapshotSize = stat.size;
 				} catch { /* best-effort */ }
 
 			} catch (readErr: unknown) {
@@ -713,11 +719,12 @@ export class CacheManager {
 			await fs.promises.mkdir(path.dirname(snapshotPath), { recursive: true });
 			await fs.promises.writeFile(tmpPath, JSON.stringify(envelope));
 			await fs.promises.rename(tmpPath, snapshotPath);
-			// Record our own write so we don't redundantly reload it later.
-			// See bookmarkLoadedSnapshotMtime() for why this is rounded down.
+			// Record our own write (mtime + size) so we don't redundantly reload it later.
+			// See loadSharedSnapshotIfChanged()'s guard for why size is paired with the mtime.
 			try {
 				const stat = await fs.promises.stat(snapshotPath);
-				this.lastLoadedSnapshotMtime = CacheManager.bookmarkLoadedSnapshotMtime(stat.mtimeMs);
+				this.lastLoadedSnapshotMtime = stat.mtimeMs;
+				this.lastLoadedSnapshotSize = stat.size;
 			} catch { /* best-effort */ }
 		} catch (error) {
 			this.deps.warn(`Failed to write shared cache snapshot: ${error}`);
@@ -804,24 +811,6 @@ export class CacheManager {
 	}
 
 	/**
-	 * Convert a just-observed snapshot mtime into the "already loaded" bookmark.
-	 *
-	 * The bookmark must never exceed the mtime of a snapshot written by another
-	 * window in the same fs timestamp tick: filesystems with coarse mtime
-	 * granularity (NTFS can report identical mtimes for writes milliseconds
-	 * apart, and occasional backwards steps) would otherwise let an exactly-equal
-	 * bookmark suppress a same-tick republish via loadSharedSnapshotIfChanged()'s
-	 * `mtimeMs <= lastLoadedSnapshotMtime` check — silently discarding that
-	 * window's newer data. Rounding DOWN one millisecond means we may re-read a
-	 * same-tick snapshot we already processed, which is harmless: the merge is
-	 * idempotent for same-mtime entries (they only replace an absent or strictly
-	 * older in-memory entry).
-	 */
-	private static bookmarkLoadedSnapshotMtime(mtimeMs: number): number {
-		return Math.max(0, mtimeMs - 1);
-	}
-
-	/**
 	 * Warm the in-memory cache from the shared snapshot if another window has
 	 * published a newer one since we last loaded it. Only entries that are fresher
 	 * than (or absent from) our current cache are merged, so locally parsed data is
@@ -833,23 +822,36 @@ export class CacheManager {
 		const loadStartedAt = Date.now();
 		const snapshotPath = this.getSharedSnapshotPath();
 		let mtimeMs: number;
+		let size: number;
 		try {
 			const stat = await fs.promises.stat(snapshotPath);
 			mtimeMs = stat.mtimeMs;
+			size = stat.size;
 		} catch {
 			return 0; // No snapshot yet.
 		}
-		if (mtimeMs <= this.lastLoadedSnapshotMtime) {
+		// Skip only a snapshot we provably already loaded: the exact same mtime AND the same
+		// size. An exact-mtime bookmark alone is unsafe on filesystems with coarse mtime
+		// granularity (NTFS can report identical mtimes for writes milliseconds apart) — a
+		// window republishing within the same tick as our last load/write would get an equal
+		// mtime and be wrongly skipped, silently discarding its newer data. Pairing mtime with
+		// size keeps an unchanged snapshot skipped (no re-parse on every refresh) while a
+		// same-tick republish with different content — hence a different size — is reloaded. A
+		// same-tick republish with byte-identical content is idempotent, so skipping it is fine.
+		if (mtimeMs < this.lastLoadedSnapshotMtime ||
+			(mtimeMs === this.lastLoadedSnapshotMtime && size === this.lastLoadedSnapshotSize)) {
 			return 0; // Already loaded this (or a newer) version.
 		}
 		const entries = await this.readSharedSnapshot();
 		if (!entries) {
 			// Remember the mtime so we don't repeatedly retry an incompatible snapshot.
-			this.lastLoadedSnapshotMtime = CacheManager.bookmarkLoadedSnapshotMtime(mtimeMs);
+			this.lastLoadedSnapshotMtime = mtimeMs;
+			this.lastLoadedSnapshotSize = size;
 			return 0;
 		}
 		const merged = this.mergeSnapshotEntries(entries);
-		this.lastLoadedSnapshotMtime = CacheManager.bookmarkLoadedSnapshotMtime(mtimeMs);
+		this.lastLoadedSnapshotMtime = mtimeMs;
+		this.lastLoadedSnapshotSize = size;
 		if (merged > 0) {
 			this.deps.log(`Warmed cache from shared snapshot: merged ${merged} entr${merged === 1 ? 'y' : 'ies'} in ${Date.now() - loadStartedAt}ms`);
 		}

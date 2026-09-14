@@ -486,39 +486,69 @@ test('loadSharedSnapshotIfChanged() clears a stale tombstone when accepting a ne
 // Regression test for the Windows CI flake: when window B republishes the snapshot within the
 // same filesystem timestamp tick as window A's last write (coarse mtime granularity — NTFS can
 // report identical mtimes for writes milliseconds apart), the file mtime does not advance past
-// the exact value window A bookmarked for its own write, and the
-// `mtimeMs <= lastLoadedSnapshotMtime` guard then suppresses B's publish. The bookmark is
-// therefore rounded down one tick (bookmarkLoadedSnapshotMtime). Here we FORCE the tie with
-// fs.utimes instead of hoping the runner's clock resolution cooperates.
-test('loadSharedSnapshotIfChanged() picks up a same-tick republish from another window (identical file mtime)', async () => {
+// the exact value window A bookmarked for its own write. An mtime-only
+// `mtimeMs <= lastLoadedSnapshotMtime` guard would then suppress B's publish. The guard
+// therefore pairs the mtime with the file SIZE: an unchanged snapshot (same mtime AND size) is
+// skipped, but a same-tick republish with different content — hence a different size — is
+// reloaded. Here we FORCE the identical mtime with fs.utimes instead of hoping the runner's
+// clock resolution cooperates.
+test('loadSharedSnapshotIfChanged() picks up a same-tick republish from another window (identical file mtime, different size)', async () => {
 	const dir = tmpDir();
 	const windowA = makeManager(dir);
 	windowA.setCachedSessionData('/a.json', entry(1000), 10);
 	await windowA.writeSharedSnapshot();
-	// Record window A's exact write mtime (what a pre-fix exact-mtime bookmark would hold),
-	// independent of whether the production bookmark rounds down.
+	// Window A's exact write mtime — what its (exact-mtime) bookmark holds.
 	const snapshotPath = windowA.getSharedSnapshotPath();
 	const exactWriteMtimeMs = (await fs.promises.stat(snapshotPath)).mtimeMs;
+	const sizeA = (await fs.promises.stat(snapshotPath)).size;
 	windowA.deleteCachedSessionData('/a.json');
 
+	// Window B republishes with different content (an extra entry), so the snapshot bytes — and
+	// size — differ even if the mtime does not.
 	const windowB = makeManager(dir);
 	windowB.setCachedSessionData('/a.json', entry(5000), 10);
+	windowB.setCachedSessionData('/b.json', entry(5000), 10); // extra entry -> different size
 	await windowB.writeSharedSnapshot();
+	const sizeB = (await fs.promises.stat(snapshotPath)).size;
+	assert.notEqual(sizeB, sizeA, 'test setup: a same-tick republish with different content must differ in size');
 
-	// Simulate the coarse-timestamp tie: pin window B's snapshot just below window A's exact
-	// write mtime. NTFS utimes quantizes to ~0.5 µs (max observed overshoot < 0.001 ms) around
-	// the target, so aim 0.002 ms below the exact write mtime: the result stays at-or-below the
-	// value a pre-fix bookmark would hold (so a pre-fix `<=` guard skips the reload) yet
-	// comfortably above the post-fix production bookmark one full millisecond lower.
+	// Force the coarse-timestamp tie: pin B's snapshot to A's exact write mtime, then align A's
+	// bookmark to the value utimes actually produced (NTFS quantizes to ~0.5 µs, so the written
+	// mtime can land a hair off the target). This yields a guaranteed tie — statAfter.mtimeMs
+	// === A's bookmark. An mtime-only `mtimeMs <= bookmark` guard sees equality and skips the
+	// reload; the mtime+size guard reloads because the size differs.
 	const statBefore = await fs.promises.stat(snapshotPath);
-	await fs.promises.utimes(snapshotPath, statBefore.atimeMs / 1000, (exactWriteMtimeMs - 0.002) / 1000);
+	await fs.promises.utimes(snapshotPath, statBefore.atimeMs / 1000, exactWriteMtimeMs / 1000);
 	const statAfter = await fs.promises.stat(snapshotPath);
-	assert.ok(statAfter.mtimeMs <= exactWriteMtimeMs && statAfter.mtimeMs > exactWriteMtimeMs - 1,
-		`test setup: same-tick republish must stay within window A's write tick (got ${statAfter.mtimeMs}, write mtime ${exactWriteMtimeMs})`);
+	(windowA as any).lastLoadedSnapshotMtime = statAfter.mtimeMs; // the tie: bookmark == file mtime
+	assert.notEqual(statAfter.size, (windowA as any).lastLoadedSnapshotSize,
+		'test setup: the republished snapshot must differ in size from the one window A bookmarked');
 
 	const merged = await windowA.loadSharedSnapshotIfChanged();
-	assert.equal(merged, 1, 'a same-tick republish must still be merged — an exact-mtime bookmark would suppress it');
+	assert.equal(merged, 2, 'a same-tick republish with different size must still be merged — an mtime-only guard would suppress it');
 	assert.equal(windowA.cache.get('/a.json')?.mtime, 5000);
+	assert.equal(windowA.cache.get('/b.json')?.mtime, 5000);
+});
+
+// The size-aware guard must not regress into re-parsing an unchanged snapshot on every refresh:
+// when neither the mtime nor the size moved, loadSharedSnapshotIfChanged() returns 0 without
+// touching the cache. (A rounded-down bookmark would always re-read; exact mtime + size does not.)
+test('loadSharedSnapshotIfChanged() skips an unchanged snapshot (same mtime and size) without re-merging', async () => {
+	const dir = tmpDir();
+	const writer = makeManager(dir);
+	writer.setCachedSessionData('/a.json', entry(1000), 10);
+	await writer.writeSharedSnapshot();
+
+	const reader = makeManager(dir);
+	const first = await reader.loadSharedSnapshotIfChanged();
+	assert.equal(first, 1, 'the first load merges the published entry');
+
+	// Locally overwrite with a NEWER in-memory entry, then call again on an unchanged snapshot:
+	// the guard must skip the reload entirely, leaving the newer local data untouched.
+	reader.setCachedSessionData('/a.json', entry(9000), 10);
+	const second = await reader.loadSharedSnapshotIfChanged();
+	assert.equal(second, 0, 'an unchanged snapshot must be skipped, not re-merged');
+	assert.equal(reader.cache.get('/a.json')?.mtime, 9000, 'a skipped reload must not clobber newer in-memory data');
 });
 
 // Distinct from the "clears a stale tombstone when accepting a NEWER entry" test above: this
