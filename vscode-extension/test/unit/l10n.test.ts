@@ -393,6 +393,17 @@ test('l10n: efficiency loading step labels resolve in English', () => {
 	}
 });
 
+test('l10n: main refresh loading step labels resolve in English', () => {
+	const expected: Record<string, string> = {
+		'loading.refresh.calculatingStats': 'Calculating usage statistics…',
+		'loading.refresh.analyzingUsage': 'Analysing usage patterns…',
+		'loading.refresh.scoringFluency': 'Scoring AI fluency…',
+	};
+	for (const [key, english] of Object.entries(expected)) {
+		assert.equal(t(key), english, `English value for ${key}`);
+	}
+});
+
 // Diagnostics — Mistral Cloud (Beta) tab (PR #2057 follow-up) — guards against
 // raw English literals resurfacing in the new tab for non-English locales.
 test('l10n: Mistral Cloud tab labels resolve in English', () => {
@@ -506,6 +517,22 @@ test('l10n: efficiency loading step labels resolve in zh-cn', () => {
 			'efficiency.error.title': '无法构建效率视图',
 			'efficiency.error.retry': '重试',
 			'efficiency.error.staleAfterClear': '构建此视图时缓存数据已被清除。',
+		};
+		for (const [key, chinese] of Object.entries(expected)) {
+			assert.equal(t(key), chinese, `zh-cn value for ${key}`);
+		}
+	} finally {
+		mock.setLanguage('en');
+	}
+});
+
+test('l10n: main refresh loading step labels resolve in zh-cn', () => {
+	mock.setLanguage('zh-cn');
+	try {
+		const expected: Record<string, string> = {
+			'loading.refresh.calculatingStats': '正在计算使用统计…',
+			'loading.refresh.analyzingUsage': '正在分析使用模式…',
+			'loading.refresh.scoringFluency': '正在评估 AI 熟练度…',
 		};
 		for (const [key, chinese] of Object.entries(expected)) {
 			assert.equal(t(key), chinese, `zh-cn value for ${key}`);
@@ -681,6 +708,32 @@ test('l10n: Efficiency Models tab control labels resolve in English and zh-cn', 
 		for (const [key, value] of Object.entries(chinese)) {
 			assert.equal(t(key), value, `zh-cn value for ${key}`);
 		}
+	} finally {
+		mock.setLanguage('en');
+	}
+});
+
+test('l10n: Copilot Budget gauge keys resolve in English', () => {
+	// Back the "🎯 Copilot Budget" tooltip row, which folds untracked (other
+	// devices/cloud) usage into the headline total so it agrees with the bar's
+	// percentage, plus its sub-rows: the tracked/untracked split on one line each
+	// and remaining budget on its own. A missing key would put a raw key like
+	// `tooltip.budgetRemaining` in the hover tooltip.
+	assert.equal(t('tooltip.copilotBudgetLabel'), 'Copilot Budget');
+	assert.equal(t('tooltip.budgetRemaining', '$40.79'), '$40.79 left');
+	assert.equal(t('tooltip.budgetOverBy', '$12.34'), '$12.34 over');
+	assert.equal(t('tooltip.budgetTrackedHere', '$556.61'), '$556.61 tracked here');
+	assert.equal(t('tooltip.budgetUntracked', '$202.60'), '$202.60 untracked (other devices/cloud)');
+});
+
+test('l10n: Copilot Budget gauge keys resolve in zh-cn', () => {
+	mock.setLanguage('zh-cn');
+	try {
+		assert.equal(t('tooltip.copilotBudgetLabel'), 'Copilot 预算');
+		assert.equal(t('tooltip.budgetRemaining', '$40.79'), '剩余 $40.79');
+		assert.equal(t('tooltip.budgetOverBy', '$12.34'), '超出 $12.34');
+		assert.equal(t('tooltip.budgetTrackedHere', '$556.61'), '本设备跟踪 $556.61');
+		assert.equal(t('tooltip.budgetUntracked', '$202.60'), '未跟踪(其他设备/云端) $202.60');
 	} finally {
 		mock.setLanguage('en');
 	}
