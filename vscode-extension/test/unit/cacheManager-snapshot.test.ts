@@ -469,6 +469,29 @@ test('loadSharedSnapshotIfChanged() clears a stale tombstone when accepting a ne
 	const windowB = makeManager(dir);
 	windowB.setCachedSessionData('/a.json', entry(5000), 10);
 	await windowB.writeSharedSnapshot();
+	// Window A recorded its own snapshot's mtime when it wrote above, and
+	// loadSharedSnapshotIfChanged() short-circuits on `mtimeMs <= lastLoadedSnapshotMtime`. These
+	// two writes can land in the same millisecond, which reads as "nothing changed" and makes the
+	// merge below return 0 — the test then fails on "the newer /a.json entry must be merged in".
+	// Express "window B published something newer" explicitly rather than relying on the clock
+	// advancing between two back-to-back writes. The production `mtimeMs <=` rule is right as it
+	// stands: real windows do not publish twice within a millisecond.
+	//
+	// Use a far-future wall-clock mtime, not `Date.now() + 1000`: on Windows the wall clock can
+	// jump BACKWARD by seconds (NTP slew, VM time sync, WSL2) and the wall clock can tick coarser
+	// than NTFS file mtimes. Either turns a "+1s" timestamp into a past one at the instant the
+	// file gets it, so windowA's recorded `lastLoadedSnapshotMtime` can end up >= the utimes'd
+	// value and the load short-circuits — the observed flake. A fixed far-future mtime can never
+	// be overtaken, and re-statting verifies the utimes actually took effect on this filesystem.
+	const snapshotMtime = new Date('2100-01-01T00:00:00Z');
+	const snapshotPath = windowB.getSharedSnapshotPath();
+	let snapshotMtimeMs = 0;
+	for (let attempt = 0; attempt < 3 && snapshotMtimeMs < snapshotMtime.getTime(); attempt++) {
+		await fs.promises.utimes(snapshotPath, snapshotMtime, snapshotMtime);
+		snapshotMtimeMs = (await fs.promises.stat(snapshotPath)).mtimeMs;
+	}
+	assert.equal(snapshotMtimeMs, snapshotMtime.getTime(),
+		'setting the snapshot mtime must take effect (a filesystem that silently drops it makes this test meaningless)');
 
 	// Window A picks up window B's newer snapshot via the merge path, not setCachedSessionData().
 	const merged = await windowA.loadSharedSnapshotIfChanged();
