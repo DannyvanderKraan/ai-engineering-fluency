@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import type { SessionFileCache } from '../../src/types';
 import { type CachePolicy, VsCodeCachePolicy } from '../../src/cachePolicy';
@@ -57,6 +58,11 @@ export class CacheManager {
 	// loadSharedSnapshotIfChanged() skip an unchanged snapshot without re-reading or parsing the
 	// whole snapshot on every idle poll, even on coarse-mtime filesystems where the stat ties.
 	private lastLoadedSnapshotPublishSeq = 0;
+	// SHA-256 digest of the loaded snapshot body. Used only when the generation cannot
+	// distinguish two same-mtime/same-size snapshots — the legacy case where both sides are
+	// generation 0 (a pre-sidecar writer's body has no publishSeq). Never computed on the common
+	// path; only when the stat ties AND the generation is 0.
+	private lastLoadedSnapshotDigest = '';
 	// Checkpoint tracking
 	private lastCheckpointTime = 0;
 	private entriesSinceLastCheckpoint = 0;
@@ -767,12 +773,10 @@ export class CacheManager {
 			// Load from the shared on-disk snapshot (globalStorageUri).
 			const snapshotPath = this.getSharedSnapshotPath();
 			try {
-				// Capture the file identity (mtime + size) BEFORE reading. Bookmarking this
-				// observed version is race-safe: a republish between this stat and the read below
-				// changes the post-read identity, so loadSharedSnapshotIfChanged() still detects
-				// and loads it next refresh. Statting AFTER the read would bookmark the newer
-				// file while sessionFileCache still holds the older bytes — permanently skipping
-				// the update (a same-tick publish could share the mtime, differing only in size).
+				// Capture the file identity (mtime + size) BEFORE reading: a republish between
+				// this stat and the read changes the post-read identity, so the next refresh still
+				// detects it. Statting AFTER the read would bookmark the newer file while
+				// sessionFileCache still holds the older bytes, permanently skipping the update.
 				let loadedMtime = 0;
 				let loadedSize = -1;
 				try {
@@ -813,15 +817,17 @@ export class CacheManager {
 
 				// Record the identity of the snapshot version ACTUALLY loaded. mtime+size are
 				// captured pre-read (a post-read stat could race a mid-read republish). The
-				// generation comes from the parsed envelope — the bytes actually loaded — NOT a
-				// separate sidecar read: a republish bumping the sidecar inside the read window
-				// would otherwise bookmark the newer generation against the older parsed bytes.
+				// generation comes from the parsed envelope, not a separate sidecar read: a
+				// republish bumping the sidecar inside the read window would otherwise bookmark
+				// the newer generation against the older parsed bytes.
 				this.lastLoadedSnapshotMtime = loadedMtime;
 				this.lastLoadedSnapshotSize = loadedSize;
+				const seq = envelope.publishSeq;
 				this.lastLoadedSnapshotPublishSeq =
-					(typeof envelope.publishSeq === 'number' && Number.isSafeInteger(envelope.publishSeq) && envelope.publishSeq >= 0)
-						? envelope.publishSeq
-						: 0;
+					(typeof seq === 'number' && Number.isSafeInteger(seq) && seq >= 0) ? seq : 0;
+				// Record the content digest too, so a legacy (publishSeq 0) same-tick republish
+				// with identical mtime+size can still be detected by content.
+				this.lastLoadedSnapshotDigest = crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
 
 			} catch (readErr: unknown) {
 				if ((readErr as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -1202,7 +1208,7 @@ export class CacheManager {
 	 * sidecar is written before the body, so on a tie a reader can otherwise see the new seq
 	 * alongside the previous body and bookmark a generation it never actually loaded.
 	 */
-	private async readSnapshotWithSeq(): Promise<{ entries: Record<string, SessionFileCache>; publishSeq: number } | undefined> {
+	private async readSnapshotWithSeq(): Promise<{ entries: Record<string, SessionFileCache>; publishSeq: number; raw: string } | undefined> {
 		const snapshotPath = this.getSharedSnapshotPath();
 		try {
 			const content = await fs.promises.readFile(snapshotPath, 'utf-8');
@@ -1229,6 +1235,7 @@ export class CacheManager {
 				publishSeq: (typeof envelope.publishSeq === 'number' && Number.isSafeInteger(envelope.publishSeq) && envelope.publishSeq >= 0)
 					? envelope.publishSeq
 					: 0,
+				raw: content,
 			};
 		} catch {
 			// Missing or partial/corrupt snapshot — caller falls back to its own data.
@@ -1269,7 +1276,11 @@ export class CacheManager {
 		// O(snapshot-size) re-read or parse on idle polls, while any republish (even same-tick,
 		// same-size) is detected by its higher generation.
 		if (mtimeMs < this.lastLoadedSnapshotMtime) {
-			return 0; // Strictly older than what we loaded.
+			// The mtime moved BACKWARDS — a clock rollback or a delete/recreate can produce a body
+			// with a higher durable generation but an older mtime. Don't trust the mtime ordering
+			// as authoritative: consult the generation via the same body/sidecar validation the
+			// tie path uses, so a newer publish isn't permanently skipped.
+			return this.loadOnStatTie(mtimeMs, size, loadStartedAt);
 		}
 		if (mtimeMs === this.lastLoadedSnapshotMtime && size === this.lastLoadedSnapshotSize) {
 			return this.loadOnStatTie(mtimeMs, size, loadStartedAt);
@@ -1282,7 +1293,8 @@ export class CacheManager {
 			this.bookmarkLoadedSnapshot(mtimeMs, size, this.lastLoadedSnapshotPublishSeq);
 			return 0;
 		}
-		return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt);
+		return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt,
+			crypto.createHash('sha256').update(loaded.raw, 'utf-8').digest('hex'));
 	}
 
 	/**
@@ -1305,7 +1317,8 @@ export class CacheManager {
 			if (loaded.publishSeq < seq) {
 				return 0; // Mid-write: sidecar ahead of the body. Retry next poll.
 			}
-			return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt);
+			return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt,
+				crypto.createHash('sha256').update(loaded.raw, 'utf-8').digest('hex'));
 		}
 		// Cheap fast path only when the sidecar is valid, positive, and EXACTLY at our bookmark
 		// (the normal unchanged idle case): skip without re-reading the body. Any other relation —
@@ -1322,19 +1335,44 @@ export class CacheManager {
 			return 0; // Unreadable/incompatible — leave the bookmark.
 		}
 		if (loaded.publishSeq <= this.lastLoadedSnapshotPublishSeq) {
-			return 0; // Genuinely unchanged (or no newer than what we loaded).
+			return this.mergeLegacyBody(loaded, mtimeMs, size, loadStartedAt);
 		}
-		return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt);
+		return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt,
+			crypto.createHash('sha256').update(loaded.raw, 'utf-8').digest('hex'));
+	}
+
+	/**
+	 * Merge a body whose generation is no newer than our bookmark. When both sides are
+	 * generation 0 (a legacy pre-sidecar body), the generation cannot distinguish a same-tick
+	 * republish, so compare the content digest instead.
+	 */
+	private mergeLegacyBody(
+		loaded: { entries: Record<string, SessionFileCache>; publishSeq: number; raw: string },
+		mtimeMs: number,
+		size: number,
+		loadStartedAt: number,
+	): number {
+		if (loaded.publishSeq === 0 && this.lastLoadedSnapshotPublishSeq === 0) {
+			const digest = crypto.createHash('sha256').update(loaded.raw, 'utf-8').digest('hex');
+			if (digest === this.lastLoadedSnapshotDigest) {
+				return 0; // Byte-identical legacy body.
+			}
+			return this.mergeAndBookmark(loaded.entries, mtimeMs, size, 0, loadStartedAt, digest);
+		}
+		return 0; // Genuinely unchanged (or no newer than what we loaded).
 	}
 
 	/**
 	 * Record the identity (mtime + size + publish generation) of the snapshot version that was
 	 * loaded, so the next loadSharedSnapshotIfChanged() can skip an unchanged snapshot.
 	 */
-	private bookmarkLoadedSnapshot(mtimeMs: number, size: number, publishSeq: number): void {
+	private bookmarkLoadedSnapshot(mtimeMs: number, size: number, publishSeq: number, digest?: string): void {
 		this.lastLoadedSnapshotMtime = mtimeMs;
 		this.lastLoadedSnapshotSize = size;
 		this.lastLoadedSnapshotPublishSeq = publishSeq;
+		if (digest !== undefined) {
+			this.lastLoadedSnapshotDigest = digest;
+		}
 	}
 
 	/**
@@ -1347,9 +1385,10 @@ export class CacheManager {
 		size: number,
 		publishSeq: number,
 		loadStartedAt: number,
+		digest?: string,
 	): number {
 		const merged = this.mergeSnapshotEntries(entries);
-		this.bookmarkLoadedSnapshot(mtimeMs, size, publishSeq);
+		this.bookmarkLoadedSnapshot(mtimeMs, size, publishSeq, digest);
 		if (merged > 0) {
 			this.deps.log(`Warmed cache from shared snapshot: merged ${merged} entr${merged === 1 ? 'y' : 'ies'} in ${Date.now() - loadStartedAt}ms`);
 		}

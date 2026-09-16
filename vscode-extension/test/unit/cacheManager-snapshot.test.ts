@@ -878,44 +878,82 @@ test('loadSharedSnapshotIfChanged() retries instead of bookmarking when the side
 	assert.equal(reader.cache.get('/a.json')?.mtime, 5000);
 });
 
-// Migration hazard the reviewer flagged: a pre-sidecar window (old extension version) can
-// republish the schema-1 body WITHOUT touching the sidecar. The body still carries a publishSeq
-// (the field predates the sidecar), so on a same-mtime/same-size tie a reader that trusts only
-// the sidecar would see a stale seq and skip the legacy update forever. When the body's embedded
-// publishSeq is HIGHER than the sidecar's, the body is newer than the sidecar knows — trust it.
-test('loadSharedSnapshotIfChanged() trusts a body whose embedded publishSeq is ahead of the sidecar (legacy pre-sidecar writer)', async () => {
+// Migration case the reviewer flagged: a pre-sidecar window (old extension version) writes a
+// schema-1 body with NO publishSeq field and no sidecar. The next new writer must start the
+// generation at 1 (not skip it), and a reader must treat the legacy body as loadable. This
+// replaces an earlier fixture that wrongly set `publishSeq: 5` — an older writer cannot produce
+// a field this PR introduces.
+test('a legacy pre-sidecar snapshot (no publishSeq, no sidecar) is loaded and the next write starts generation at 1', async () => {
+	const dir = tmpDir();
+	// Write a legacy envelope by hand: valid schema/cache version, entries, but NO publishSeq and
+	// NO sidecar file — exactly what the pre-sidecar extension produced.
+	const writer = makeManager(dir);
+	writer.setCachedSessionData('/a.json', entry(1000), 10);
+	const snapshotPath = writer.getSharedSnapshotPath();
+	const legacyEnvelope = {
+		schemaVersion: 1,
+		cacheVersion: 1,
+		cacheId: 'prod',
+		generatedAt: Date.now(),
+		entryCount: 1,
+		entries: { '/a.json': entry(1000) },
+		// note: no publishSeq — the pre-sidecar format
+	};
+	fs.mkdirSync(path.dirname(snapshotPath), { recursive: true });
+	fs.writeFileSync(snapshotPath, JSON.stringify(legacyEnvelope));
+
+	// A reader must load the legacy body (publishSeq defaults to 0).
+	const reader = makeManager(dir);
+	const merged = await reader.loadSharedSnapshotIfChanged();
+	assert.equal(merged, 1, 'a legacy snapshot with no publishSeq must still be loaded');
+	assert.equal((reader as any).lastLoadedSnapshotPublishSeq, 0, 'a legacy body defaults to generation 0');
+
+	// The next new writer must start the generation at 1 (and create the sidecar).
+	const nextWriter = makeManager(dir);
+	nextWriter.setCachedSessionData('/b.json', entry(2000), 10);
+	await nextWriter.writeSharedSnapshot();
+	const seqPath = (nextWriter as any).getSnapshotSeqPath();
+	assert.equal(fs.readFileSync(seqPath, 'utf-8').trim(), '1', 'the first new write after a legacy snapshot starts generation at 1');
+	const published = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
+	assert.equal(published.publishSeq, 1, 'the published body carries generation 1');
+});
+
+// A same-tick legacy republish (no publishSeq, no sidecar) must not be skipped just because the
+// generation is 0 on both sides: the body content can change while the stat fields tie, and the
+// reader must detect that via the body's content, not the generation.
+test('loadSharedSnapshotIfChanged() detects a same-tick legacy republish (no publishSeq) via body content', async () => {
 	const dir = tmpDir();
 	const writer = makeManager(dir);
 	writer.setCachedSessionData('/a.json', entry(1000), 10);
-	await writer.writeSharedSnapshot(); // body + sidecar at generation 1
+	const snapshotPath = writer.getSharedSnapshotPath();
+	const legacyEnvelope = {
+		schemaVersion: 1,
+		cacheVersion: 1,
+		cacheId: 'prod',
+		generatedAt: Date.now(),
+		entryCount: 1,
+		entries: { '/a.json': entry(1000) },
+	};
+	fs.mkdirSync(path.dirname(snapshotPath), { recursive: true });
+	fs.writeFileSync(snapshotPath, JSON.stringify(legacyEnvelope));
 
 	const reader = makeManager(dir);
 	await reader.loadSharedSnapshotIfChanged();
-	assert.equal((reader as any).lastLoadedSnapshotPublishSeq, 1, 'reader is at generation 1');
-	reader.cache.delete('/a.json');
+	assert.equal(reader.cache.get('/a.json')?.mtime, 1000, 'loaded the legacy entry');
 
-	// A legacy (pre-sidecar) writer predates the sidecar entirely, so remove it, then republish
-	// the body with a HIGHER publishSeq. Keep the JSON length identical (entry mtime 1000 ->
-	// 5000, same digit count) and pin the mtime to the reader's bookmark, so the stat ties and
-	// only the body reveals the update.
-	const snapshotPath = reader.getSharedSnapshotPath();
-	const seqPath = (reader as any).getSnapshotSeqPath();
-	await fs.promises.unlink(seqPath); // legacy deployment: no sidecar exists
-	const body = JSON.parse(await fs.promises.readFile(snapshotPath, 'utf-8'));
-	body.publishSeq = 5; // legacy writer bumps the body generation only
-	body.entries['/a.json'] = entry(5000); // 1000 -> 5000: same digit count, same size
-	await fs.promises.writeFile(snapshotPath, JSON.stringify(body));
-	// Pin the body to the reader's mtime so the stat ties.
+	// A legacy writer republishes with different content but the same mtime+size (same digit
+	// count) and no publishSeq. The generation is 0 on both sides, so only the body reveals it.
+	const republish = { ...legacyEnvelope, entries: { '/a.json': entry(5000) }, generatedAt: Date.now() };
+	await fs.promises.writeFile(snapshotPath, JSON.stringify(republish));
 	const bookmarkMtime = (reader as any).lastLoadedSnapshotMtime;
 	const statPre = await fs.promises.stat(snapshotPath);
 	await fs.promises.utimes(snapshotPath, statPre.atimeMs / 1000, bookmarkMtime / 1000);
 	const statAfter = await fs.promises.stat(snapshotPath);
 	(reader as any).lastLoadedSnapshotMtime = statAfter.mtimeMs; // exact mtime tie
 	assert.equal(statAfter.size, (reader as any).lastLoadedSnapshotSize, 'test setup: full stat tie (mtime and size)');
-	assert.ok(!fs.existsSync(seqPath), 'test setup: no sidecar exists in the legacy deployment');
 
 	const merged = await reader.loadSharedSnapshotIfChanged();
-	assert.equal(merged, 1, 'a body whose embedded publishSeq is ahead of the sidecar must be merged — a legacy pre-sidecar writer');
+	assert.equal(merged, 1, 'a same-tick legacy republish must be detected via body content, not skipped because generation is 0');
 	assert.equal(reader.cache.get('/a.json')?.mtime, 5000);
 });
 
