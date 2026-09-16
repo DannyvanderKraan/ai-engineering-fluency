@@ -63,6 +63,11 @@ export class CacheManager {
 	// generation 0 (a pre-sidecar writer's body has no publishSeq). Never computed on the common
 	// path; only when the stat ties AND the generation is 0.
 	private lastLoadedSnapshotDigest = '';
+	// Consecutive polls where the sidecar generation was ahead of the body it points at
+	// (sidecar-first write ordering means a reader can see a new seq with the previous body).
+	// After a bounded number of retries, reset the bookmark so the next stat change forces a
+	// full reload rather than re-parsing the stale body on every poll forever.
+	private sidecarAheadRetryCount = 0;
 	// Checkpoint tracking
 	private lastCheckpointTime = 0;
 	private entriesSinceLastCheckpoint = 0;
@@ -918,7 +923,8 @@ export class CacheManager {
 	 * current generation in a few bytes — without reading or parsing the whole snapshot — when
 	 * the snapshot's stat ties on a coarse-mtime filesystem.
 	 */
-	private getSnapshotSeqPath(): string {
+	/** @internal Visible for testing. */
+	getSnapshotSeqPath(): string {
 		const cacheId = this.getCacheIdentifier();
 		return path.join(this.context.globalStorageUri.fsPath, `cache_${cacheId}.seq`);
 	}
@@ -1297,18 +1303,7 @@ export class CacheManager {
 	private async loadOnStatTie(mtimeMs: number, size: number, loadStartedAt: number): Promise<number> {
 		const seq = await this.readSnapshotPublishSeq();
 		if (seq !== undefined && seq > this.lastLoadedSnapshotPublishSeq) {
-			// Newer sidecar generation: reload, but validate the body actually carries it (the
-			// sidecar is written before the body, so a mid-write publish shows a new seq with the
-			// previous body — retry next poll rather than bookmark a generation we never loaded).
-			const loaded = await this.readSnapshotWithSeq();
-			if (!loaded) {
-				return 0; // Unreadable/incompatible — leave the bookmark; a valid rewrite will advance the stat.
-			}
-			if (loaded.publishSeq < seq) {
-				return 0; // Mid-write: sidecar ahead of the body. Retry next poll.
-			}
-			return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt,
-				loaded.publishSeq === 0 ? crypto.createHash('sha256').update(loaded.raw, 'utf-8').digest('hex') : undefined);
+			return this.loadOnNewerSidecar(seq, mtimeMs, size, loadStartedAt);
 		}
 		// Cheap fast path only when the sidecar is valid, positive, and EXACTLY at our bookmark
 		// (the normal unchanged idle case): skip without re-reading the body. Any other relation —
@@ -1317,16 +1312,19 @@ export class CacheManager {
 		// sidecar, or a same-size recreate) — falls through to reconcile from the body, because
 		// the sidecar then can't vouch that the body's embedded publishSeq hasn't moved ahead.
 		if (seq !== undefined && seq > 0 && seq === this.lastLoadedSnapshotPublishSeq) {
+			this.sidecarAheadRetryCount = 0;
 			return 0; // Unchanged: the sidecar matches our loaded generation.
 		}
 		// Sidecar absent, unreadable, or regressed: reconcile from the body's embedded publishSeq.
 		const loaded = await this.readSnapshotWithSeq();
 		if (!loaded) {
+			this.sidecarAheadRetryCount = 0;
 			return 0; // Unreadable/incompatible — leave the bookmark.
 		}
 		if (loaded.publishSeq <= this.lastLoadedSnapshotPublishSeq) {
 			return this.mergeLegacyBody(loaded, mtimeMs, size, loadStartedAt);
 		}
+		this.sidecarAheadRetryCount = 0;
 		return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt,
 			loaded.publishSeq === 0 ? crypto.createHash('sha256').update(loaded.raw, 'utf-8').digest('hex') : undefined);
 	}
@@ -1350,6 +1348,33 @@ export class CacheManager {
 			return this.mergeAndBookmark(loaded.entries, mtimeMs, size, 0, loadStartedAt, digest);
 		}
 		return 0; // Genuinely unchanged (or no newer than what we loaded).
+	}
+
+	/**
+	 * Handle a stat tie where the sidecar generation is newer than our bookmark. The body may
+	 * still be mid-write (sidecar-first ordering), so validate the body carries the generation
+	 * before merging. After a bounded number of retries with the sidecar still ahead, reset the
+	 * bookmark so the next stat change forces a reload rather than re-parsing the stale body
+	 * forever (e.g. a crashed writer).
+	 */
+	private async loadOnNewerSidecar(seq: number, mtimeMs: number, size: number, loadStartedAt: number): Promise<number> {
+		const loaded = await this.readSnapshotWithSeq();
+		if (!loaded) {
+			this.sidecarAheadRetryCount = 0;
+			return 0; // Unreadable/incompatible — leave the bookmark; a valid rewrite will advance the stat.
+		}
+		if (loaded.publishSeq < seq) {
+			// Mid-write: sidecar ahead of the body.
+			if (++this.sidecarAheadRetryCount >= 3) {
+				this.deps.log(`Sidecar generation ${seq} still ahead of body ${loaded.publishSeq} after ${this.sidecarAheadRetryCount} polls; resetting bookmark to force reload`);
+				this.lastLoadedSnapshotPublishSeq = 0;
+				this.sidecarAheadRetryCount = 0;
+			}
+			return 0;
+		}
+		this.sidecarAheadRetryCount = 0;
+		return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt,
+			loaded.publishSeq === 0 ? crypto.createHash('sha256').update(loaded.raw, 'utf-8').digest('hex') : undefined);
 	}
 
 	/**

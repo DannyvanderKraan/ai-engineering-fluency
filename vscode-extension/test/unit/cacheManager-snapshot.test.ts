@@ -497,7 +497,8 @@ test('deleteSharedSnapshot: deletes correctly while a writer holds the cache loc
 	const writer = makeManager(dir);
 	assert.equal(await writer.acquireCacheLock(), true, 'writer holds the cache lock');
 	try {
-		await clearer.deleteSharedSnapshot();
+		// Use a short retry budget so the test doesn't wait out the production 10s default.
+		await clearer.deleteSharedSnapshot({ attempts: 1, delayMs: 0 });
 		assert.equal(fs.existsSync(clearer.getSharedSnapshotPath()), false,
 			'the delete must complete (not deadlock) while a writer holds the lock');
 		// The clearer's own bookmark is reset so it won't serve the deleted data.
@@ -1387,4 +1388,37 @@ test('clearAllCachedData() resets the checkpoint dirty count too, so the next cy
 
 	assert.equal(m.hasUnflushedCheckpointWork(), false,
 		'a clear must reset the dirty count along with the entries it was tracking — otherwise the next leader cycle sees stale dirty state and performs a full checkpoint save of the now-empty cache before parsing anything of its own');
+});
+
+// A writer can crash between bumping the sidecar and renaming the body, leaving the sidecar
+// permanently ahead. The follower must not re-parse the stale body on every poll forever.
+test('loadSharedSnapshotIfChanged: bounded retries on sidecar-ahead-of-body, then resets bookmark', async () => {
+	const dir = tmpDir();
+	const writer = makeManager(dir);
+	writer.setCachedSessionData('/a.json', entry(1000), 10);
+	await writer.writeSharedSnapshot();
+
+	// Crash simulation: bump the sidecar but never write the body.
+	const seqPath = writer.getSnapshotSeqPath();
+	const currentSeq = parseInt(fs.readFileSync(seqPath, 'utf-8'), 10);
+	fs.writeFileSync(seqPath, String(currentSeq + 1));
+
+	const reader = makeManager(dir);
+	// Reader loads the body at seq N (before the crash), then the crash bumps the sidecar to N+1.
+	await reader.loadSharedSnapshotIfChanged();
+	(reader as any).lastLoadedSnapshotPublishSeq = currentSeq; // pretend we loaded seq N
+
+	// First two polls: retry, keep bookmark.
+	for (let i = 0; i < 2; i++) {
+		const added = await reader.loadSharedSnapshotIfChanged();
+		assert.equal(added, 0, `poll ${i + 1}: mid-write should not merge`);
+		assert.equal((reader as any).lastLoadedSnapshotPublishSeq, currentSeq,
+			`poll ${i + 1}: bookmark must not advance while sidecar is ahead`);
+	}
+
+	// Third poll: bounded retry kicks in, bookmark resets to force a reload on next stat change.
+	const added = await reader.loadSharedSnapshotIfChanged();
+	assert.equal(added, 0, 'poll 3: still no merge (body is stale)');
+	assert.equal((reader as any).lastLoadedSnapshotPublishSeq, 0,
+		'poll 3: bookmark resets after bounded retries so the next stat change forces a reload');
 });
