@@ -1161,7 +1161,7 @@ return true;
 	 * Compute daily rollups from local session files.
 	 * Uses cached session data when available to avoid re-parsing files.
 	 */
-	private async computeDailyRollupsFromLocalSessions(args: { lookbackDays: number; userId?: string; sessionFiles?: string[]; skipMtimeFilter?: boolean; includeEditorDimension?: boolean; onProgress?: (processed: number, total: number, daysFound: number) => void }): Promise<{
+	private async computeDailyRollupsFromLocalSessions(args: { lookbackDays: number; userId?: string; sessionFiles?: string[]; skipMtimeFilter?: boolean; includeEditorDimension?: boolean; collectEditorType?: boolean; onProgress?: (processed: number, total: number, daysFound: number) => void }): Promise<{
 		rollups: Map<string, { key: DailyRollupKey; value: DailyRollupValue }>;
 		workspaceNamesById: Record<string, string>;
 		machineNamesById: Record<string, string>;
@@ -1170,6 +1170,7 @@ return true;
 		const lookbackDays = args.lookbackDays;
 		const skipMtimeFilter = args.skipMtimeFilter === true;
 		const includeEditorDimension = args.includeEditorDimension === true;
+		const collectEditorType = args.collectEditorType === true;
 		const onProgress = args.onProgress;
 		const userId = (args.userId ?? '').trim() || undefined;
 		const now = new Date();
@@ -1200,7 +1201,7 @@ return true;
 				skipMtimeFilter, startMs, now, machineId, userId,
 				includeEditorDimension, useCachedData, rollups,
 				workspaceNamesById, totalFiles, onProgress, progress,
-				editorTypeByFile
+				editorTypeByFile, collectEditorType
 			});
 		}
 
@@ -1234,13 +1235,19 @@ return true;
 			onProgress: ((processed: number, total: number, daysFound: number) => void) | undefined;
 			progress: { filesSkipped: number; filesProcessed: number; cacheHits: number; cacheMisses: number };
 			editorTypeByFile: Map<string, string>;
+			collectEditorType: boolean;
 		}
 	): Promise<void> {
 		// Classify the editor type before the lookback filter so that every
 		// discovered file — including ones older than the lookback window —
 		// gets an entry in the blob-upload map.  The upload list is the full
 		// discovery list, not just files within the lookback.
-		const editorForFile = this.getEditorForFile(sessionFile, true);
+		// When includeEditorDimension is true the rollup itself needs the
+		// label, so classify unconditionally.  When it is false, only
+		// classify when the blob upload needs the map, to avoid blocking
+		// I/O on every table-only sync.
+		const needsClassification = ctx.includeEditorDimension || ctx.collectEditorType;
+		const editorForFile = needsClassification ? this.getEditorForFile(sessionFile, true) : undefined;
 		if (editorForFile) { ctx.editorTypeByFile.set(sessionFile, editorForFile); }
 
 		const fileMtimeMs = await this.statSessionFileForRollup(sessionFile, ctx);
@@ -1548,7 +1555,8 @@ return true;
 		const sessionFiles = await this.deps.sessionHandlers.getCopilotSessionFiles();
 		const resolvedIdentity = await this.resolveEffectiveUserIdentityForSync(settings, sharingPolicy.includeUserDimension);
 		const { rollups, workspaceNamesById, machineNamesById, editorTypeByFile } = await this.computeDailyRollupsFromLocalSessions({
-			lookbackDays: settings.lookbackDays, userId: resolvedIdentity.userId, sessionFiles
+			lookbackDays: settings.lookbackDays, userId: resolvedIdentity.userId, sessionFiles,
+			collectEditorType: blobUploadNeeded
 		});
 
 		const sortedDays = this.getSortedDayKeys(rollups);
