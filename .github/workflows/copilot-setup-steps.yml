@@ -146,7 +146,6 @@ jobs:
               --prefix "${AZURE_DATASET_ID}/" \
               --include metadata \
               --auth-mode login \
-              --num-results "*" \
               --output json 2>/dev/null | \
               node -e "
                 const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
