@@ -2158,7 +2158,13 @@ class CopilotTokenTracker implements vscode.Disposable {
 			// persistRefreshResult() save, or another window's entirely — cannot land its rename
 			// after this delete and resurrect the data this clear is removing. See that method's
 			// doc comment for why the lock, not just the in-memory clear generation, is required.
-			await this.cacheManager.deleteSharedSnapshot();
+			//
+			// Its return value distinguishes a fully durable clear (both the on-disk snapshot delete
+			// and the epoch marker write actually landed) from one that only cleared this window's
+			// own memory: this window's own cache is empty either way, but only the former is visible
+			// to a peer window at all — see deleteSharedSnapshot()'s doc comment for both failure
+			// branches this can mean.
+			const durablyCleared = await this.cacheManager.deleteSharedSnapshot();
 
 			// Reset diagnostics loaded flag so the diagnostics view will reload files
 			this.diagnosticsHasLoadedFiles = false;
@@ -2166,8 +2172,17 @@ class CopilotTokenTracker implements vscode.Disposable {
 			this.diagnosticsAllSessionFiles = [];
 			this.diagnosticsTtftCache.clear();
 
-			this.log(`Cache cleared successfully. Removed ${cacheSize} entries.`);
-			vscode.window.showInformationMessage('Cache cleared successfully. Reloading statistics...');
+			if (durablyCleared) {
+				this.log(`Cache cleared successfully. Removed ${cacheSize} entries.`);
+				vscode.window.showInformationMessage('Cache cleared successfully. Reloading statistics...');
+			} else {
+				// Deliberately generic: durablyCleared is false for either failure branch inside
+				// deleteSharedSnapshot() (the epoch write itself failing, or the snapshot delete
+				// failing before the epoch is even touched), and this message must not claim to know
+				// which one happened.
+				this.warn(`Cache cleared locally (removed ${cacheSize} entries), but could not durably record the clear for other open windows.`);
+				vscode.window.showWarningMessage(l10n.t('cacheClear.epochNotPersistedWarning'));
+			}
 
 			// Trigger a refresh after clearing the cache
 			this.log('Reloading token statistics...');
@@ -2263,7 +2278,61 @@ class CopilotTokenTracker implements vscode.Disposable {
 			isMcpTool: (t) => this.isMcpTool(t),
 			extractMcpServerName: (t) => this.extractMcpServerName(t),
 		});
-		this.cacheManager = new CacheManager(context, { log: (m: string) => this.log(m), warn: (m: string) => this.warn(m), error: (m: string) => this.error(m) }, CopilotTokenTracker.CACHE_VERSION);
+		this.cacheManager = new CacheManager(context, {
+			log: (m: string) => this.log(m),
+			warn: (m: string) => this.warn(m),
+			error: (m: string) => this.error(m),
+			// Mirrors clearCache()'s own local-clear invalidation, minus the two steps that are
+			// clearCache()-specific rather than cache-state invalidation: clearAllCachedData() (the
+			// CacheManager whose own detection this is reacting to already dropped its session cache)
+			// and deleteSharedSnapshot()/the success-or-warning message (this window isn't the one
+			// that cleared, so there's nothing here for it to delete or announce). Everything else
+			// clearCache() does to make sure THIS window stops serving pre-clear data applies equally
+			// to a peer-detected clear:
+			// - The derived-stat caches: CacheManager has no visibility into this class's separate,
+			//   generation-stamped caches, so without this a view like showDetails() could keep
+			//   rendering statistics computed before the peer's clear even though the underlying
+			//   session cache was correctly dropped.
+			// - The diagnostics caches: same shape of staleness, for the diagnostics view's own
+			//   loaded-files tracking and model-usage handlers.
+			// - The open Efficiency panel: unlike the other panels (which get republished by the next
+			//   periodic refresh once the generation bump above forces a recompute), showEfficiency()
+			//   returns immediately for an already-open panel and the regular refresh never publishes
+			//   to it — nothing else would ever push it a rebuild.
+			onPeerClearDetected: () => {
+				this.lastDetailedStats = undefined;
+				this.lastDailyStats = undefined;
+				this.lastFullDailyStats = undefined;
+				this.lastUsageAnalysisStats = undefined;
+				this.lastDashboardData = undefined;
+				this.lastEfficiencySessionInputs = undefined;
+				this._lastEfficiencyViewData = undefined;
+				this._memoryFilesAnalysisScannedAt = undefined;
+				this._cacheGeneration++;
+
+				this.diagnosticsHasLoadedFiles = false;
+				this.diagnosticsCachedFiles = [];
+				this.diagnosticsAllSessionFiles = [];
+				this.diagnosticsTtftCache.clear();
+
+				if (this.efficiencyPanel) {
+					this.log('⚡ Rebuilding the open Efficiency view after a peer window\'s clear...');
+					this.requestEfficiencyRebuild();
+				}
+
+				// Resetting diagnosticsHasLoadedFiles alone only affects the *next* request a webview
+				// happens to send — it does not itself make one happen. An already-open panel's next
+				// modelUsageResult/ttftResult request would just see the reset flag and reply with
+				// stillLoading: true forever, with nothing having scheduled a real load to eventually
+				// flip it back. Proactively kicking off the same background load
+				// showDiagnosticReport() already triggers whenever the panel is revealed closes that
+				// gap, mirroring the Efficiency panel's own explicit rebuild above.
+				if (this.diagnosticsPanel) {
+					this.log('🔍 Reloading the open Diagnostic Report after a peer window\'s clear...');
+					this.loadDiagnosticDataInBackground(this.diagnosticsPanel);
+				}
+			},
+		}, CopilotTokenTracker.CACHE_VERSION);
 		this.hookManager = new HookManager(context.globalState, (msg) => this.log(msg));
 		this.sessionDiscovery = new SessionDiscovery({
 			log: (m) => this.log(m),
@@ -2809,6 +2878,13 @@ class CopilotTokenTracker implements vscode.Disposable {
 				try { await this._cacheFileLoadPromise; } catch { /* already logged in loadCacheFromStorage */ }
 			}
 			if (this.shouldAbandonInstantPaintAfterCacheLoad()) { return; }
+			// _cacheFileLoadPromise settling only means loadCacheFromStorage() re-synchronized with
+			// the epoch as of ITS OWN completion — a peer clear landing in the gap between that and
+			// this line would leave the in-memory cache about to be read below stale, with nothing
+			// having bumped _cacheGeneration to make canPublishInstantPaint()'s check further down
+			// catch it. This re-checks immediately before that read, the same way every other reader
+			// of `cache` (loadSharedSnapshotIfChanged(), writeSharedSnapshot()) already does.
+			await this.cacheManager.checkClearEpoch();
 			if (this.cacheManager.cache.size === 0) { return; }
 
 			// Same window the real refresh bounds `preloaded` to (see _preloadSessionFiles()'s own
