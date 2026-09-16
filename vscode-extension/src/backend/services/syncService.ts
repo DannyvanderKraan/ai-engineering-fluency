@@ -1240,8 +1240,9 @@ return true;
 	): Promise<void> {
 		// Classify the editor type before the lookback filter so that every
 		// discovered file — including ones older than the lookback window —
-		// gets an entry in the blob-upload map.  The upload list is the full
-		// discovery list, not just files within the lookback.
+		// gets an entry in the blob-upload map when the editor type can be
+		// determined.  The upload list is the full discovery list, not just
+		// files within the lookback.
 		// When includeEditorDimension is true the rollup itself needs the
 		// label, so classify unconditionally.  When it is false, only
 		// classify when the blob upload needs the map, to avoid blocking

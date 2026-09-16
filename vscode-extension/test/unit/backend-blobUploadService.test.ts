@@ -2,6 +2,7 @@ import './vscode-shim-register';
 import test from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { createMockExtensionContext } from './vscode-test-helpers';
@@ -360,7 +361,7 @@ test('uploadSessionFiles passes undefined editorType when map is not provided', 
 
 /** Helper: create a temp file and return its path + cleanup. */
 function makeTempSessionFile(content: string): { filePath: string; cleanup: () => void } {
-	const dir = fs.mkdtempSync(path.join(process.cwd(), 'blob-test-'));
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'blob-test-'));
 	const filePath = path.join(dir, 'session-test.json');
 	fs.writeFileSync(filePath, content, 'utf8');
 	return { filePath, cleanup: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} } };
