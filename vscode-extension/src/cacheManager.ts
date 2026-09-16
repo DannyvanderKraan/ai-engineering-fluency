@@ -815,19 +815,9 @@ export class CacheManager {
 				);
 				this.deps.log(`Loaded ${this.sessionFileCache.size} cached session files from disk snapshot (${cacheId}) in ${Date.now() - loadStartedAt}ms`);
 
-				// Record the identity of the snapshot version ACTUALLY loaded. mtime+size are
-				// captured pre-read (a post-read stat could race a mid-read republish). The
-				// generation comes from the parsed envelope, not a separate sidecar read: a
-				// republish bumping the sidecar inside the read window would otherwise bookmark
-				// the newer generation against the older parsed bytes.
-				this.lastLoadedSnapshotMtime = loadedMtime;
-				this.lastLoadedSnapshotSize = loadedSize;
-				const seq = envelope.publishSeq;
-				this.lastLoadedSnapshotPublishSeq =
-					(typeof seq === 'number' && Number.isSafeInteger(seq) && seq >= 0) ? seq : 0;
-				// Record the content digest too, so a legacy (publishSeq 0) same-tick republish
-				// with identical mtime+size can still be detected by content.
-				this.lastLoadedSnapshotDigest = crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
+				// Record the identity of the snapshot version ACTUALLY loaded (see the helper for
+				// why the generation comes from the parsed envelope, not a separate sidecar read).
+				this.bookmarkLoadedSnapshotIdentity(loadedMtime, loadedSize, envelope, content);
 
 			} catch (readErr: unknown) {
 				if ((readErr as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -1294,7 +1284,7 @@ export class CacheManager {
 			return 0;
 		}
 		return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt,
-			crypto.createHash('sha256').update(loaded.raw, 'utf-8').digest('hex'));
+			loaded.publishSeq === 0 ? crypto.createHash('sha256').update(loaded.raw, 'utf-8').digest('hex') : undefined);
 	}
 
 	/**
@@ -1318,7 +1308,7 @@ export class CacheManager {
 				return 0; // Mid-write: sidecar ahead of the body. Retry next poll.
 			}
 			return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt,
-				crypto.createHash('sha256').update(loaded.raw, 'utf-8').digest('hex'));
+				loaded.publishSeq === 0 ? crypto.createHash('sha256').update(loaded.raw, 'utf-8').digest('hex') : undefined);
 		}
 		// Cheap fast path only when the sidecar is valid, positive, and EXACTLY at our bookmark
 		// (the normal unchanged idle case): skip without re-reading the body. Any other relation —
@@ -1338,7 +1328,7 @@ export class CacheManager {
 			return this.mergeLegacyBody(loaded, mtimeMs, size, loadStartedAt);
 		}
 		return this.mergeAndBookmark(loaded.entries, mtimeMs, size, loaded.publishSeq, loadStartedAt,
-			crypto.createHash('sha256').update(loaded.raw, 'utf-8').digest('hex'));
+			loaded.publishSeq === 0 ? crypto.createHash('sha256').update(loaded.raw, 'utf-8').digest('hex') : undefined);
 	}
 
 	/**
@@ -1373,6 +1363,31 @@ export class CacheManager {
 		if (digest !== undefined) {
 			this.lastLoadedSnapshotDigest = digest;
 		}
+	}
+
+	/**
+	 * Bookmark the identity of the snapshot version ACTUALLY loaded at startup. mtime+size are
+	 * captured pre-read (a post-read stat could race a mid-read republish). The generation comes
+	 * from the parsed envelope, not a separate sidecar read: a republish bumping the sidecar
+	 * inside the read window would otherwise bookmark the newer generation against the older
+	 * parsed bytes. The content digest is recorded ONLY for a legacy (publishSeq 0) body, so a
+	 * same-tick republish with identical mtime+size can still be detected by content — on the
+	 * normal path (positive generation) the generation alone suffices, so skip the O(size) hash.
+	 */
+	private bookmarkLoadedSnapshotIdentity(
+		mtimeMs: number,
+		size: number,
+		envelope: { publishSeq?: unknown },
+		raw: string,
+	): void {
+		this.lastLoadedSnapshotMtime = mtimeMs;
+		this.lastLoadedSnapshotSize = size;
+		const seq = envelope.publishSeq;
+		this.lastLoadedSnapshotPublishSeq =
+			(typeof seq === 'number' && Number.isSafeInteger(seq) && seq >= 0) ? seq : 0;
+		this.lastLoadedSnapshotDigest = this.lastLoadedSnapshotPublishSeq === 0
+			? crypto.createHash('sha256').update(raw, 'utf-8').digest('hex')
+			: '';
 	}
 
 	/**
