@@ -90,7 +90,7 @@ pr-risk/
 
 # Generated cloud-agent session cache from copilot-setup-steps; contains only
 # ephemeral fetched timestamps/counts and is recreated on demand.
-usage-data/agent-sessions.json
+usage-data/agent-sessions.json-*
 
 # Throwaway fixture directories created by the vscode-extension unit suite.
 # The tests create these under os.tmpdir(), or under .test-fixtures/ where the
@@ -106,6 +106,7 @@ vscode-extension/ctt-cache-*/
 vscode-extension/ctt-dev-cleanup-*/
 vscode-extension/ctt-lock-test-*/
 vscode-extension/ctt-rollups-*/
+vscode-extension/ctt-snapshot-*/
 vscode-extension/ctt-snapshot-test-*/
 vscode-extension/pi-test-*/
 vscode-extension/pi-discover-*/
