@@ -61,6 +61,11 @@ const DIST_DIR = path.join(REPO_ROOT, 'vscode-extension', 'dist', 'webview');
 const { buildPageHtml, loadFixture } = require(path.join(SKILL_DIR, 'lib', 'harness.js'));
 const { loadChromium } = require(path.join(SKILL_DIR, 'lib', 'browser.js'));
 const { parseArgs, readConfig, selectViews } = require(path.join(SKILL_DIR, 'lib', 'config.js'));
+// The step vocabulary (`click`, `select`, `post`) is shared with the visual
+// diff's `states`, so a scenario and a screenshot state read alike. The
+// `select` picking stays inline here because this runner also has to tell a
+// legitimate no-op (nothing else to select) from a change.
+const { PICK_OPTION, applyStep, describeStep } = require(path.join(SKILL_DIR, 'lib', 'steps.js'));
 
 const { collectHandledCommandsFromAst, widenHandledFromText, collectTsFiles } = require('./validate-webview-contract.js');
 
@@ -277,24 +282,6 @@ async function clickControl(page, control) {
   return { status: 'dead', posted, domChanged: false, quiet };
 }
 
-/**
- * Picks the value a `select` step should switch to: the declared one, or the
- * first enabled option that is not already selected. Returns null when the
- * select has nothing else to offer, which is a legitimate no-op, not a failure.
- */
-const PICK_OPTION = ([selector, wanted]) => {
-  const el = document.querySelector(selector);
-  if (!el) {
-    return { missing: true };
-  }
-  const options = Array.from(el.options).filter((o) => !o.disabled);
-  if (wanted !== null && wanted !== undefined) {
-    return options.some((o) => o.value === wanted) ? { value: wanted } : { unavailable: true };
-  }
-  const next = options.find((o) => o.value !== el.value);
-  return next ? { value: next.value } : { noop: true };
-};
-
 /** Replays one declared scenario on a fresh page and reports what each step did. */
 async function runScenario(page, view, scenario) {
   const steps = [];
@@ -302,7 +289,7 @@ async function runScenario(page, view, scenario) {
   const fail = (control, detail) => findings.push({ view: view.id, kind: 'scenario-step-failed', control, detail });
 
   for (const step of scenario.steps) {
-    const label = `${scenario.name}: ${step.click ? `click ${step.click}` : `select ${step.select}`}`;
+    const label = `${scenario.name}: ${describeStep(step)}`;
     // A select with nothing else to offer changes nothing, but the step still
     // has to clear the shared checks below — a broken single-option state is
     // exactly what `expect` is there to catch.
@@ -314,11 +301,10 @@ async function runScenario(page, view, scenario) {
       window.__HARNESS_ERRORS__.length = 0;
     });
 
-    if (step.click) {
-      try {
-        await page.locator(step.click).first().click({ timeout: 2000, noWaitAfter: true });
-      } catch (error) {
-        fail(label, `could not click: ${String(error.message).split('\n')[0]}`);
+    if (step.click || step.post) {
+      const reason = await applyStep(page, step);
+      if (reason) {
+        fail(label, reason);
         break;
       }
     } else {
