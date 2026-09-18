@@ -4,6 +4,260 @@ All notable changes to the VS Code extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.18.0]
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Changes
+* feat: add 4 friendly tool name(s) from issue #1846 by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1848
+* chore(deps): fix Dependabot alerts (undici, fast-uri, js-yaml) by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1845
+* Add once-daily leader-only background scan for stale git worktrees by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1850
+* refactor: decompose _saveConfigAndActivate into focused private helpers by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1849
+* feat(localization): Implement webview localization support across multiple components by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1847
+* chore: sync model data from rajbos/github-copilot-model-notifier by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1853
+* Hide "selected providers" cost row when GitHub Copilot is the only provider by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1851
+* feat: group custom endpoint (BYOK) models under their own provider group by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1852
+* fix: bump engines.vscode to ^1.134.0 to match @types/vscode by @rajbos with @Copilot in https://github.com/rajbos/ai-engineering-fluency/pull/1859
+* fix: stop posh-hook.ps1 from blocking shell startup on usage --json by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1860
+* Add visual-view-diff skill for headless webview screenshot testing by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1866
+* fix(ci): fall back to pinned Node version when .nvmrc is missing in Copilot setup steps by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1868
+* feat(sharing-server): expose a composable app factory and publish to npm by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1863
+* feat(efficiency): compare models head-to-head in a new Models tab by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1861
+* feat: add PR risk review workflow, skill, and contributor gate by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1869
+* ci: use --allow-all-tools instead of --allow-all in Copilot CLI workflows by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1870
+* Add weekly download milestone tracker workflow by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1871
+* Show untracked Copilot AIC usage and rename billing coverage title by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1872
+* feat(cloud-agent): account-wide agent tasks with an hourly cached snapshot by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1875
+* test: add unit coverage for billing other-sessions row by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1874
+* ci: add test-coverage companion check to CI workflow by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1873
+* fix: resolve raw localization keys shown in UI (status bar, output channel, webview nav) by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1876
+* fix: localize remaining hard-coded dialog buttons and status bar name by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1877
+* fix(tools): map ccd_session server name and flag unmapped server names as unknown by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1879
+* feat(usage): Corrections tab detecting agent/user correction moments by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1878
+* fix: friendly names and cost attribution for model ID variants by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1880
+* fix(claude-desktop): discover renamed claude-code-sessions directory by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1884
+* fix: tighten fluency radar chart layout to remove wasted vertical space by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1883
+* feat(usage): Skill Suggestions from repeated first prompts across sessions by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1893
+* fix(insights): count CLI as agentic in mode-diversity insight + split Copilot App usage by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1885
+* fix(usage): make repo hygiene analysis robust and keep button layout stable by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1882
+* fix(usage): stop Repository PRs and Cloud Agent tabs hanging on Loading by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1881
+* feat(usage): add local model leaderboard by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1897
+* fix(usage): make worktree notification "Show Me" reliably open the Worktrees tab by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1895
+* fix: agent-review suggestions for PR #1895 by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1896
+* Add weekly agent-skills-eval workflow driven by the Copilot CLI by @rajbos with @Copilot in https://github.com/rajbos/ai-engineering-fluency/pull/1894
+* Add configurable model leaderboard bubbles by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1898
+* Fix dropped extension-to-webview messages by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1899
+* Fix Insights navigation targets by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1900
+* Fix correction insight accuracy by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1901
+* Harden AI PR detection: gate on user.type, add app mapping and co-author signal by @claude[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1902
+* Prevent worktree discovery from stalling on blocked roots by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1906
+* Prevent local model leaderboard label overlap by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1907
+* Add per-repository Dark Factory readiness scan by @claude[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1905
+* Fix discovery progress timer start by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1908
+* Add 90-day time window to shared selectors by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1910
+* Defer stalled session preloads by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1909
+* refactor: decompose startTimerIfEnabled into focused private helpers by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1913
+* Speed up iterative VS Code extension compilation by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1911
+* Fix recent sessions loading in thin IDE hosts by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1912
+* test: cover startTimerIfEnabled skip-reason logging by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1914
+* ci(skills-eval): upload the HTML report as its own artifact by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1917
+* Fix webview message trust check discarding every extension message by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1919
+* chore: sync model data from rajbos/github-copilot-model-notifier by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1918
+* Fix potential deadlock in CliBridge inflight-task cleanup by @rajbos with @Copilot in https://github.com/rajbos/ai-engineering-fluency/pull/1915
+* skills-eval: report model count and per-skill suggested next steps by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1921
+* Fix Repository Hygiene Analysis false positive for missing README by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1924
+* Fix label overlap in efficiency frontier chart for tightly clustered bubbles by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1925
+* Fix task-category data loss in periodic refresh aggregation (Charts By Task week/month) by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1927
+* Collapse long-tail models into an "Other models" group in the local leaderboard by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1928
+* Fix workspace health matrix dropping non-VS Code editor sessions by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1926
+* fix: prevent inline JSON/dict fragments in toolNames.json friendly names by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1933
+* fix(cloud-agent): resolve account-wide task repository IDs to owner/repo by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1931
+* feat: add 3 friendly tool name(s) from issue #1923 by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1936
+* Add webview contract, interaction smoke and a one-command release preflight by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1935
+* Follow-ups from PR #1919: timeout labelling, stale extension buttons, diagnostics message race by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1920
+* fix: include correctionReport in silent Usage Analysis panel refresh by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1934
+* chore: sync model data from rajbos/github-copilot-model-notifier by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1939
+* fix(toolnames): visible warning on dedup-blocked PRs + camelCase tool-ID matching by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1943
+* Add shared task classification pipeline and task-category stacked chart (tokens/cost/sessions) by @rajbos with @Copilot in https://github.com/rajbos/ai-engineering-fluency/pull/1916
+* fix(cache): use stable dev-mode cache identifier across debug launches by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1945
+* feat: document VS Code Chat's debug log + a Research > TTFT diagnostics tab by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1937
+* adding missing leftover files by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1947
+* Hide decimals for CO2/water tooltip values at 1000+ by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1948
+* fix: avoid CodeQL temp-dir false positive in safeFileRead by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1946
+* fix: skip edits whose replacement is the bare NO_EDITS sentinel by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1951
+* Stream session discovery per-adapter instead of waiting for all by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1953
+* Fix resolveSessionWorkspaceName showing worktree name instead of repo name by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1952
+* Clarify cost attribution periods and effects by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1956
+* Fix Claude Code interaction-mode misclassification as CLI by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1955
+* Add per-repository cleanup for pushed worktrees by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1954
+* feat: make corrections actionable by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1957
+* Add automatic compaction insights by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1958
+* Improve recent session readability by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1959
+* fix: agent-review suggestions for PR #1926 by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1932
+* chore: upgrade fast-uri to 4.1.4 by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1961
+* Fix Team Dashboard Azure fallback by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1977
+* Preserve Copilot App labels in sharing uploads by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1976
+* Pin workflow tool dependencies by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1978
+* Show corrections loading state by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1983
+* Remove redundant efficiency waterfall by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1984
+* Cache TTFT scans by range by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1985
+* Efficiency tab: show date ranges, hide empty windows in Models picker by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1988
+* Explain Team Server data sharing in the config panel by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1986
+* Improve dashboard config card UI (Azure Storage / Team Server) by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1987
+* Sync Copilot App / Claude (VS Code) editor labels to sharing server by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1989
+* Group low-activity workspaces into "Other" on Workspace Health tab by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1991
+* Stop tracking generated agent sessions cache artifact by @rajbos with @Copilot in https://github.com/rajbos/ai-engineering-fluency/pull/1990
+* Remove compaction highlight border by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1994
+* Add editor/vendor/model/HydraFusion pill filters to Recent Sessions table by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1992
+* Add privacy-separated Team Insights for sharing-server users by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1996
+* Improve worktree cleanup validation by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1995
+* Cache Repository PRs snapshot with hourly trickle refresh by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1997
+* Fix stale Context Window data by merging pending SQLite WAL frames by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1998
+* feat: add 20 friendly tool name(s) from issue #1993 by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2001
+* Add Kilo Code session tracking (VS Code extension + CLI) by @sedatoztunali in https://github.com/rajbos/ai-engineering-fluency/pull/2000
+* Add Kilo Code session tracking by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2002
+* perf: speed up Copilot CLI session discovery by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2003
+* Hide zero-cost providers in Cost by Provider panel by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2004
+* Improve webview loading responsiveness by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2005
+* fix: preserve repository PR snapshot when discovery finds no workspace repos by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2006
+* Clarify OTel Delta loading state by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2007
+* Add What's New view, one-a-day new-feature notifications, and a catalog skill by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2010
+* Show every model a session used in Recent Sessions (fixes missing HydraFusion sessions) by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2011
+* fix(corrections): reduce false positives, add sentiment proxies by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2014
+* fix(vscode-extension): pin @types/vscode back to 1.134.0 to keep engines.vscode at ^1.134.0 by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2017
+* Add the Scoring Guide view to the Visual Studio and JetBrains hosts by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2019
+* feat(corrections): add "Ask Copilot to fix this" prompt generation by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2022
+* Fix share card period refresh by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2008
+* fix: agent-review suggestions for PR #2008 by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2009
+* Stop Agent Review from reviewing its own auto-fix PRs by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2023
+* feat(efficiency): detect and explain prompt-cache breakage by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2024
+* feat: add 1 friendly tool name(s) from issue #2026 by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2027
+* Make the Corrections tab filtering legible by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2028
+* Make worktree cleanup failures actionable by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2030
+* docs(visual-studio): correct the Known Limitations list by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2029
+* fix(vscode): render share PNG from live radar so it matches the Fluency Score screen by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2035
+* Fix Cursor session reads leaking multi-GB WAL temp files (#2033) by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2036
+* Add session steps overview table to log viewer by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2038
+* feat(vscode): count sessions that ran out of context window, not just compaction events by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2039
+* Log viewer: show child sub-agent sessions and cost in Session Steps Overview by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2042
+* chore: add monthly LOC & test-scenario stats script and workflow by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2040
+* feat: add 1 friendly tool name(s) from issue #2037 by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2041
+* Compact log viewer summary cards; merge timeline info by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2045
+* Fix Cost column missing in Session Steps Overview for Auto-routed models by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2047
+* Localize all summary card labels in log viewer by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2049
+* Apply the 10% Copilot Auto discount to eligible cost estimates by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2050
+* fix: agent-review suggestions for PR #2045 by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2046
+* feat(ci): add dependency-free code duplication detection check by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2043
+* feat(details): make Usage by Editor section collapsible with persisted state by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2044
+* Repo review follow-ups: coverage gate, generated-file handling, stale agent docs by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/1960
+* Show HydraFusion routing legs in the Session Log Viewer by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2052
+* boot faster by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2054
+* feat(logviewer): consolidate chat session viewer summary panels by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2058
+* Add AST-based hardcoded-string checker for webview UI code by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2055
+* Add Last 30 Days column to status bar popup stats table by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2056
+* Fix low C# CodeQL analysis quality: manual MSBuild for csharp by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2060
+* Add scan-hardcoded-strings skill for non-localized UI text inventory by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2053
+* fix: re-remediate brace-expansion and js-yaml Dependabot alerts by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2061
+* Show HydraFusion leg costs in dollars, link legs to Session Steps Overview by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2059
+* Fix hardcoded-strings CI gate broken by #2059 HydraFusion cost UI by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2077
+* fix: populate taskCategoryTokens/Sessions/ModelUsage in periodic refresh aggregation by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2062
+* Scroll to the specific insight an insight notification names by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2078
+* Make the "nearly ran out of context window" insight actionable by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2079
+* Format Cost Attribution bar tooltips with locale-aware precise values by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2069
+* fix(vscode): reconcile Models tab selections against the active window by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2070
+* Improve Cost Attribution model-mix table readability and model names by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2071
+* Bump outdated pinned action SHAs in CodeQL workflow by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2064
+* Instant cache-only first paint + seed preload queue from cache (issue #2018 fix #2) by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2080
+* Add beta Mistral Vibe cloud sessions loader to diagnostics Research view by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2057
+* Improve session-viewer summary card layout and de-duplicate MCP Tools & Context Refs by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2083
+* Report real progress while the Efficiency view loads by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2066
+* Fix: Copilot Budget tooltip row now states true remaining budget by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2090
+* Fix missing CSS for team dashboard fluency panel and tabs by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2093
+* Gate refresh publication on the generation, and close four cache-guard gaps by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2091
+* Replace blinking square loading spinner with a rotating square on Team Dashboard by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2096
+* Improve readability of the status bar hover popup by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2099
+* test: make cross-window tombstone snapshot test deterministic on Windows by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2102
+* feat: add 1 friendly tool name(s) from issue #2103 by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2105
+* ci: cache NuGet/npm/Playwright, add path gates, drop the Node 22 matrix row by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2098
+* Cap deferred parse concurrency, skip no-op checkpoints, show real compute progress by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2097
+* Copilot memory-files hygiene: analysis, insight card, CLI, and Tools tab UI by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2094
+* Add Pre-PR self-review checklist to AGENTS.md by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2110
+* Add editorType to blob upload metadata by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2095
+* fix(vscode-extension): durable cross-window clear-epoch for the session cache by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2107
+* fix(vscode-extension): unblock vsce packaging without raising the VS Code floor by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2109
+* feat(copilot): build a graphify code graph in the coding agent setup steps by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2108
+* fix: agent-review suggestions for PR #2083 by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2084
+* fix(ci): stop the PR risk review dying on the prompt file's frontmatter by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2113
+* refactor: decompose renderTurnsOverviewTable in logviewer by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2106
+* Add direct Repository PRs navigation from the Efficiency Value empty state by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2068
+* Count only real human turns in Claude sessions, and explain the Claude Desktop gap by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2114
+* fix(vscode): refresh the Efficiency Value tab when Repository PR data lands by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2072
+* Add pr-review-readiness skill: detect when GitHub's automatic Copilot PR review has finished by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2104
+* Stop the unit suite from stranding fixture directories in vscode-extension/ by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2115
+* refactor: optimize caching and session handling for improved performance by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2116
+* Pin the diagnostics webview test realm to a fixed locale by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2117
+* fix: agent-review suggestions for PR #2117 by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2119
+* ci: post before/after webview screenshots on every UI PR (gh --attach, tab states, agent setup) by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2118
+* Bind copilot-setup-steps job to the `copilot` Environment by @rajbos with @Copilot in https://github.com/rajbos/ai-engineering-fluency/pull/2120
+* ci: hash-pin the graphify pip install and lock NuGet restores (Scorecard Pinned-Dependencies) by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2121
+* feat: add 7 friendly tool name(s) from issue #2125 by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2126
+* Fix preflight check setup by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2127
+* chore: bump CLI version for release (0.5.1 -> 0.6.0) by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2129
+* chore: bump versions for release (VS Code extension, JetBrains plugin, Visual Studio extension) by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2128
+* fix(jetbrains): update Marketplace change notes for 0.5.0 by @rajbos in https://github.com/rajbos/ai-engineering-fluency/pull/2131
+* chore(sharing-server): bump version to v0.2.0 by @github-actions[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2130
+### 📦 npm Dependencies
+* npm(deps): bump the minor-and-patch-updates group across 2 directories with 4 updates by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1855
+* npm(deps-dev): bump @stryker-mutator/core from 9.6.1 to 10.0.0 in /vscode-extension by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1856
+* npm(deps): bump the minor-and-patch-updates group across 2 directories with 6 updates by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1887
+* npm(deps-dev): Bump the minor-and-patch-updates group across 2 directories with 5 updates by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1980
+* npm(deps-dev): bump @types/vscode from 1.134.0 to 1.136.0 in /vscode-extension by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2021
+* npm(deps): bump the minor-and-patch-updates group across 2 directories with 4 updates by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2020
+* npm(deps-dev): bump @types/vscode from 1.136.0 to 1.137.0 in /vscode-extension by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2087
+* npm(deps-dev): Bump the minor-and-patch-updates group across 2 directories with 4 updates by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2086
+* npm(deps): Bump the minor-and-patch-updates group across 2 directories with 5 updates by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2111
+* npm(deps-dev): Bump @vscode/vsce from 3.9.2 to 4.0.0 in /vscode-extension by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2112
+* npm(deps): bump jsdom from 30.0.1 to 30.1.0 in /vscode-extension in the minor-and-patch-updates group across 1 directory by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2123
+### 📦 GitHub Actions Dependencies
+* github-actions(deps): bump the minor-and-patch-updates group with 7 updates by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1857
+* github-actions(deps): bump actions/setup-java from 5.7.0 to 6.0.0 by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1892
+* github-actions(deps): bump actions/setup-node from 6.4.0 to 7.0.0 by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1891
+* github-actions(deps): bump actions/cache/restore from 4.3.0 to 6.1.0 by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1890
+* github-actions(deps): bump actions/checkout from 6.0.2 to 7.0.1 by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1889
+* github-actions(deps): bump the minor-and-patch-updates group with 6 updates by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1888
+* github-actions(deps): Bump actions/cache/save from 4.3.0 to 6.1.0 by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1982
+* github-actions(deps): Bump step-security/harden-runner from 2.21.0 to 2.21.1 in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1981
+* github-actions(deps): bump the minor-and-patch-updates group with 3 updates by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2089
+### 📦 Other Dependencies
+* gradle(deps): bump gradle-wrapper from 9.7.0 to 9.7.1 in /jetbrains-plugin in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1854
+* build(deps-dev): bump electron from 43.4.0 to 43.4.1 in /desktop in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1858
+* build(deps-dev): bump @types/node from 26.2.0 to 26.3.0 in /cli in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1864
+* build(deps-dev): bump @types/node from 26.2.0 to 26.3.0 in /desktop in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1865
+* build(deps-dev): bump electron from 43.4.1 to 44.0.0 in /desktop by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1867
+* build(deps-dev): Bump @types/node from 26.3.0 to 26.4.0 in /cli in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1903
+* build(deps-dev): Bump @types/node from 26.3.0 to 26.4.0 in /desktop in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1904
+* build(deps-dev): Bump fast-uri from 3.1.5 to 3.1.7 in /desktop by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1922
+* build(deps-dev): Bump @xmldom/xmldom from 0.8.13 to 0.8.15 in /desktop by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1929
+* build(deps-dev): Bump the minor-and-patch-updates group across 1 directory with 2 updates by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1941
+* build(deps-dev): Bump @types/node from 26.4.0 to 26.4.1 in /cli in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/1940
+* chore(deps-dev): bump electron from 44.1.1 to 44.2.0 in /desktop in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2016
+* chore(deps): bump js-yaml from 4.3.1 to 4.3.2 in /desktop by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2025
+* chore(deps-dev): bump @types/node from 26.4.1 to 26.5.0 in /cli in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2031
+* chore(deps-dev): bump @types/node from 26.4.1 to 26.5.0 in /desktop in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2032
+* chore(deps-dev): bump electron from 44.2.0 to 44.3.0 in /desktop in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2051
+* chore(deps-dev): bump @types/node from 26.5.0 to 26.5.1 in /desktop in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2101
+* chore(deps-dev): bump @types/node from 26.5.0 to 26.5.1 in /cli in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2100
+* gradle(deps): bump jvm from 2.4.10 to 2.4.20 in /jetbrains-plugin in the minor-and-patch-updates group by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2088
+* Build(deps): bump tree-sitter from 0.25.2 to 0.26.0 in /.github/requirements by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2122
+* gradle(deps): bump the minor-and-patch-updates group in /jetbrains-plugin with 2 updates by @dependabot[bot] in https://github.com/rajbos/ai-engineering-fluency/pull/2124
+
+## New Contributors
+* @claude[bot] made their first contribution in https://github.com/rajbos/ai-engineering-fluency/pull/1902
+* @sedatoztunali made their first contribution in https://github.com/rajbos/ai-engineering-fluency/pull/2000
+
+**Full Changelog**: https://github.com/rajbos/ai-engineering-fluency/compare/jetbrains/v0.4.4...vscode/v0.18.0
+
 ### Features
 - New "⚡ HydraFusion Routing" section in the Session Log Viewer for Copilot CLI sessions that ran on the `hydrafusion` synthetic model. HydraFusion spends several real models on one prompt — drafting, judging, repairing — then hands back a single answer and a single credit figure; this section reconstructs the legs behind it from the routing decisions the CLI records for its own resume and rewind. It shows how often the router went compound rather than single-model, how often a judge rejected the first answer, what share of credits went on review rather than on the answer you received, which models served which legs and which of them actually supplied answers, where the credits went per phase kind, and a per-turn breakdown with the planned route (including conditional legs that never ran), each leg's verdict, duration and cost, and a marker on the leg whose output you actually read. See [docs/logFilesSchema/hydrafusion-routing-events.md](../docs/logFilesSchema/hydrafusion-routing-events.md)
 - The Usage Analysis "Context Window" section now counts *sessions* that ran out of context, not just compaction events: two new rows per period show how many sessions were automatically compacted (out of those with context data) and how many Copilot CLI sessions filled at least 80% of their window without compacting, plus the fullest session's fill percentage. Two new insights go with it — a tip when sessions repeatedly approach the limit, and a celebration when none of them do — and the existing auto-compaction insight now reports the per-session share as well
