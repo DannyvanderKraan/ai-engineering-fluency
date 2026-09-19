@@ -1022,6 +1022,16 @@ function isVisualStudioPath(lowerPath: string): boolean {
 	return lowerPath.includes('/.vs/') || lowerPath.includes('/vsgithubcopilot/copilot-chat/');
 }
 
+/**
+ * Returns true for SQL Server Management Studio Copilot Chat sessions
+ * (`…/SSMS/<version>/SSMSGitHubCopilot/copilot-chat/<hash>/sessions/<uuid>`).
+ * Checked before {@link isVisualStudioPath} so SSMS keeps its own label — the same
+ * split `VisualStudioAdapter.getDisplayName()` makes.
+ */
+function isSsmsPath(lowerPath: string): boolean {
+	return lowerPath.includes('/ssmsgithubcopilot/copilot-chat/') && lowerPath.includes('/sessions/');
+}
+
 /** Returns true for VS Code Insiders via loose substring match (used by detectEditorSource). */
 function isCodeInsidersSource(lowerPath: string): boolean {
 	return lowerPath.includes('code - insiders') || lowerPath.includes('code-insiders');
@@ -1165,6 +1175,7 @@ function detectVSCodeVariantFromPath(lowerPath: string): string | undefined {
 	if (lowerPath.includes('/cursor/')) { return 'Cursor'; }
 	if (lowerPath.includes('.vscode-server-insiders/')) { return 'VS Code Server (Insiders)'; }
 	if (isVSCodeServerPath(lowerPath)) { return 'VS Code Server'; }
+	if (isSsmsPath(lowerPath)) { return 'SSMS'; }
 	if (isVisualStudioPath(lowerPath)) { return 'Visual Studio'; }
 	if (lowerPath.includes('/code/')) { return 'VS Code'; }
 	return undefined;
@@ -1269,6 +1280,7 @@ function detectIDEEditorSource(lowerPath: string): string | undefined {
 	// irrelevant here (disjoint word), but Devin's own data folder is named '.devin'.
 	if (lowerPath.includes('devin')) { return 'Devin'; }
 	if (lowerPath.includes('windsurf')) { return 'Windsurf'; }
+	if (isSsmsPath(lowerPath)) { return 'SSMS'; }
 	if (isVisualStudioPath(lowerPath)) { return 'Visual Studio'; }
 	if (lowerPath.includes('code')) { return 'VS Code'; }
 	return undefined;
