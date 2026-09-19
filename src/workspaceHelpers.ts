@@ -1013,11 +1013,13 @@ function isVSCodeServerPath(lowerPath: string): boolean {
 	return lowerPath.includes('.vscode-server/') || lowerPath.includes('.vscode-remote/');
 }
 
-/** Returns true for Visual Studio path segments (`/.vs/.../copilot-chat/.../sessions/`). */
+/**
+ * Returns true for Visual Studio path segments: `/copilot-chat/.../sessions/` under either
+ * a solution's `/.vs/` folder or VS's own `/vsgithubcopilot/` AppData folder (solution-less chats).
+ */
 function isVisualStudioPath(lowerPath: string): boolean {
-	return lowerPath.includes('/.vs/') &&
-		lowerPath.includes('/copilot-chat/') &&
-		lowerPath.includes('/sessions/');
+	if (!lowerPath.includes('/copilot-chat/') || !lowerPath.includes('/sessions/')) { return false; }
+	return lowerPath.includes('/.vs/') || lowerPath.includes('/vsgithubcopilot/');
 }
 
 /** Returns true for VS Code Insiders via loose substring match (used by detectEditorSource). */
