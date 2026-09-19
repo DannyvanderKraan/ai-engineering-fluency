@@ -87,8 +87,8 @@ export class VisualStudioAdapter implements IEcosystemAdapter, IDiscoverableEcos
 	getCandidatePaths(): CandidatePath[] {
 		return [
 			{ path: this.visualStudio.getLogDir(), source: 'Visual Studio (log dir)' },
-			{ path: this.visualStudio.getVsAppDataSessionsDir(), source: 'Visual Studio (AppData sessions dir)' },
-			{ path: this.visualStudio.getSsmsSessionsDir(), source: 'SSMS (sessions dir)' },
+			{ path: this.visualStudio.getVsAppDataDir(), source: 'Visual Studio (AppData dir)' },
+			{ path: this.visualStudio.getSsmsSessionsDir(), source: 'SSMS (AppData dir)' },
 		];
 	}
 

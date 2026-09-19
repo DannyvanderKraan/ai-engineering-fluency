@@ -88,10 +88,11 @@ return path.join(localAppData, 'Microsoft', 'SSMS');
 }
 
 /**
- * Returns the Visual Studio AppData base directory holding solution-less Copilot chats.
+ * Returns the Visual Studio AppData **base** directory (not a sessions dir) beneath which
+ * solution-less Copilot chats live.
  * Pattern: %LOCALAPPDATA%\Microsoft\VisualStudio\<version>\VSGitHubCopilot\copilot-chat\<hash>\sessions\<uuid>
  */
-getVsAppDataSessionsDir(): string {
+getVsAppDataDir(): string {
 const localAppData = process.env.LOCALAPPDATA
 || path.join(os.homedir(), 'AppData', 'Local');
 return path.join(localAppData, 'Microsoft', 'VisualStudio');
@@ -282,7 +283,7 @@ await this._collectFromHashDirs(path.join(vsDir, sol.name, 'copilot-chat'), seen
  */
 private async _discoverFromVsAppData(seen: Set<string>, results: string[]): Promise<void> {
 if (os.platform() !== 'win32') { return; }
-const vsDir = this.getVsAppDataSessionsDir();
+const vsDir = this.getVsAppDataDir();
 
 let versionDirs: fs.Dirent[];
 try {

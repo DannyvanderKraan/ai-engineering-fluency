@@ -491,8 +491,8 @@ test('VisualStudioAdapter.getCandidatePaths: returns VS log dir, VS AppData dir 
     const paths = visualStudioAdapter.getCandidatePaths();
     assert.equal(paths.length, 3);
     assert.ok(paths.some(p => p.source === 'Visual Studio (log dir)'), 'Should include VS log dir');
-    assert.ok(paths.some(p => p.source === 'Visual Studio (AppData sessions dir)'), 'Should include VS AppData sessions dir');
-    assert.ok(paths.some(p => p.source === 'SSMS (sessions dir)'), 'Should include SSMS sessions dir');
+    assert.ok(paths.some(p => p.source === 'Visual Studio (AppData dir)'), 'Should include VS AppData dir');
+    assert.ok(paths.some(p => p.source === 'SSMS (AppData dir)'), 'Should include SSMS AppData dir');
     assert.ok(paths.every(p => p.path.length > 0), 'All paths should be non-empty');
 });
 
