@@ -138,7 +138,7 @@ export function getEditorSourceFromPath(filePath: string): string {
 	if (normalized.includes('/vscodium/')) { return 'VSCodium'; }
 	if (normalized.includes('.vscode-server-insiders/')) { return 'VS Code Server (Insiders)'; }
 	if (normalized.includes('.vscode-server')) { return 'VS Code Server'; }
-	if (normalized.includes('/copilot-chat/') && (normalized.includes('/.vs/') || normalized.includes('/vsgithubcopilot/'))) { return 'Visual Studio'; }
+	if (normalized.includes('/copilot-chat/') && (normalized.includes('/.vs/') || normalized.includes('/vsgithubcopilot/copilot-chat/'))) { return 'Visual Studio'; }
 	return 'VS Code';
 }
 

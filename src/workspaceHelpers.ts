@@ -1019,7 +1019,7 @@ function isVSCodeServerPath(lowerPath: string): boolean {
  */
 function isVisualStudioPath(lowerPath: string): boolean {
 	if (!lowerPath.includes('/copilot-chat/') || !lowerPath.includes('/sessions/')) { return false; }
-	return lowerPath.includes('/.vs/') || lowerPath.includes('/vsgithubcopilot/');
+	return lowerPath.includes('/.vs/') || lowerPath.includes('/vsgithubcopilot/copilot-chat/');
 }
 
 /** Returns true for VS Code Insiders via loose substring match (used by detectEditorSource). */

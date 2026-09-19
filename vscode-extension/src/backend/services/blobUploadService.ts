@@ -156,7 +156,10 @@ export class BlobUploadService {
 			// rejection fatal for the whole shared extension host (issue #2137).
 			const result = await withoutLeakedFatalHandlers(
 				() => this.uploadAllFiles(containerClient, sessionFiles, machineId, datasetId, settings.compressFiles, credential, editorTypeByFile),
-				count => this.warn(`Blob upload: removed ${count} process-global crash handler(s) installed by the Azure SDK`)
+				({ removed, kept }) => this.warn(
+					`Blob upload: removed ${removed} rethrowing process-global crash handler(s) installed during upload`
+					+ (kept > 0 ? `; left ${kept} other newly-added handler(s) in place` : '')
+				)
 			);
 
 			if (result.earlyReturn) { return result.earlyReturn; }

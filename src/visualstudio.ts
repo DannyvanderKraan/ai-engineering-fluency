@@ -45,13 +45,20 @@ export class VisualStudioDataAccess {
 /**
  * Returns true if the path looks like a VS Copilot session file.
  * Detection: normalised path contains `/copilot-chat/` and `/sessions/`, under one of
- * the three known session roots: `/.vs/` (per-solution), `/vsgithubcopilot/` (VS AppData,
- * solution-less chats) or `/ssmsgithubcopilot/` (SSMS).
+ * the three known session roots:
+ *   - `/.vs/`                           per-solution (`.vs/<solution>/copilot-chat/…`)
+ *   - `/vsgithubcopilot/copilot-chat/`  VS AppData, solution-less chats
+ *   - `/ssmsgithubcopilot/copilot-chat/` SSMS
+ * The two AppData roots are anchored directly against `copilot-chat` rather than matched
+ * as a loose substring, so an unrelated folder that merely happens to be named
+ * `VSGitHubCopilot` somewhere else in the tree cannot false-positive.
  */
 isVSSessionFile(filePath: string): boolean {
 	const n = normalizePathForComparison(filePath);
 	if (!n.includes('/copilot-chat/') || !n.includes('/sessions/')) { return false; }
-	return n.includes('/.vs/') || n.includes('/vsgithubcopilot/') || n.includes('/ssmsgithubcopilot/');
+	return n.includes('/.vs/')
+		|| n.includes('/vsgithubcopilot/copilot-chat/')
+		|| n.includes('/ssmsgithubcopilot/copilot-chat/');
 }
 
 /**
