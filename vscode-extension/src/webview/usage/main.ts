@@ -8,6 +8,7 @@ import { wireExtensionPointButtons } from '../shared/extensionPoints';
 import { localize, localizeFormat } from '../shared/localization';
 import { applyWebviewLocale } from '../shared/webviewLocale';
 import { RECENT_SESSION_PERIODS, sanitizeRecentSessionBuckets } from './recentSessionsSanitizer';
+import { renderCcrCheckButtonHtml, wireCcrActivityButtons, renderCcrActivityResult } from './ccrActivity';
 import {
 	hasContextWindowData,
 	sanitizeAutomaticCompactions,
@@ -2679,9 +2680,13 @@ function renderRepoPrRow(r: RepoPrInfo, cell: string, cellCenter: string): strin
 	// Collapsible detail list
 	let detailsHtml = '';
 	if (r.aiDetails.length > 0) {
-		const items = r.aiDetails.map(d =>
-			`<li><a href="${escapeHtml(d.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--link-color);">#${d.number} ${escapeHtml(d.title)}</a> — ${AI_PR_LABEL[d.aiType] ?? escapeHtml(String(d.aiType))} (${d.role === 'author' ? 'authored' : 'review requested'})</li>`
-		).join('');
+		const items = r.aiDetails.map(d => {
+			const ccrButton = (d.role === 'reviewer-requested' && d.aiType === 'copilot')
+				? renderCcrCheckButtonHtml(r.owner, r.repo, d.number)
+				: '';
+			const roleLabel = d.role === 'author' ? localize('usage.repoPrs.aiDetailAuthored') : localize('usage.repoPrs.aiDetailReviewRequested');
+			return `<li><a href="${escapeHtml(d.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--link-color);">#${d.number} ${escapeHtml(d.title)}</a> — ${AI_PR_LABEL[d.aiType] ?? escapeHtml(String(d.aiType))} (${escapeHtml(roleLabel)})${ccrButton}</li>`;
+		}).join('');
 		detailsHtml = `
 			<details style="margin-top:4px; font-size:11px;">
 				<summary style="cursor:pointer; color:var(--text-secondary);">Show ${r.aiDetails.length} detail(s)</summary>
@@ -6012,6 +6017,10 @@ function wireRepositoryButtons(): void {
 			renderRepositoryHygienePanels();
 		}
 	});
+
+	// Delegated on the persistent container (its innerHTML is replaced wholesale on every
+	// `updateReposPrPanel` re-render) so this keeps working across refreshes without rewiring.
+	wireCcrActivityButtons('repos-pr-content', (message) => vscode.postMessage(message));
 }
 
 /** Wires up copy-to-clipboard buttons (class `cf-copy`). */
@@ -6167,9 +6176,18 @@ function handleRepoAnalysisMessage(message: any): boolean {
 	return false;
 }
 
+function handleCcrActivityMessage(message: any): boolean {
+	if (message.command === 'ccrActivityResult' || message.command === 'ccrActivityError') {
+		renderCcrActivityResult(String(message.owner ?? ''), String(message.repo ?? ''), Number(message.prNumber), message);
+		return true;
+	}
+	return false;
+}
+
 function handleExtensionMessage(message: any): void {
 	if (handleLoadingStateMessage(message)) { return; }
 	if (handleRepoAnalysisMessage(message)) { return; }
+	if (handleCcrActivityMessage(message)) { return; }
 	switch (message.command) {
 		case 'updateStats':
 			handleUpdateStats(message); break;
