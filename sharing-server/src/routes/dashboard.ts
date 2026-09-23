@@ -356,12 +356,13 @@ function fmt(n: number): string {
 	return String(n);
 }
 
-// Chart datasets are expressed in thousands of tokens.
 const chartFormatterJs = `
-  function formatChartTokens(v) {
-    if (v >= 999950) return (v / 1000000).toFixed(1) + 'B';
-    if (v >= 999.95) return (v / 1000).toFixed(1) + 'M';
-    return v + 'K';
+  function formatChartTokens(n) {
+    n = Math.round(n);
+    if (n >= 999950000) return (n / 1000000000).toFixed(1) + 'B';
+    if (n >= 999950) return (n / 1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+    return String(n);
   }
 `;
 
@@ -825,7 +826,7 @@ function dashboardPage(user: UserRow, uploads: UploadRow[], isAdmin: boolean): s
       .map(function(dim) {
         return {
           label: dim,
-          data: labels.map(function(l) { return Math.round((grouped[l] && grouped[l][dim] || 0) / 1000); }),
+          data: labels.map(function(l) { return grouped[l] && grouped[l][dim] || 0; }),
           backgroundColor: colorFn(dim) + 'bb',
           borderColor: colorFn(dim),
           borderWidth: 1,
@@ -862,7 +863,7 @@ function dashboardPage(user: UserRow, uploads: UploadRow[], isAdmin: boolean): s
           return formatChartTokens(v);
         },
       },
-      title: { display: true, text: 'Tokens (K)', color: '#8b949e', font: { size: 11 } },
+      title: { display: true, text: 'Tokens', color: '#8b949e', font: { size: 11 } },
     };
   }
 
@@ -1352,7 +1353,7 @@ function adminDashboardPage(
         data: labels.map(function(day) {
           var total = 0;
           data.forEach(function(r) { if (r.day === day && r.login === login) total += r.inputTokens + r.outputTokens; });
-          return Math.round(total / 1000);
+          return total;
         }),
         backgroundColor: color + 'bb',
         borderColor: color,
@@ -1366,7 +1367,7 @@ function adminDashboardPage(
         data: labels.map(function(day) {
           var total = 0;
           data.forEach(function(r) { if (r.day === day && !topSet[r.login]) total += r.inputTokens + r.outputTokens; });
-          return Math.round(total / 1000);
+          return total;
         }),
         backgroundColor: OTHERS_COLOR + 'bb',
         borderColor: OTHERS_COLOR,
@@ -1390,7 +1391,7 @@ function adminDashboardPage(
         var logins = Object.keys(dayMap[day]).filter(function(l) { return dayMap[day][l] > 0; });
         if (!logins.length) return 0;
         var total = logins.reduce(function(s, l) { return s + dayMap[day][l]; }, 0);
-        return Math.round(total / logins.length / 1000);
+        return total / logins.length;
       }),
       backgroundColor: '#58a6ffbb',
       borderColor: '#58a6ff',
@@ -1406,7 +1407,7 @@ function adminDashboardPage(
         color: '#8b949e', font: { size: 11 },
         callback: function(v) { return formatChartTokens(v); },
       },
-      title: { display: true, text: 'Tokens (K)', color: '#8b949e', font: { size: 11 } },
+      title: { display: true, text: 'Tokens', color: '#8b949e', font: { size: 11 } },
     };
   }
 
@@ -1460,7 +1461,7 @@ function adminDashboardPage(
     chart.data.datasets = datasets;
     chart.options.scales.x.stacked = stacked;
     chart.options.scales.y = makeYConfig(stacked);
-    chart.options.scales.y.title.text = currentMode === 'total' ? 'Tokens (K)' : 'Avg Tokens/User (K)';
+    chart.options.scales.y.title.text = currentMode === 'total' ? 'Tokens' : 'Avg Tokens/User';
     chart.update();
   }
 })();`;

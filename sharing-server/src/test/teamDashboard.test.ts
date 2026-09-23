@@ -175,16 +175,18 @@ describe('member dashboard privacy boundary', () => {
 
 			const personalHtml = await (await request('/dashboard', viewer)).text();
 			for (const html of [adminHtml, personalHtml]) {
-				const formatter = html.match(/function formatChartTokens\(v\) \{[\s\S]*?\n  \}/)?.[0];
+				const formatter = html.match(/function formatChartTokens\(n\) \{[\s\S]*?\n  \}/)?.[0];
 				assert.ok(formatter, 'chart formatter is included in the rendered page');
-				const format = runInNewContext(`${formatter}; formatChartTokens`, {}) as (v: number) => string;
-				assert.equal(format(999), '999K');
-				assert.equal(format(1000), '1.0M');
-				assert.equal(format(999949), '999.9M');
-				assert.equal(format(999950), '1.0B');
-				assert.equal(format(999999), '1.0B');
-				assert.equal(format(1000000), '1.0B');
-				assert.equal(format(4555100), '4.6B');
+				const format = runInNewContext(`${formatter}; formatChartTokens`, {}) as (n: number) => string;
+				assert.equal(format(999), '999');
+				assert.equal(format(1000), '1.0K');
+				assert.equal(format(999_949), '999.9K');
+				assert.equal(format(999_950), '1.0M');
+				assert.equal(format(999_949_999), '999.9M');
+				assert.equal(format(999_949_999.49), '999.9M');
+				assert.equal(format(999_949_999.5), '1.0B');
+				assert.equal(format(999_950_000), '1.0B');
+				assert.equal(format(4_555_100_000), '4.6B');
 				assert.match(html, /callback: function\(v\)[\s\S]*?return formatChartTokens\(v\)/);
 				assert.match(html, /ctx\.dataset\.label \+ ': ' \+ formatChartTokens\(v\)/);
 				assert.match(html, /'Total: ' \+ formatChartTokens\(total\)/);
