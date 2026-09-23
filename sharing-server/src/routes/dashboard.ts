@@ -3,7 +3,6 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { createRequire } from 'module';
-import packageJson from '../../package.json';
 import {
 	encodeSession, decodeSession, makeClaims,
 	COOKIE_NAME, OAUTH_STATE_COOKIE, SESSION_MAX_AGE,
@@ -30,6 +29,7 @@ const BASE_URL = (process.env.BASE_URL ?? 'http://localhost:3000').replace(/\/$/
 const DEPLOY_SHA    = process.env.DEPLOY_SHA    ?? 'unknown';
 const DEPLOY_BRANCH = process.env.DEPLOY_BRANCH ?? 'unknown';
 const DEPLOY_DATE   = process.env.DEPLOY_DATE   ?? 'unknown';
+const { version: packageVersion } = require('../../package.json') as { version: string };
 
 // Load Chart.js UMD bundle once at startup.
 // Bundled build: esbuild.js copies it next to dist/server.js.
@@ -531,7 +531,7 @@ function layout(title: string, body: string): string {
 <body>
 ${body}
 <footer class="deploy-footer">
-  sharing-server <code>v${h(packageJson.version)}</code> &middot; deployed from <code>${h(DEPLOY_BRANCH)}</code> &middot; <code>${h(DEPLOY_SHA)}</code> &middot; ${h(DEPLOY_DATE)}
+  sharing-server <code>v${h(packageVersion)}</code> &middot; deployed from <code>${h(DEPLOY_BRANCH)}</code> &middot; <code>${h(DEPLOY_SHA)}</code> &middot; ${h(DEPLOY_DATE)}
 </footer>
 </body>
 </html>`;

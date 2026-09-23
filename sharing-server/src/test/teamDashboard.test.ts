@@ -4,12 +4,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import packageJson from '../../package.json';
 import { createApp } from '../app.js';
 import { closeDb, getDb, upsertUpload, upsertUser, type UserRow } from '../db.js';
 import { COOKIE_NAME, encodeSession, makeClaims } from '../session.js';
 import { getTeamInsights } from '../teamInsights.js';
 
+const { version: packageVersion } = require('../../package.json') as { version: string };
 const app = createApp();
 const sentinels = [
 	'PEER_LOGIN_SENTINEL', 'PEER_NAME_SENTINEL', 'PEER_AVATAR_SENTINEL',
@@ -154,7 +154,7 @@ describe('member dashboard privacy boundary', () => {
 		for (const [path, user] of [['/dashboard', viewer], ['/team', viewer], ['/admin', admin]] as const) {
 			const html = await (await request(path, user)).text();
 			const footer = html.split('<footer class="deploy-footer">')[1]?.split('</footer>')[0];
-			assert.ok(footer?.includes(`sharing-server <code>v${packageJson.version}</code> &middot; deployed from <code>`));
+			assert.ok(footer?.includes(`sharing-server <code>v${packageVersion}</code> &middot; deployed from <code>`));
 		}
 	});
 
