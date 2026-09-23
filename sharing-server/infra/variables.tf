@@ -13,6 +13,23 @@ variable "container_image" {
   type        = string
 }
 
+variable "container_registry_server" {
+  description = "Optional: login server of a private registry to pull the image from (e.g. myregistry.azurecr.io). Leave empty to pull anonymously, which requires the image to be public. Only Azure Container Registry is supported, because image pulls authenticate with a managed identity and non-Azure registries do not accept Entra tokens."
+  type        = string
+  default     = ""
+}
+
+variable "container_registry_id" {
+  description = "Optional: resource ID of the Azure Container Registry named in container_registry_server. Used as the scope for the AcrPull role assignment. Required when container_registry_server is set."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.container_registry_server == "" || var.container_registry_id != ""
+    error_message = "container_registry_id must be set when container_registry_server is set."
+  }
+}
+
 variable "github_client_id" {
   description = "GitHub OAuth App client ID (used by the dashboard login flow)"
   type        = string

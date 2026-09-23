@@ -59,12 +59,54 @@ locals {
   app_fqdn = var.custom_domain != "" ? var.custom_domain : local.aca_fqdn
 }
 
+# ── Private registry pull identity (optional) ────────────────────────────────
+# Only created when pulling from a private ACR. A *user-assigned* identity is
+# used deliberately: the AcrPull grant must already exist when the container app
+# performs its very first image pull, which is impossible with a system-assigned
+# identity because that identity does not exist until the app itself is created.
+resource "azurerm_user_assigned_identity" "acr_pull" {
+  count               = var.container_registry_server != "" ? 1 : 0
+  name                = "${var.app_name}-acr-pull"
+  resource_group_name = data.azurerm_resource_group.this.name
+  location            = data.azurerm_resource_group.this.location
+  tags                = var.tags
+}
+
+resource "azurerm_role_assignment" "acr_pull" {
+  count                = var.container_registry_server != "" ? 1 : 0
+  scope                = var.container_registry_id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_user_assigned_identity.acr_pull[0].principal_id
+}
+
 resource "azurerm_container_app" "this" {
   name                         = var.app_name
   container_app_environment_id = azurerm_container_app_environment.this.id
   resource_group_name          = data.azurerm_resource_group.this.name
   revision_mode                = "Single"
   tags                         = var.tags
+
+  # The role assignment must land before the first image pull is attempted.
+  depends_on = [azurerm_role_assignment.acr_pull]
+
+  # Attach the pull identity only when a private registry is configured.
+  dynamic "identity" {
+    for_each = var.container_registry_server != "" ? [1] : []
+    content {
+      type         = "UserAssigned"
+      identity_ids = [azurerm_user_assigned_identity.acr_pull[0].id]
+    }
+  }
+
+  # Without this block the runtime pulls anonymously, which is the default and
+  # keeps working for public images.
+  dynamic "registry" {
+    for_each = var.container_registry_server != "" ? [1] : []
+    content {
+      server   = var.container_registry_server
+      identity = azurerm_user_assigned_identity.acr_pull[0].id
+    }
+  }
 
   # Secrets are stored in ACA's secret store; containers reference them by name.
   secret {
@@ -99,8 +141,8 @@ resource "azurerm_container_app" "this" {
   }
 
   template {
-    min_replicas = var.min_replicas  # Keep at 1 to avoid cold-start restore latency
-    max_replicas = 1 # SQLite single-writer; only one instance at a time
+    min_replicas = var.min_replicas # Keep at 1 to avoid cold-start restore latency
+    max_replicas = 1                # SQLite single-writer; only one instance at a time
 
     volume {
       name         = "data"
