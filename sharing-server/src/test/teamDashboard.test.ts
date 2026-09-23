@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
+import packageJson from '../../package.json';
 import { createApp } from '../app.js';
 import { closeDb, getDb, upsertUpload, upsertUser, type UserRow } from '../db.js';
 import { COOKIE_NAME, encodeSession, makeClaims } from '../session.js';
@@ -146,6 +148,47 @@ describe('member dashboard privacy boundary', () => {
 		assert.ok(html.includes('href="/admin"'));
 		assert.ok(html.includes('You have no active uploads in this period.'));
 		assert.ok(!html.includes('ADMIN_CHART_DATA'));
+	});
+
+	test('shows the running server package version with deployment details on member and admin pages', async () => {
+		for (const [path, user] of [['/dashboard', viewer], ['/team', viewer], ['/admin', admin]] as const) {
+			const html = await (await request(path, user)).text();
+			assert.match(html, new RegExp(`<footer class="deploy-footer">\\s*sharing-server <code>v${packageJson.version.replace(/\./g, '\\.')}</code> &middot; deployed from <code>`));
+		}
+	});
+
+	test('admin overview and both charts abbreviate billion-scale token counts', async () => {
+		const db = getDb();
+		db.exec('SAVEPOINT billion_format');
+		try {
+			db.prepare('UPDATE usage_uploads SET input_tokens = ?, output_tokens = 0 WHERE user_id = ?')
+				.run(4_555_100_000, viewer.id);
+			db.prepare('UPDATE usage_uploads SET input_tokens = 0, output_tokens = 0, interactions = 0 WHERE user_id = ?')
+				.run(peer.id);
+			const adminHtml = await (await request('/admin', admin)).text();
+			const panel = adminHtml.split('<div id="admin-stats-30"')[1]?.split('<div id="admin-stats-90"')[0];
+			assert.ok(panel, '30-day overview panel is rendered');
+			assert.match(panel, /<div class="label">Active Users<\/div><div class="value">1<\/div>/);
+			assert.match(panel, /<div class="label">Total Tokens<\/div><div class="value">4\.6B<\/div>/);
+			assert.match(panel, /<div class="label">Avg Tokens \/ User<\/div><div class="value">4\.6B<\/div>/);
+
+			const personalHtml = await (await request('/dashboard', viewer)).text();
+			for (const html of [adminHtml, personalHtml]) {
+				const formatter = html.match(/function formatChartTokens\(v\) \{[\s\S]*?\n  \}/)?.[0];
+				assert.ok(formatter, 'chart formatter is included in the rendered page');
+				const format = runInNewContext(`${formatter}; formatChartTokens`, {}) as (v: number) => string;
+				assert.equal(format(999), '999K');
+				assert.equal(format(1000), '1.0M');
+				assert.equal(format(999999), '1000.0M');
+				assert.equal(format(1000000), '1.0B');
+				assert.equal(format(4555100), '4.6B');
+				assert.match(html, /callback: function\(v\)[\s\S]*?return formatChartTokens\(v\)/);
+				assert.match(html, /ctx\.dataset\.label \+ ': ' \+ formatChartTokens\(v\)/);
+				assert.match(html, /'Total: ' \+ formatChartTokens\(total\)/);
+			}
+		} finally {
+			db.exec('ROLLBACK TO billion_format; RELEASE billion_format');
+		}
 	});
 
 	test('admin details remain server-authorized and owner pages stay owner-only', async () => {

@@ -3,6 +3,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { createRequire } from 'module';
+import packageJson from '../../package.json';
 import {
 	encodeSession, decodeSession, makeClaims,
 	COOKIE_NAME, OAUTH_STATE_COOKIE, SESSION_MAX_AGE,
@@ -355,6 +356,15 @@ function fmt(n: number): string {
 	return String(n);
 }
 
+// Chart datasets are expressed in thousands of tokens.
+const chartFormatterJs = `
+  function formatChartTokens(v) {
+    if (v >= 1000000) return (v / 1000000).toFixed(1) + 'B';
+    if (v >= 1000) return (v / 1000).toFixed(1) + 'M';
+    return v + 'K';
+  }
+`;
+
 // ── Fluency Score types (score is computed by the extension and uploaded directly) ──────────
 
 interface CategoryScore { category: string; icon: string; stage: number; tips: string[] }
@@ -520,7 +530,7 @@ function layout(title: string, body: string): string {
 <body>
 ${body}
 <footer class="deploy-footer">
-  deployed from <code>${h(DEPLOY_BRANCH)}</code> &middot; <code>${h(DEPLOY_SHA)}</code> &middot; ${h(DEPLOY_DATE)}
+  sharing-server <code>v${h(packageJson.version)}</code> &middot; deployed from <code>${h(DEPLOY_BRANCH)}</code> &middot; <code>${h(DEPLOY_SHA)}</code> &middot; ${h(DEPLOY_DATE)}
 </footer>
 </body>
 </html>`;
@@ -734,6 +744,7 @@ function dashboardPage(user: UserRow, uploads: UploadRow[], isAdmin: boolean): s
 	// ── Interactive JS ────────────────────────────────────────────────────────
 	const interactiveJs = `
 (function () {
+  ${chartFormatterJs}
   // ── Period tabs ─────────────────────────────────────────────────────────
   function activatePeriod(period) {
     document.querySelectorAll('#period-tabs .tab').forEach(function(b) { b.classList.remove('active'); });
@@ -848,7 +859,7 @@ function dashboardPage(user: UserRow, uploads: UploadRow[], isAdmin: boolean): s
             var log = Math.log10(v);
             if (Math.abs(log - Math.round(log)) > 0.01) { return null; }
           }
-          return v >= 1000 ? (v/1000).toFixed(1)+'M' : v+'K';
+          return formatChartTokens(v);
         },
       },
       title: { display: true, text: 'Tokens (K)', color: '#8b949e', font: { size: 11 } },
@@ -876,11 +887,11 @@ function dashboardPage(user: UserRow, uploads: UploadRow[], isAdmin: boolean): s
           callbacks: {
             label: function(ctx) {
               var v = ctx.parsed.y;
-              return '  ' + ctx.dataset.label + ': ' + (v >= 1000 ? (v/1000).toFixed(1)+'M' : v+'K') + ' tokens';
+              return '  ' + ctx.dataset.label + ': ' + formatChartTokens(v) + ' tokens';
             },
             footer: function(items) {
               var total = items.reduce(function(s,i) { return s + i.parsed.y; }, 0);
-              return 'Total: ' + (total >= 1000 ? (total/1000).toFixed(1)+'M' : total+'K') + ' tokens';
+              return 'Total: ' + formatChartTokens(total) + ' tokens';
             },
           },
         },
@@ -1262,6 +1273,7 @@ function adminDashboardPage(
 
 	const adminInteractiveJs = `
 (function () {
+  ${chartFormatterJs}
   // ── Period tabs (stat cards only — chart uses its own period state) ─────────
   var currentPeriod = 30;
   var currentMode = 'total';
@@ -1392,7 +1404,7 @@ function adminDashboardPage(
       grid: { color: '#21262d' },
       ticks: {
         color: '#8b949e', font: { size: 11 },
-        callback: function(v) { return v >= 1000 ? (v/1000).toFixed(1)+'M' : v+'K'; },
+        callback: function(v) { return formatChartTokens(v); },
       },
       title: { display: true, text: 'Tokens (K)', color: '#8b949e', font: { size: 11 } },
     };
@@ -1421,11 +1433,11 @@ function adminDashboardPage(
           callbacks: {
             label: function(ctx) {
               var v = ctx.parsed.y;
-              return '  ' + ctx.dataset.label + ': ' + (v >= 1000 ? (v/1000).toFixed(1)+'M' : v+'K') + ' tokens';
+              return '  ' + ctx.dataset.label + ': ' + formatChartTokens(v) + ' tokens';
             },
             footer: function(items) {
               var total = items.reduce(function(s, i) { return s + i.parsed.y; }, 0);
-              return 'Total: ' + (total >= 1000 ? (total/1000).toFixed(1)+'M' : total+'K') + ' tokens';
+              return 'Total: ' + formatChartTokens(total) + ' tokens';
             },
           },
         },
