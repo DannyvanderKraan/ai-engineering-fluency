@@ -153,7 +153,8 @@ describe('member dashboard privacy boundary', () => {
 	test('shows the running server package version with deployment details on member and admin pages', async () => {
 		for (const [path, user] of [['/dashboard', viewer], ['/team', viewer], ['/admin', admin]] as const) {
 			const html = await (await request(path, user)).text();
-			assert.match(html, new RegExp(`<footer class="deploy-footer">\\s*sharing-server <code>v${packageJson.version.replace(/\./g, '\\.')}</code> &middot; deployed from <code>`));
+			const footer = html.split('<footer class="deploy-footer">')[1]?.split('</footer>')[0];
+			assert.ok(footer?.includes(`sharing-server <code>v${packageJson.version}</code> &middot; deployed from <code>`));
 		}
 	});
 
