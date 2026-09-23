@@ -217,7 +217,7 @@ import { detectJetBrainsModelHintFromContent } from '../../src/jetbrains';
 import { analyzeHydraFusionSession, aiuToUsd } from '../../src/hydrafusion';
 import type { HydraFusionSummary } from '../../src/hydrafusion';
 import { extractCopilotCliSessionId, getCopilotCliExactUsage, getCopilotCliOtelStatus, getCopilotCliOtelUsage, loadCopilotCliOtelIndex } from '../../src/copilotCliOtel';
-import { createWakeupGate, createSemaphore, TimeoutError as _TimeoutError, withTimeout as _withTimeout, type Semaphore } from './utils/promises';
+import { createWakeupGate, createSemaphore, yieldToEventLoop, TimeoutError as _TimeoutError, withTimeout as _withTimeout, type Semaphore } from './utils/promises';
 import { WebviewMessageReplay } from './webviewMessageReplay';
 
 // --- Session parsing & token estimation ---
@@ -4774,7 +4774,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		}
 		if (!wasCached) {
 			// Yield after CPU-intensive cache-miss work to keep VS Code responsive
-			await new Promise(r => setImmediate(r));
+			await yieldToEventLoop();
 		}
 	}
 
@@ -14872,6 +14872,7 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
         lastProgressPost = now;
         panel.webview.postMessage({ command: "sessionFilesLoadProgress", processed, total });
       }
+      await yieldToEventLoop();
     }
     await this.enrichSessionHierarchy(detailedSessionFiles);
     await this.enrichPiSessionHierarchy(detailedSessionFiles);
@@ -15175,6 +15176,7 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       ctx.results.push({ file: full, size: stat.size, modified: stat.mtime.toISOString(), interactions, tokens: tokenResult.tokens, actualTokens: tokenResult.actualTokens });
     } finally {
       await handle.close();
+      await yieldToEventLoop();
     }
   }
 

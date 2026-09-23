@@ -350,6 +350,20 @@ test('Share Card setup is a no-op on the loading first paint, and does not abort
 	);
 });
 
+test('Diagnostics navigation and buttons remain interactive while session files are being analyzed', async () => {
+	await preloadBundle();
+	const harness = bootWebviewUnsettled(buildInitialData({ detailedSessionFiles: [] }));
+	await harness.settle();
+
+	harness.post({ command: 'sessionFilesLoadProgress', processed: 40, total: 500 });
+	const doc = harness.window.document;
+	assert.match(harness.text('#session-loading-subtext') ?? '', /40 \/ 500/);
+	(doc.querySelector('.group-tab[data-group="settings"]') as HTMLButtonElement).click();
+	assert.ok(doc.querySelector('.group-tab[data-group="settings"]')?.classList.contains('active'));
+	(doc.getElementById('btn-issue') as HTMLButtonElement).click();
+	assert.equal(harness.posted.at(-1)?.command, 'openIssue');
+});
+
 test('OTel Delta tab shows a detecting message while comparison data is still loading', async () => {
 	await preloadBundle();
 	const harness = bootWebviewUnsettled(buildInitialData({ otelComparison: undefined }));
