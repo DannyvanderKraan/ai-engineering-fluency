@@ -180,13 +180,31 @@ describe('member dashboard privacy boundary', () => {
 				const format = runInNewContext(`${formatter}; formatChartTokens`, {}) as (v: number) => string;
 				assert.equal(format(999), '999K');
 				assert.equal(format(1000), '1.0M');
-				assert.equal(format(999999), '1000.0M');
+				assert.equal(format(999949), '999.9M');
+				assert.equal(format(999950), '1.0B');
+				assert.equal(format(999999), '1.0B');
 				assert.equal(format(1000000), '1.0B');
 				assert.equal(format(4555100), '4.6B');
 				assert.match(html, /callback: function\(v\)[\s\S]*?return formatChartTokens\(v\)/);
 				assert.match(html, /ctx\.dataset\.label \+ ': ' \+ formatChartTokens\(v\)/);
 				assert.match(html, /'Total: ' \+ formatChartTokens\(total\)/);
 			}
+			const localFormatter = personalHtml.match(/function fmtLocal\(n\) \{[\s\S]*?\n  \}/)?.[0];
+			assert.ok(localFormatter, 'local-time statistics formatter is included');
+			const formatLocal = runInNewContext(`${localFormatter}; fmtLocal`, {}) as (n: number) => string;
+			assert.equal(formatLocal(999_949), '999.9K');
+			assert.equal(formatLocal(999_950), '1.0M');
+			assert.equal(formatLocal(999_949_999), '999.9M');
+			assert.equal(formatLocal(999_950_000), '1.0B');
+
+			db.prepare('UPDATE usage_uploads SET input_tokens = ? WHERE user_id = ?')
+				.run(999_950_000, viewer.id);
+			const roundedUp = await (await request('/admin', admin)).text();
+			assert.match(roundedUp, /<div class="label">Total Tokens<\/div><div class="value">1\.0B<\/div>/);
+			db.prepare('UPDATE usage_uploads SET input_tokens = ? WHERE user_id = ?')
+				.run(999_949_999, viewer.id);
+			const belowBoundary = await (await request('/admin', admin)).text();
+			assert.match(belowBoundary, /<div class="label">Total Tokens<\/div><div class="value">999\.9M<\/div>/);
 		} finally {
 			db.exec('ROLLBACK TO billion_format; RELEASE billion_format');
 		}

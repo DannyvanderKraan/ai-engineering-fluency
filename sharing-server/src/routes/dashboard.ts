@@ -350,8 +350,8 @@ function safeJson(data: unknown): string {
 }
 
 function fmt(n: number): string {
-	if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
-	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+	if (n >= 999_950_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+	if (n >= 999_950) return `${(n / 1_000_000).toFixed(1)}M`;
 	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
 	return String(n);
 }
@@ -359,8 +359,8 @@ function fmt(n: number): string {
 // Chart datasets are expressed in thousands of tokens.
 const chartFormatterJs = `
   function formatChartTokens(v) {
-    if (v >= 1000000) return (v / 1000000).toFixed(1) + 'B';
-    if (v >= 1000) return (v / 1000).toFixed(1) + 'M';
+    if (v >= 999950) return (v / 1000000).toFixed(1) + 'B';
+    if (v >= 999.95) return (v / 1000).toFixed(1) + 'M';
     return v + 'K';
   }
 `;
@@ -1124,8 +1124,8 @@ var CHART_DATA = ${safeJson(chartData)};
 // Re-compute "Today" stats using browser's local timezone (server pre-renders in UTC)
 (function() {
   function fmtLocal(n) {
-    if (n >= 1000000000) return (n / 1000000000).toFixed(1) + 'B';
-    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+    if (n >= 999950000) return (n / 1000000000).toFixed(1) + 'B';
+    if (n >= 999950) return (n / 1000000).toFixed(1) + 'M';
     if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
     return String(n);
   }
