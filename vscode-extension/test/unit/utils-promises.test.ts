@@ -18,9 +18,13 @@ test('yieldToEventLoop lets queued host work run before a file scan continues', 
 	assert.deepEqual(order, ['button command', 'next file']);
 });
 
-test('createWakeupGate: signal resolves all currently parked waiters', async () => {
-	const gate = createWakeupGate();
-	const order: number[] = [];
+test('yieldToEventLoop lets queued host work run before a file scan continues', async () => {
+	const order: string[] = [];
+	setImmediate(() => { order.push('button command'); });
+	await yieldToEventLoop();
+	order.push('next file');
+	assert.deepEqual(order, ['button command', 'next file']);
+});
 	const a = gate.wait().then(() => order.push(1));
 	const b = gate.wait().then(() => order.push(2));
 	gate.signal();
