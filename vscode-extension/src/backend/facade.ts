@@ -28,7 +28,9 @@ import { SharingServerUploadService } from "./services/sharingServerUploadServic
 import { SyncService } from "./services/syncService";
 import { BackendUtility } from "./services/utilityService";
 import type { BackendQueryFilters, BackendSettings } from "./settings";
+import type { SyncResult } from "./types";
 import { getBackendSettings, isBackendConfigured, isAnyBackendConfigured } from "./settings";
+import { applySettingsAtomically } from "./settingsBatch";
 import { computeBackendSharingPolicy } from "./sharingProfile";
 import type { BackendAggDailyEntityLike } from "./storageTables";
 import type {
@@ -296,7 +298,7 @@ export class BackendFacade {
     return BackendUtility.getDayKeysInclusive(startDayKey, endDayKey);
   }
 
-  public get syncQueue(): Promise<void> {
+  public get syncQueue(): Promise<unknown> {
     return this.syncService.getSyncQueue();
   }
 
@@ -486,7 +488,7 @@ export class BackendFacade {
     return this.credentialService.getBackendSecretsToRedactForError(settings);
   }
 
-  public async syncToBackendStore(force: boolean): Promise<void> {
+  public async syncToBackendStore(force: boolean): Promise<SyncResult | void> {
     const settings = this.getSettings();
     const result = await this.syncService.syncToBackendStore(
       force,
@@ -509,7 +511,7 @@ export class BackendFacade {
     onProgress?: (processed: number, total: number, daysFound: number) => void,
   ): Promise<void> {
     const settings = this.getSettings();
-    await this.syncService.backfillSync(settings, this.isConfigured(settings), maxLookbackDays, onProgress);
+    await this.syncService.backfillSync(settings, maxLookbackDays, onProgress);
     this.clearQueryCache();
   }
 
@@ -684,11 +686,12 @@ export class BackendFacade {
       );
     }
     const config = vscode.workspace.getConfiguration("aiEngineeringFluency");
-    await Promise.all([
+    // One batch, so the settings-change sync never runs against a half-applied save.
+    await applySettingsAtomically(() => Promise.all([
       ...this.buildSharingConfigUpdates(config, next),
       ...this.buildAzureConfigUpdates(config, next),
       ...this.buildBlobAndServerConfigUpdates(config, next),
-    ]);
+    ]));
   }
 
   private buildSharingConfigUpdates(

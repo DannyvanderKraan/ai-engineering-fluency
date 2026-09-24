@@ -411,6 +411,7 @@ import {
 // --- Backend & UI ---
 import type { AiFluencyExtensionApi, ExtensionPointButton } from './extensionPoints';
 import { REPO_HYGIENE_SKILL } from './backend/repoHygieneSkill';
+import { deferWhileApplyingSettings } from './backend/settingsBatch';
 import { BackendFacade } from './backend/facade';
 import { BackendCommandHandler } from './backend/commands';
 import { TeamServerConfigPanel } from './backend/teamServerConfigPanel';
@@ -2834,22 +2835,30 @@ class CopilotTokenTracker implements vscode.Disposable {
 				// user who switches it off keeps looking at the card they just disabled.
 				if (e.affectsConfiguration('aiEngineeringFluency.serverMemories')) { this.invalidateServerMemoriesCache(); }
 				if (e.affectsConfiguration('aiEngineeringFluency.backend')) {
-					this.startBackendSyncAfterInitialAnalysis();
-					const backend = this.backend;
-					if (backend && typeof backend.syncToBackendStore === 'function') {
-						void (async () => {
-							try {
-								await backend.syncToBackendStore(true);
-								if (this.diagnosticsPanel) { this.loadDiagnosticDataInBackground(this.diagnosticsPanel); }
-							} catch (err: unknown) {
-								this.warn('Backend sync after settings change failed: ' + err);
-							}
-						})();
-					}
-					if (this.diagnosticsPanel) { this.loadDiagnosticDataInBackground(this.diagnosticsPanel); }
+					// A multi-key save defers this until its last write, so no sync ever runs
+					// against a half-applied configuration (see settingsBatch.ts).
+					const onBackendSettingsChanged = () => this.onBackendSettingsChanged();
+					if (!deferWhileApplyingSettings(onBackendSettingsChanged)) { onBackendSettingsChanged(); }
 				}
 			})
 		);
+	}
+
+	/** Restarts the sync timer and forces a sync after backend settings changed. */
+	private onBackendSettingsChanged(): void {
+		this.startBackendSyncAfterInitialAnalysis();
+		const backend = this.backend;
+		if (backend && typeof backend.syncToBackendStore === 'function') {
+			void (async () => {
+				try {
+					await backend.syncToBackendStore(true);
+					if (this.diagnosticsPanel) { this.loadDiagnosticDataInBackground(this.diagnosticsPanel); }
+				} catch (err: unknown) {
+					this.warn('Backend sync after settings change failed: ' + err);
+				}
+			})();
+		}
+		if (this.diagnosticsPanel) { this.loadDiagnosticDataInBackground(this.diagnosticsPanel); }
 	}
 
 	private scheduleInitialUpdate(): void {
@@ -5615,7 +5624,8 @@ class CopilotTokenTracker implements vscode.Disposable {
 		}
 		if (!this.backend) { return; }
 		const settings = this.backend.getSettings();
-		if (!settings.sharingServerEnabled || !settings.sharingServerEndpointUrl) { return; }
+		// Skip the score computation when the service would refuse the upload anyway.
+		if (!settings.sharingServerEnabled || !settings.sharingServerEndpointUrl || settings.sharingProfile === 'off') { return; }
 		const maturityData = await (freshMaturityData ?? this.calculateMaturityScores(false));
 		const scorePayload: Record<string, unknown> = {
 			overallStage: maturityData.overallStage, overallLabel: maturityData.overallLabel,
@@ -15212,7 +15222,9 @@ ${this.getLoadingHtmlBody(nonce, iconUri.toString(), startedAtMs)}
       subscriptionId: subscriptionId ? subscriptionId.substring(0, 8) + "..." : "",
       resourceGroup: s.resourceGroup ?? "", aggTable: s.aggTable ?? "usageAggDaily",
       eventsTable: s.eventsTable ?? "usageEvents", authMode: s.authMode ?? "entraId",
-      sharingProfile: config.get("backend.sharingProfile", "off") as string,
+      // The effective (inferred) profile, not get()'s 'off' default for an unset value: a Team
+      // Server-only user with no explicit profile uploads as teamAnonymized.
+      sharingProfile: (s.sharingProfile ?? config.get("backend.sharingProfile", "off")) as string,
     };
   }
 

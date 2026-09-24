@@ -1135,3 +1135,40 @@ test('whats-new l10n: every catalog key resolves in English and zh-cn', () => {
 		mock.setLanguage('en');
 	}
 });
+
+test('l10n: backend Sync Now warnings resolve in English and zh-cn', () => {
+	assert.equal(t('backend.syncNow.profileOff'), 'Backend sync is off because the sharing profile is set to Off. Choose another profile to upload data.');
+	assert.equal(t('backend.syncNow.notConfigured'), 'Backend is not fully configured. Run "Configure Backend" for Azure Storage or "Configure Team Server Backend" for the Team Server.');
+	mock.setLanguage('zh-cn');
+	try {
+		assert.equal(t('backend.syncNow.profileOff'), '后端同步已关闭，因为共享配置文件设置为“关闭”。请选择其他配置文件以上传数据。');
+		assert.equal(t('backend.syncNow.notConfigured'), '后端尚未完全配置。请运行“配置后端”以设置 Azure 存储，或运行“配置团队服务器后端”以设置团队服务器。');
+	} finally {
+		mock.setLanguage('en');
+	}
+});
+
+test('l10n: backend Sync Now progress and success text resolve in English and zh-cn', () => {
+	assert.equal(t('backend.syncNow.synced', t('backend.syncNow.target.teamServer')), 'Synced to Team Server successfully');
+	assert.equal(t('backend.syncNow.synced', t('backend.syncNow.target.azure')), 'Synced to Azure successfully');
+	assert.equal(t('backend.syncNow.progress', t('backend.syncNow.target.both')), 'Syncing to Azure and Team Server...');
+	mock.setLanguage('zh-cn');
+	try {
+		assert.equal(t('backend.syncNow.synced', t('backend.syncNow.target.teamServer')), '已成功同步到团队服务器');
+		assert.equal(t('backend.syncNow.progress', t('backend.syncNow.target.both')), '正在同步到Azure 和团队服务器...');
+	} finally {
+		mock.setLanguage('en');
+	}
+});
+
+test('l10n: backend Sync Now failure and nothing-sent text resolve in English and zh-cn', () => {
+	assert.equal(t('backend.syncNow.failed', 'Team Server'), 'Upload to Team Server failed. See the AI Engineering Fluency output channel for details.');
+	assert.equal(t('backend.syncNow.nothingSent', 'Team Server'), 'Nothing was uploaded to Team Server. Another VS Code window may be syncing, or the Team Server needs a GitHub sign-in. See the output channel for details.');
+	mock.setLanguage('zh-cn');
+	try {
+		assert.equal(t('backend.syncNow.failed', '团队服务器'), '上传到团队服务器失败。有关详细信息，请查看 AI Engineering Fluency 输出通道。');
+		assert.equal(t('backend.syncNow.nothingSent', '团队服务器'), '未向团队服务器上传任何数据。可能有另一个 VS Code 窗口正在同步，或者团队服务器需要登录 GitHub。有关详细信息，请查看输出通道。');
+	} finally {
+		mock.setLanguage('en');
+	}
+});

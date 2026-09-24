@@ -4,6 +4,7 @@
  */
 
 import * as vscode from 'vscode';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -11,9 +12,9 @@ import { DefaultAzureCredential } from '@azure/identity';
 import { safeStringifyError } from '../../../../src/utils/errors';
 import type { DailyRollupKey } from '../rollups';
 import { upsertDailyRollup } from '../rollups';
-import type { BackendSettings } from '../settings';
+import { resolveSyncTargets, type BackendSettings } from '../settings';
 import { BACKEND_SYNC_MIN_INTERVAL_MS } from '../constants';
-import type { DailyRollupValue, ChatRequest, SessionFileCache, ModelUsage } from '../types';
+import type { DailyRollupValue, ChatRequest, SessionFileCache, ModelUsage, SyncResult, SyncTargetOutcome } from '../types';
 import { resolveUserIdentityForSync, type BackendUserIdentityMode } from '../identity';
 import { computeBackendSharingPolicy, hashMachineIdForTeam, hashWorkspaceIdForTeam } from '../sharingProfile';
 import { createDailyAggEntity, type BackendAggDailyEntityLike } from '../storageTables';
@@ -28,6 +29,71 @@ import { getEditorTypeFromPath, refineEditorLabelForInteractionModeSplit } from 
 
 /** Ecosystem session per-model usage entry (input, output, optional interactions). */
 type ModelUsageEntry = { inputTokens: number; outputTokens: number; interactions?: number };
+
+/**
+ * Canonical form of a Team Server endpoint URL: lower-cased origin plus path without trailing
+ * slashes. The upload service strips a trailing slash before posting, so `https://x` and
+ * `https://x/` hit the same endpoint and must share one cross-window lock.
+ */
+export function canonicalTeamServerUrl(url: string): string {
+	const trimmed = url.trim();
+	try {
+		const parsed = new URL(trimmed);
+		return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`;
+	} catch {
+		return trimmed.replace(/\/+$/, '');
+	}
+}
+
+/** Canonical lock identity for each sync target; also what the lock file records as its server URL. */
+export function syncTargetLockToken(kind: 'azure' | 'sharingserver', endpoint: string): string {
+	return kind === 'azure' ? `azure:${endpoint.trim().toLowerCase()}` : `share:${canonicalTeamServerUrl(endpoint)}`;
+}
+
+/**
+ * Lock files written by extension versions before per-endpoint locks. Their recorded server URL
+ * is a `|`-joined list of the targets that window was syncing (`azure:<account>|share:<url>`).
+ * While an older window may still be running, a live lock there that covers a target blocks it.
+ */
+const LEGACY_SYNC_LOCK_NAMES: ReadonlyArray<string | undefined> = [undefined, 'sharingserver'];
+
+/** Whether a legacy lock's recorded server URL covers `token`. Unknown formats are treated as covering. */
+export function legacyLockCoversTarget(lockServerUrl: string | undefined, token: string): boolean {
+	if (!lockServerUrl) { return true; }
+	return lockServerUrl.split('|').some(part => {
+		if (part.startsWith('azure:')) { return syncTargetLockToken('azure', part.slice('azure:'.length)) === token; }
+		if (part.startsWith('share:')) { return syncTargetLockToken('sharingserver', part.slice('share:'.length)) === token; }
+		return true;
+	});
+}
+
+/**
+ * Lock name for one sync target endpoint: its kind plus a stable hash of the endpoint. One lock
+ * file per endpoint means a window syncing to server A can never make two windows syncing to
+ * server B skip serialization (which a single per-kind file, overwritten by A, would allow).
+ */
+export function targetSyncLockName(kind: 'azure' | 'sharingserver', endpoint: string): string {
+	return `${kind}_${createHash('sha256').update(endpoint).digest('hex').slice(0, 16)}`;
+}
+
+/**
+ * The workspace/machine IDs to upload for a rollup key under a sharing policy: HMAC-hashed per
+ * dataset for team profiles, raw for soloFull. Every upload target (Azure rows, backfill, Team
+ * Server entries) must go through this so no profile leaks raw IDs to one target but not another.
+ */
+export function applyIdStrategies(
+	key: { workspaceId: string; machineId: string },
+	datasetId: string,
+	policy: Pick<ReturnType<typeof computeBackendSharingPolicy>, 'workspaceIdStrategy' | 'machineIdStrategy'>,
+): { workspaceId: string; machineId: string } {
+	return {
+		workspaceId: policy.workspaceIdStrategy === 'hashed' ? hashWorkspaceIdForTeam({ datasetId, workspaceId: key.workspaceId }) : key.workspaceId,
+		machineId: policy.machineIdStrategy === 'hashed' ? hashMachineIdForTeam({ datasetId, machineId: key.machineId }) : key.machineId,
+	};
+}
+
+/** Logged when neither Azure Storage nor the Team Server is switched on and configured. */
+const NO_SYNC_TARGET_REASON = 'no sync target enabled: Azure Storage needs backend.enabled plus Azure settings; Team Server needs backend.sharingServer.enabled plus an endpoint URL';
 
 /**
  * Pure consent-timestamp parser — no side effects.
@@ -118,7 +184,7 @@ export interface SyncServiceDeps {
  */
 export class SyncService {
 	private backendSyncInProgress = false;
-	private syncQueue = Promise.resolve();
+	private syncQueue: Promise<unknown> = Promise.resolve();
 	private backendSyncInterval: NodeJS.Timeout | undefined;
 	private consecutiveFailures = 0;
 	private readonly MAX_CONSECUTIVE_FAILURES = 5;
@@ -149,32 +215,32 @@ export class SyncService {
 	 * *different* server URL, the lock does not apply — both instances are
 	 * syncing to independent endpoints and should not block each other.
 	 */
-	private async acquireSyncLock(backend?: string, serverUrl?: string): Promise<boolean> {
-		return this.syncLock.acquire(backend, serverUrl);
+	private async acquireSyncLock(lockName?: string, serverUrl?: string): Promise<boolean> {
+		return this.syncLock.acquire(lockName, serverUrl);
 	}
 
 	/**
 	 * Release the sync lock, but only if we own it.
 	 */
-	private async releaseSyncLock(backend?: string): Promise<void> {
-		return this.syncLock.release(backend);
+	private async releaseSyncLock(lockName?: string): Promise<void> {
+		return this.syncLock.release(lockName);
 	}
 
 	/**
 	 * Determine whether the sync timer is allowed to start, logging the reason when it isn't.
 	 */
 	private _canStartSyncTimer(settings: BackendSettings, isConfigured: boolean): boolean {
-		const sharingPolicy = computeBackendSharingPolicy({
-			enabled: settings.enabled,
-			profile: settings.sharingProfile,
-			shareWorkspaceMachineNames: settings.shareWorkspaceMachineNames
-		});
-		if (!sharingPolicy.allowCloudSync) {
+		if (settings.sharingProfile === 'off') {
 			this.deps.logger.log(`Backend sync: not starting timer (cloud sync disabled, profile: ${settings.sharingProfile})`);
 			return false;
 		}
 		if (!isConfigured) {
 			this.deps.logger.log('Backend sync: not starting timer (backend not configured)');
+			return false;
+		}
+		const targets = resolveSyncTargets(settings);
+		if (!targets.azure && !targets.sharingServer) {
+			this.deps.logger.log(`Backend sync: not starting timer (${NO_SYNC_TARGET_REASON})`);
 			return false;
 		}
 		return true;
@@ -262,7 +328,7 @@ export class SyncService {
 	/**
 	 * Get the current sync queue promise (for testing).
 	 */
-	getSyncQueue(): Promise<void> {
+	getSyncQueue(): Promise<unknown> {
 		return this.syncQueue;
 	}
 
@@ -1334,13 +1400,14 @@ return true;
 	 * @param isConfigured - Whether the backend is fully configured
 	 * @throws Error if sync fails due to network or auth issues
 	 */
-	async syncToBackendStore(force: boolean, settings: BackendSettings, isConfigured: boolean): Promise<void> {
-		this.syncQueue = this.syncQueue.then(() => this.doSyncToBackendStore(force, settings, isConfigured));
-		return this.syncQueue;
+	async syncToBackendStore(force: boolean, settings: BackendSettings, isConfigured: boolean): Promise<SyncResult> {
+		const run = this.syncQueue.then(() => this.doSyncToBackendStore(force, settings, isConfigured));
+		this.syncQueue = run;
+		return run;
 	}
 
-	private logSyncSkipReason(sharingPolicy: ReturnType<typeof computeBackendSharingPolicy>, isConfigured: boolean, settings: BackendSettings): void {
-		if (!sharingPolicy.allowCloudSync) {
+	private logSyncSkipReason(isConfigured: boolean, settings: BackendSettings): void {
+		if (settings.sharingProfile === 'off') {
 			this.deps.logger.log(`Backend sync: skipping (sharing policy does not allow cloud sync, profile: ${settings.sharingProfile})`);
 		} else if (!isConfigured) {
 			this.deps.logger.log('Backend sync: skipping (neither Azure Storage nor Team Server is configured)');
@@ -1385,72 +1452,104 @@ return true;
 	}
 
 	/** Runs the Azure Table Storage sync in isolation, logging (but not throwing) on failure. */
-	private async runAzureSyncIndependently(settings: BackendSettings, sharingPolicy: ReturnType<typeof computeBackendSharingPolicy>): Promise<void> {
+	private async runAzureSyncIndependently(settings: BackendSettings, sharingPolicy: ReturnType<typeof computeBackendSharingPolicy>): Promise<SyncTargetOutcome> {
 		try {
-			await this.performAzureTableSync(settings, sharingPolicy);
+			return await this.performAzureTableSync(settings, sharingPolicy);
 		} catch (e: unknown) {
 			const secretsToRedact = await this.credentialService.getBackendSecretsToRedactForError(settings);
 			this.deps.logger.warn(`Backend sync: ${safeStringifyError(e, secretsToRedact)}`);
+			return 'failed';
 		}
 	}
 
 	/** Runs the Team Server (sharing server) sync in isolation, logging (but not throwing) on failure. */
-	private async runSharingServerSyncIndependently(settings: BackendSettings, sharingPolicy: ReturnType<typeof computeBackendSharingPolicy>): Promise<void> {
+	private async runSharingServerSyncIndependently(settings: BackendSettings, sharingPolicy: ReturnType<typeof computeBackendSharingPolicy>): Promise<SyncTargetOutcome> {
 		try {
-			await this.syncToSharingServer(settings, sharingPolicy);
+			if (!await this.syncToSharingServer(settings, sharingPolicy)) { return 'skipped'; }
 			await this.tryUpdateSharingServerLastSyncAt();
+			return 'synced';
 		} catch (ssErr: unknown) {
 			this.deps.logger.warn(`Sharing server sync: failed - ${safeStringifyError(ssErr)}`);
+			return 'failed';
 		}
 	}
 
-	/** Builds a composite lock identifier covering whichever backend(s) are configured for this sync pass. */
-	private buildSyncLockTarget(azureConfigured: boolean, sharingConfigured: boolean, settings: BackendSettings): string {
-		const targets = [
-			azureConfigured ? `azure:${settings.storageAccount}` : null,
-			sharingConfigured ? `share:${settings.sharingServerEndpointUrl}` : null,
-		].filter((t): t is string => !!t);
-		return targets.join('|');
+	/**
+	 * Runs one target's sync under that target endpoint's own cross-window lock, so two windows
+	 * uploading to the same endpoint serialize regardless of their other targets, other windows'
+	 * endpoints, or their `backend.backend` selector.
+	 */
+	private async runUnderTargetLock(kind: 'azure' | 'sharingserver', endpoint: string, label: string, run: () => Promise<SyncTargetOutcome>): Promise<SyncTargetOutcome> {
+		const token = syncTargetLockToken(kind, endpoint);
+		const lockName = targetSyncLockName(kind, token);
+		const skipReason = `Backend sync: skipping ${label} (another VS Code window is currently syncing to the same endpoint)`;
+		if (await this.isLegacyLockHeldFor(token)) {
+			this.deps.logger.log(skipReason);
+			return 'skipped';
+		}
+		if (!await this.acquireSyncLock(lockName, token)) {
+			this.deps.logger.log(skipReason);
+			return 'skipped';
+		}
+		try {
+			return await run();
+		} finally {
+			await this.releaseSyncLock(lockName);
+		}
 	}
 
-	private async doSyncToBackendStore(force: boolean, settings: BackendSettings, isConfigured: boolean): Promise<void> {
-		if (this.backendSyncInProgress) { return; }
+	/** Whether a window still running an older extension version holds a legacy lock covering `token`. */
+	private async isLegacyLockHeldFor(token: string): Promise<boolean> {
+		for (const legacyName of LEGACY_SYNC_LOCK_NAMES) {
+			if (await this.syncLock.isHeldByAnotherWindow(legacyName, (url) => legacyLockCoversTarget(url, token))) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private async doSyncToBackendStore(force: boolean, settings: BackendSettings, isConfigured: boolean): Promise<SyncResult> {
+		if (this.backendSyncInProgress) { return {}; }
+		if (settings.sharingProfile === 'off' || !isConfigured) {
+			this.logSyncSkipReason(isConfigured, settings);
+			return {};
+		}
+
+		// Azure Storage and the Team Server are independent sync targets: either, both, or
+		// neither may be enabled at any time, and each must run — and report its own
+		// success/failure and "last sync" timestamp — without the other affecting it.
+		// Azure is gated on `backend.enabled`; the Team Server has its own toggle and must
+		// not depend on the Azure one.
+		const { azure: azureConfigured, sharingServer: sharingConfigured } = resolveSyncTargets(settings);
+		if (!azureConfigured && !sharingConfigured) {
+			this.deps.logger.log(`Backend sync: skipping (${NO_SYNC_TARGET_REASON})`);
+			return {};
+		}
+		if (await this.checkSyncThrottle(force)) { return {}; }
+		// Target gating is done above; the policy here only shapes the uploaded payload.
 		const sharingPolicy = computeBackendSharingPolicy({
-			enabled: settings.enabled,
+			enabled: true,
 			profile: settings.sharingProfile,
 			shareWorkspaceMachineNames: settings.shareWorkspaceMachineNames
 		});
-		if (!sharingPolicy.allowCloudSync || !isConfigured) {
-			this.logSyncSkipReason(sharingPolicy, isConfigured, settings);
-			return;
-		}
-		if (await this.checkSyncThrottle(force)) { return; }
 
-		// Azure Storage and the Team Server are independent sync targets: either, both, or
-		// neither may be configured at any time, and each must run — and report its own
-		// success/failure and "last sync" timestamp — without the other affecting it.
-		const azureConfigured = !!(settings.subscriptionId && settings.resourceGroup && settings.storageAccount && settings.aggTable);
-		const sharingConfigured = !!(settings.sharingServerEnabled && settings.sharingServerEndpointUrl);
-		if (!azureConfigured && !sharingConfigured) {
-			this.deps.logger.log('Backend sync: skipping (neither Azure Storage nor Team Server is configured)');
-			return;
-		}
-
-		const lockTarget = this.buildSyncLockTarget(azureConfigured, sharingConfigured, settings);
-		if (!await this.acquireSyncLock(settings.backend, lockTarget)) {
-			this.deps.logger.log('Backend sync: skipping (another VS Code window is currently syncing to the same server)');
-			return;
-		}
+		const result: SyncResult = {};
 		this.backendSyncInProgress = true;
 		try {
 			await this.tryUpdateLastSyncAt();
-			if (azureConfigured) { await this.runAzureSyncIndependently(settings, sharingPolicy); }
-			if (sharingConfigured) { await this.runSharingServerSyncIndependently(settings, sharingPolicy); }
+			if (azureConfigured) {
+				result.azure = await this.runUnderTargetLock('azure', settings.storageAccount, 'Azure Storage',
+					() => this.runAzureSyncIndependently(settings, sharingPolicy));
+			}
+			if (sharingConfigured) {
+				result.sharingServer = await this.runUnderTargetLock('sharingserver', settings.sharingServerEndpointUrl, 'Team Server',
+					() => this.runSharingServerSyncIndependently(settings, sharingPolicy));
+			}
 			this.consecutiveFailures = 0;
 		} finally {
 			this.backendSyncInProgress = false;
-			await this.releaseSyncLock(settings.backend);
 		}
+		return result;
 	}
 
 	private checkBlobUploadNeeded(settings: BackendSettings): boolean {
@@ -1508,12 +1607,7 @@ return true;
 			const effectiveUserId = (key.userId ?? '').trim() || undefined;
 			const includeConsent = sharingPolicy.includeUserDimension && !!effectiveUserId;
 			const includeNames = sharingPolicy.includeNames;
-			const workspaceIdToStore = sharingPolicy.workspaceIdStrategy === 'hashed'
-				? hashWorkspaceIdForTeam({ datasetId: settings.datasetId, workspaceId: key.workspaceId })
-				: key.workspaceId;
-			const machineIdToStore = sharingPolicy.machineIdStrategy === 'hashed'
-				? hashMachineIdForTeam({ datasetId: settings.datasetId, machineId: key.machineId })
-				: key.machineId;
+			const { workspaceId: workspaceIdToStore, machineId: machineIdToStore } = applyIdStrategies(key, settings.datasetId, sharingPolicy);
 			entities.push(createDailyAggEntity({
 				datasetId: settings.datasetId, day: key.day, model: key.model,
 				workspaceId: workspaceIdToStore, workspaceName: includeNames ? workspaceNamesById[key.workspaceId] : undefined,
@@ -1542,12 +1636,17 @@ return true;
 		}
 	}
 
-	private async performAzureTableSync(settings: BackendSettings, sharingPolicy: ReturnType<typeof computeBackendSharingPolicy>): Promise<void> {
+	/**
+	 * Upserts local rollups into Azure Table Storage. Resolves `failed` — without touching the
+	 * Azure "last sync" marker — when credentials are unavailable or any entity failed to upsert,
+	 * so neither case can be reported as a successful sync.
+	 */
+	private async performAzureTableSync(settings: BackendSettings, sharingPolicy: ReturnType<typeof computeBackendSharingPolicy>): Promise<SyncTargetOutcome> {
 		this.deps.logger.log('Backend sync: starting rollup sync');
 		const creds = await this.credentialService.getBackendDataPlaneCredentials(settings);
 		if (!creds) {
 			this.deps.logger.warn('Backend sync: skipping (credentials not available - check authentication mode and secrets)');
-			return;
+			return 'failed';
 		}
 		await this.dataPlaneService.ensureTableExists(settings, creds.tableCredential);
 		await this.dataPlaneService.validateAccess(settings, creds.tableCredential);
@@ -1575,10 +1674,12 @@ return true;
 			this.deps.logger.log(`Backend sync: ${successCount} entities synced successfully`);
 		}
 
-		await this.tryUpdateAzureLastSyncAt();
+		const outcome: SyncTargetOutcome = errors.length > 0 ? 'failed' : 'synced';
+		if (outcome === 'synced') { await this.tryUpdateAzureLastSyncAt(); }
 		this.deps.logger.log('Backend sync: completed');
 
 		if (blobUploadNeeded && this.blobUploadService) { await this.performBlobUploadIfNeeded(settings, creds, sessionFiles, editorTypeByFile); }
+		return outcome;
 	}
 
 	/**
@@ -1595,21 +1696,23 @@ return true;
 	}
 
 	/**
-	 * Sync daily rollups to the self-hosted sharing server using a GitHub Bearer token.
+	 * Sync daily rollups to the self-hosted sharing server using a GitHub Bearer token. Resolves
+	 * `true` when the pass completed (including "nothing to upload") and `false` when it could not
+	 * run at all (no upload service or no GitHub token).
 	 */
 	private async syncToSharingServer(
 		settings: BackendSettings,
 		sharingPolicy: ReturnType<typeof computeBackendSharingPolicy>,
-	): Promise<void> {
+	): Promise<boolean> {
 		if (!this.sharingServerUploadService) {
 			this.deps.logger.warn('Sharing server upload: service not available');
-			return;
+			return false;
 		}
 
 		const githubToken = this.deps.getGithubToken?.();
 		if (!githubToken) {
 			this.deps.logger.log('Sharing server upload: skipping (no GitHub token — authenticate with GitHub in VS Code first)');
-			return;
+			return false;
 		}
 
 		const resolvedIdentity = await this.resolveEffectiveUserIdentityForSync(
@@ -1625,18 +1728,21 @@ return true;
 
 		if (rollups.size === 0) {
 			this.deps.logger.log('Sharing server upload: no data to upload');
-			return;
+			return true;
 		}
 
 		const includeNames = sharingPolicy.includeNames;
 		const entries: SharingServerEntry[] = [];
 		for (const { key, value } of rollups.values()) {
+			// Same ID strategy as the Azure path: team profiles upload hashed workspace/machine
+			// IDs, only soloFull uploads raw ones. Names are still looked up by the raw ID.
+			const ids = applyIdStrategies(key, settings.datasetId, sharingPolicy);
 			entries.push({
 				day: key.day,
 				model: key.model,
-				workspaceId: key.workspaceId,
+				workspaceId: ids.workspaceId,
 				workspaceName: includeNames ? workspaceNamesById[key.workspaceId] : undefined,
-				machineId: key.machineId,
+				machineId: ids.machineId,
 				machineName: includeNames ? machineNamesById[key.machineId] : undefined,
 				inputTokens: value.inputTokens,
 				outputTokens: value.outputTokens,
@@ -1650,13 +1756,22 @@ return true;
 		const totalInputTokens = entries.reduce((s, e) => s + e.inputTokens, 0);
 		const totalOutputTokens = entries.reduce((s, e) => s + e.outputTokens, 0);
 		this.deps.logger.log(`Sharing server upload: uploading ${entries.length} rollup entries (${(totalInputTokens + totalOutputTokens).toLocaleString()} tokens total)`);
-		await this.sharingServerUploadService.uploadRollups(
+		// uploadRollups reports HTTP/network failures and server-side rejections in its result
+		// rather than throwing; turn both into errors so the caller records the target as failed.
+		const upload = await this.sharingServerUploadService.uploadRollups(
 			settings.sharingServerEndpointUrl,
 			githubToken,
 			entries,
 			this.deps.logger.log,
 			this.deps.logger.warn,
 		);
+		if (!upload.success) {
+			throw new Error(upload.message);
+		}
+		if (upload.entriesUploaded < entries.length) {
+			throw new Error(`server accepted ${upload.entriesUploaded} of ${entries.length} entries`);
+		}
+		return true;
 	}
 
 	/**
@@ -1669,19 +1784,20 @@ return true;
 		score: Record<string, unknown>,
 	): Promise<void> {
 		if (!this.sharingServerUploadService) { return; }
-		if (!settings.sharingServerEnabled || !settings.sharingServerEndpointUrl) { return; }
+		// Same gate as rollup sync: toggle + endpoint, and a sharing profile other than 'off'.
+		if (!resolveSyncTargets(settings).sharingServer) { return; }
 
 		const githubToken = this.deps.getGithubToken?.();
 		if (!githubToken) { return; }
 
-		await this.sharingServerUploadService.uploadFluencyScore(
+		const uploaded = await this.sharingServerUploadService.uploadFluencyScore(
 			settings.sharingServerEndpointUrl,
 			githubToken,
 			score,
 			this.deps.logger.log,
 			this.deps.logger.warn,
 		);
-		await this.tryUpdateSharingServerLastSyncAt();
+		if (uploaded) { await this.tryUpdateSharingServerLastSyncAt(); }
 	}
 
 	/**
@@ -1694,14 +1810,16 @@ return true;
 	 * mtime-based file-age filter (e.g. the backend was configured after a large volume of
 	 * activity had already accumulated locally).
 	 */
-	async backfillSync(settings: BackendSettings, isConfigured: boolean, maxLookbackDays = 365, onProgress?: (processed: number, total: number, daysFound: number) => void): Promise<void> {
+	async backfillSync(settings: BackendSettings, maxLookbackDays = 365, onProgress?: (processed: number, total: number, daysFound: number) => void): Promise<void> {
 		const sharingPolicy = computeBackendSharingPolicy({
 			enabled: settings.enabled,
 			profile: settings.sharingProfile,
 			shareWorkspaceMachineNames: settings.shareWorkspaceMachineNames
 		});
-		if (!sharingPolicy.allowCloudSync || !isConfigured) {
-			this.deps.logger.warn('Backfill: skipping (cloud sync disabled or backend not configured)');
+		// Backfill writes to Azure Table Storage only, so it is gated solely on the Azure target
+		// (backend.enabled + Azure fields + non-off profile), not on the backend.backend selector.
+		if (!resolveSyncTargets(settings).azure) {
+			this.deps.logger.warn('Backfill: skipping (Azure Storage sync disabled or not configured)');
 			return;
 		}
 
@@ -1762,12 +1880,7 @@ return true;
 			const effectiveUserId = (key.userId ?? '').trim() || undefined;
 			const includeConsent = sharingPolicy.includeUserDimension && !!effectiveUserId;
 			const includeNames = sharingPolicy.includeNames;
-			const workspaceIdToStore = sharingPolicy.workspaceIdStrategy === 'hashed'
-				? hashWorkspaceIdForTeam({ datasetId: settings.datasetId, workspaceId: key.workspaceId })
-				: key.workspaceId;
-			const machineIdToStore = sharingPolicy.machineIdStrategy === 'hashed'
-				? hashMachineIdForTeam({ datasetId: settings.datasetId, machineId: key.machineId })
-				: key.machineId;
+			const { workspaceId: workspaceIdToStore, machineId: machineIdToStore } = applyIdStrategies(key, settings.datasetId, sharingPolicy);
 			entities.push(createDailyAggEntity({
 				datasetId: settings.datasetId, day: key.day, model: key.model,
 				workspaceId: workspaceIdToStore, workspaceName: includeNames ? workspaceNamesById[key.workspaceId] : undefined,
