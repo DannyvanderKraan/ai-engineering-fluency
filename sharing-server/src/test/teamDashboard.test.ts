@@ -228,6 +228,27 @@ describe('member dashboard privacy boundary', () => {
 		assert.equal((await request('/admin', admin)).status, 302, 'role changes take effect on the next request');
 	});
 
+	test('personal dashboard empty state gives setup guidance that actually enables uploads', async () => {
+		const html = await (await request('/dashboard', inactive)).text();
+		assert.ok(html.includes('No data yet.'));
+		// Must match the contributed Command Palette title (vscode-extension/package.nls.json).
+		assert.ok(html.includes('AI Engineering Fluency: Configure Team Server Backend'));
+		// Every gate on the extension's upload path must be named: the endpoint URL alone leaves
+		// uploads disabled, and cloud sync also needs backend.enabled plus a non-off sharing profile.
+		for (const setting of [
+			'aiEngineeringFluency.backend.sharingServer.enabled',
+			'aiEngineeringFluency.backend.sharingServer.endpointUrl',
+			'aiEngineeringFluency.backend.sharingProfile',
+			'aiEngineeringFluency.backend.enabled',
+		]) {
+			assert.ok(html.includes(`<code>${setting}</code>`), `missing ${setting}`);
+		}
+		assert.ok(html.includes('any value other than <code>off</code>'));
+		// The extension has no status-bar sync; saving the settings is the trigger.
+		assert.ok(!html.includes('status bar'));
+		assertNoPeerMetadata(html);
+	});
+
 	test('inactive members are not ranked, and zero-activity windows explain the empty state', async () => {
 		const html = await (await request('/team', inactive)).text();
 		assert.ok(html.includes('You have no active uploads in this period.'));
