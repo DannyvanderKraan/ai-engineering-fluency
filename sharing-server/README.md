@@ -317,6 +317,7 @@ import {
 	startServer,
 	registerSchemaExtension,
 	requireBearerAuth,
+	renderNavExtra,
 	getDb,
 } from '@rajbos/ai-engineering-fluency-sharing-server';
 import { Hono } from 'hono';
@@ -342,9 +343,24 @@ routes.post('/upload', requireBearerAuth, async (c) => {
 	return c.json({ ok: true });
 });
 
+// The page the nav link points at. `renderNavExtra` renders the same downstream
+// links here, so your page header stays consistent with the built-in ones.
+const page = new Hono();
+page.get('/mine', (c) =>
+	c.html(`<!doctype html><html><body>
+		<header>
+			<a href="/dashboard">My Dashboard</a>
+			<a href="/team">Team Insights</a>
+			${renderNavExtra(c, '/mine')}
+		</header>
+		<main>…</main>
+	</body></html>`),
+);
+
 const app = createApp({
 	healthExtra: () => ({ edition: 'my-company' }),
-	extend: (a) => a.route('/api/mine', routes),
+	navExtra: () => [{ href: '/mine', label: 'My Insights' }],
+	extend: (a) => a.route('/api/mine', routes).route('/', page),
 });
 
 await startServer(app);
@@ -356,11 +372,13 @@ await startServer(app);
 |---|---|
 | `createApp({ extend })` | Register routes **before** the built-in ones. Because Hono matches in registration order, this also lets you override a built-in path. |
 | `createApp({ healthExtra })` | Merge extra fields into `/health`. |
+| `createApp({ navExtra })` | Add links to the built-in page headers, so a page you mount through `extend` is reachable from the UI instead of by URL only. Scoped to that app. Labels are escaped, and an href that is not same-origin once the URL is parsed is dropped. |
 | `createApp({ mountApi, mountDashboard })` | Opt out of the built-in route groups. |
 | `registerSchemaExtension(name, fn)` | Add tables/indexes/migrations. Call before the first `getDb()`. |
 | `requireBearerAuth` | Authenticate with the same GitHub token as `/api/upload`, so your rows share the same `user_id`. |
 | `getTeamInsights(viewerId, days)`, `parseTeamDays(raw)` | Reuse the safe Team Insights projection and supported-period parsing. Derive `viewerId` only from server-authenticated identity, never request/query input. |
 | `TeamInsights`, `TeamMember`, `UsageCohort` | Public TypeScript types for the identity-free projection. |
+| `renderNavExtra(c, currentPath)`, `NavLink` | Render the same downstream links inside your own page header, so navigation stays consistent across built-in and custom pages. |
 | `startServer(app, opts)` | Backup/restore, DB init with retry, periodic backup, graceful shutdown. |
 
 ### Guidance
