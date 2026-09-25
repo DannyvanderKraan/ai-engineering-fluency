@@ -14,59 +14,21 @@
  */
 import type {
 	AesActivity,
-	AesMode,
 	AesPosture,
 	AesStock,
 	AesSupportingEvidence,
 	AesWorkflowReport,
 } from './types';
 import { ACTIVITIES, AES_ASSESSMENT_DISCLAIMER, MODES, STOCKS } from './aesWorkflowAssessment';
-
-const ACTIVITY_LABELS: Record<AesActivity, string> = {
-	define: 'Define — decide what should happen',
-	deliver: 'Deliver — make the change',
-	detect: 'Detect — observe what happened',
-};
-
-const MODE_LABELS: Record<AesMode, string> = {
-	director: 'Director — sets direction',
-	performer: 'Performer — carries out the work',
-	assessor: 'Assessor — evaluates the result',
-};
-
-const STOCK_LABELS: Record<AesStock, string> = {
-	governance: 'Governance',
-	sharedKnowledge: 'Shared knowledge',
-	customerValue: 'Customer value',
-};
-
-const DELEGATION_LABELS: Record<string, string> = {
-	'human-only': 'Human-only',
-	'agent-assisted': 'Agent-assisted',
-	'agent-performed-reviewed': 'Agent-performed, human-reviewed',
-	'agent-performed-autonomous': 'Agent-performed, autonomous',
-};
-
-const RATING_LABELS: Record<string, string> = {
-	strong: 'Strong',
-	developing: 'Developing',
-	weak: 'Weak',
-	unknown: 'Unknown',
-};
-
-const POSTURE_LABELS: Record<AesPosture, string> = {
-	'healthy-agent-native': 'Healthy agent-native',
-	'healthy-but-underused': 'Healthy but underused',
-	'underdeveloped-foundations': 'Underdeveloped foundations',
-	'stretched-agent-native': 'Stretched agent-native',
-	unclear: 'Unclear — missing stock evidence',
-};
-
-const EVIDENCE_STATE_ICON: Record<AesSupportingEvidence['state'], string> = {
-	present: '✔',
-	absent: '✘',
-	unknown: '?',
-};
+import {
+	ACTIVITY_LABELS,
+	DELEGATION_LABELS,
+	EVIDENCE_STATE_ICON,
+	MODE_LABELS,
+	POSTURE_LABELS,
+	RATING_LABELS,
+	STOCK_LABELS,
+} from './aesLabels';
 
 // ---------------------------------------------------------------------------
 // Plain text
