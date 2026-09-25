@@ -12,6 +12,12 @@
  * Dark Factory Readiness would report on `fablecart/order-service` and
  * `fablecart/storefront-web` separately, but the workflow that actually
  * delivers customer value crosses both.
+ *
+ * The governance stock is deliberately marked `confidence: 'unverified'` —
+ * its rating rests partly on an unconfirmed deployment-approval process and
+ * an unchecked code-scanning status. That is enough, on its own, to mark the
+ * derived posture "needs confirmation": a `weak`/`developing` rating nobody
+ * has actually checked is a lead to verify, not a finding to act on.
  */
 import type { AesSupportingEvidence, AesWorkflowAssessment } from './types';
 import { AES_ASSESSMENT_SCHEMA_VERSION } from './aesWorkflowAssessment';
@@ -122,6 +128,7 @@ export const FABLECART_AES_ASSESSMENT: AesWorkflowAssessment = {
 	stocks: {
 		governance: {
 			rating: 'developing',
+			confidence: 'unverified',
 			evidence:
 				'CI and required review are in place for both repositories. Deployment approval for storefront-web is ' +
 				'still a manual Slack message rather than an environment protection rule, and code scanning status is unverified.',
@@ -132,6 +139,7 @@ export const FABLECART_AES_ASSESSMENT: AesWorkflowAssessment = {
 		},
 		sharedKnowledge: {
 			rating: 'developing',
+			confidence: 'verified',
 			evidence:
 				'order-service has current AGENTS.md instructions and a versioned API spec; storefront-web has neither, ' +
 				'so agents working there rely on reading existing code rather than written intent.',
@@ -142,11 +150,31 @@ export const FABLECART_AES_ASSESSMENT: AesWorkflowAssessment = {
 		},
 		customerValue: {
 			rating: 'weak',
+			confidence: 'verified',
 			evidence:
 				'Support-ticket volume for "where is my order?" is tracked, but nobody currently reports whether shipped ' +
 				'fixes actually reduced it — the team ships changes without closing the loop back to the ticket trend.',
 			signalsConsidered: ['Customer-reported defects and support volume trends'],
 		},
+	},
+	decision: {
+		delegateNow:
+			'Small, well-bounded order-status fixes (a missing status transition, a stale cache key) may continue to be ' +
+			'agent-drafted, tested and opened as a pull request, with a human reviewing and merging.',
+		deferred:
+			'Broader responsibility across order-service and storefront-web — autonomous merges, or anything touching ' +
+			'the payments-adjacent order-total logic — is deferred until the actions below are resolved.',
+		topActions: [
+			'Document storefront-web\'s expected behavior and API contract, so agents stop having to infer intent from ' +
+				'existing code alone.',
+			'Verify how the storefront-web deployment approval and CodeQL scanning actually work today, instead of ' +
+				'carrying them forward as an unconfirmed governance rating.',
+			'Connect each shipped fix to the trend in "where is my order?" support tickets, so customer impact is ' +
+				'measured rather than assumed.',
+		],
+		evidenceToReconsider:
+			'Several consecutive agent-performed fixes with low rework/defect rates and stable review turnaround, ' +
+			'together with a confirmed drop in order-status support tickets following release.',
 	},
 	supportingEvidence: FABLECART_SUPPORTING_EVIDENCE,
 	notes:

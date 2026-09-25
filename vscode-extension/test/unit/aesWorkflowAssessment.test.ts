@@ -7,13 +7,15 @@ import {
 	buildAesWorkflowReport,
 	classifyAesPosture,
 	deepestDelegation,
+	derivePostureConfidence,
 	foundationsAreSolid,
 	MODES,
 	STOCKS,
 } from '../../../src/aesWorkflowAssessment';
+import { formatPostureLabel } from '../../../src/aesLabels';
 import { renderAesReportHtml, renderAesReportText } from '../../../src/aesWorkflowReportRenderer';
 import { FABLECART_AES_ASSESSMENT } from '../../../src/aesFableCartFixture';
-import type { AesDelegationLevel, AesMaturityRating, AesWorkflowAssessment } from '../../../src/types';
+import type { AesConfidence, AesDelegationLevel, AesMaturityRating, AesWorkflowAssessment } from '../../../src/types';
 
 // ---------------------------------------------------------------------------
 // Fixture builder
@@ -21,6 +23,7 @@ import type { AesDelegationLevel, AesMaturityRating, AesWorkflowAssessment } fro
 
 function makeAssessment(overrides: {
 	stockRatings?: Partial<Record<(typeof STOCKS)[number], AesMaturityRating>>;
+	stockConfidence?: Partial<Record<(typeof STOCKS)[number], AesConfidence>>;
 	activityDelegation?: AesDelegationLevel;
 	modeDelegation?: AesDelegationLevel;
 } = {}): AesWorkflowAssessment {
@@ -44,8 +47,14 @@ function makeAssessment(overrides: {
 		])) as AesWorkflowAssessment['modes'],
 		stocks: Object.fromEntries(STOCKS.map(stock => [
 			stock,
-			{ rating: stockRating(stock), evidence: 'because' },
+			{ rating: stockRating(stock), confidence: overrides.stockConfidence?.[stock], evidence: 'because' },
 		])) as AesWorkflowAssessment['stocks'],
+		decision: {
+			delegateNow: 'delegate now',
+			deferred: 'deferred',
+			topActions: ['action one'],
+			evidenceToReconsider: 'evidence',
+		},
 	};
 }
 
@@ -130,14 +139,42 @@ test('buildAesWorkflowReport carries the assessment through unchanged and attach
 	assert.equal(report.deepestDelegation, 'human-only');
 });
 
-test('FableCart fixture is internally consistent and reads as stretched-agent-native', () => {
+test('FableCart fixture is internally consistent and reads as stretched-agent-native, unconfirmed', () => {
 	// The fixture is written to demonstrate the "no independent evaluator" anti-pattern
 	// alongside agent-performed-reviewed delivery and a weak customer-value stock —
-	// exactly the misaligned posture the framework calls out.
+	// exactly the misaligned posture the framework calls out. Its governance rating is
+	// deliberately unverified, so the posture itself should read as needing confirmation.
 	const report = buildAesWorkflowReport(FABLECART_AES_ASSESSMENT);
 	assert.equal(report.posture, 'stretched-agent-native');
+	assert.equal(report.postureConfidence, 'unverified');
 	assert.equal(report.foundationsSolid, false);
 	assert.equal(report.deepestDelegation, 'agent-performed-reviewed');
+});
+
+// ---------------------------------------------------------------------------
+// Posture confidence
+// ---------------------------------------------------------------------------
+
+test('derivePostureConfidence is verified only when every stock is explicitly verified', () => {
+	const allVerified = makeAssessment({
+		stockConfidence: { governance: 'verified', sharedKnowledge: 'verified', customerValue: 'verified' },
+	});
+	assert.equal(derivePostureConfidence(allVerified), 'verified');
+
+	const oneUnverified = makeAssessment({
+		stockConfidence: { governance: 'unverified', sharedKnowledge: 'verified', customerValue: 'verified' },
+	});
+	assert.equal(derivePostureConfidence(oneUnverified), 'unverified');
+});
+
+test('derivePostureConfidence treats a missing confidence field as unverified', () => {
+	assert.equal(derivePostureConfidence(makeAssessment()), 'unverified');
+});
+
+test('formatPostureLabel marks unverified postures as needing confirmation, except unclear', () => {
+	assert.equal(formatPostureLabel('stretched-agent-native', 'unverified'), 'Possible stretched agent-native — confirmation needed');
+	assert.equal(formatPostureLabel('stretched-agent-native', 'verified'), 'Stretched agent-native');
+	assert.equal(formatPostureLabel('unclear', 'unverified'), 'Unclear — missing stock evidence');
 });
 
 // ---------------------------------------------------------------------------
@@ -149,7 +186,7 @@ test('renderAesReportText includes the workflow name, disclaimer, posture and su
 	const text = renderAesReportText(report);
 	assert.ok(text.includes('Order status API'));
 	assert.ok(text.includes('team-reported self-assessment'));
-	assert.ok(text.includes('Stretched agent-native'));
+	assert.ok(text.includes('Possible stretched agent-native'));
 	assert.ok(text.includes('fablecart/order-service'));
 	// The unknown Dark Factory evidence must render as unknown, never silently as present/absent.
 	assert.ok(text.includes('[?]'));

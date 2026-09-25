@@ -22,10 +22,11 @@ import type {
 import { ACTIVITIES, AES_ASSESSMENT_DISCLAIMER, MODES, STOCKS } from './aesWorkflowAssessment';
 import {
 	ACTIVITY_LABELS,
+	CONFIDENCE_LABELS,
 	DELEGATION_LABELS,
 	EVIDENCE_STATE_ICON,
+	formatPostureLabel,
 	MODE_LABELS,
-	POSTURE_LABELS,
 	RATING_LABELS,
 	STOCK_LABELS,
 } from './aesLabels';
@@ -48,6 +49,21 @@ function renderEvidenceLinesText(evidence: readonly AesSupportingEvidence[], inf
 	});
 }
 
+function renderDecisionLinesText(decision: AesWorkflowReport['assessment']['decision']): string[] {
+	const lines: string[] = [];
+	lines.push('Decision and next experiment');
+	lines.push(textRule());
+	lines.push(`  Delegate now:            ${decision.delegateNow}`);
+	lines.push(`  Deferred:                ${decision.deferred}`);
+	lines.push(`  Evidence to reconsider:  ${decision.evidenceToReconsider}`);
+	lines.push('  Top actions:');
+	for (const action of decision.topActions) {
+		lines.push(`    - ${action}`);
+	}
+	lines.push('');
+	return lines;
+}
+
 /** Render the report as plain text for the CLI's console output. */
 export function renderAesReportText(report: AesWorkflowReport): string {
 	const { assessment } = report;
@@ -68,11 +84,23 @@ export function renderAesReportText(report: AesWorkflowReport): string {
 	lines.push(`  Customers:      ${assessment.outcome.customers}`);
 	lines.push('');
 
+	// Posture and Decision come before the stock/activity/mode detail on purpose:
+	// they are the conclusion, and a reader should never have to assemble it
+	// themselves from the sections below.
+	lines.push('Posture');
+	lines.push(textRule());
+	lines.push(`  ${formatPostureLabel(report.posture, report.postureConfidence)}`);
+	lines.push(`  ${report.postureGuidance}`);
+	lines.push('');
+
+	lines.push(...renderDecisionLinesText(assessment.decision));
+
 	lines.push('Stocks');
 	lines.push(textRule());
 	for (const stock of STOCKS) {
 		const stockAssessment = assessment.stocks[stock];
-		lines.push(`  ${STOCK_LABELS[stock].padEnd(18)} ${RATING_LABELS[stockAssessment.rating]}`);
+		const confidence = CONFIDENCE_LABELS[stockAssessment.confidence ?? 'unverified'];
+		lines.push(`  ${STOCK_LABELS[stock].padEnd(18)} ${RATING_LABELS[stockAssessment.rating]} (${confidence})`);
 		lines.push(`    ${stockAssessment.evidence}`);
 		lines.push(...renderEvidenceLinesText(assessment.supportingEvidence ?? [], stock));
 	}
@@ -100,12 +128,6 @@ export function renderAesReportText(report: AesWorkflowReport): string {
 			lines.push(`    Anti-patterns observed: ${modeAssessment.antiPatternsObserved.join('; ')}`);
 		}
 	}
-	lines.push('');
-
-	lines.push('Posture');
-	lines.push(textRule());
-	lines.push(`  ${POSTURE_LABELS[report.posture]}`);
-	lines.push(`  ${report.postureGuidance}`);
 	lines.push('');
 
 	if (assessment.notes) {
@@ -155,15 +177,28 @@ function renderStocksHtml(report: AesWorkflowReport): string {
 	const evidence = report.assessment.supportingEvidence ?? [];
 	const rows = STOCKS.map(stock => {
 		const s = report.assessment.stocks[stock];
+		const confidence = s.confidence ?? 'unverified';
 		return `<div class="aes-card">
 			<div class="aes-card-title">${escapeHtml(STOCK_LABELS[stock])}
 				<span class="aes-badge aes-rating-${s.rating}">${RATING_LABELS[s.rating]}</span>
+				<span class="aes-badge aes-confidence-${confidence}">${CONFIDENCE_LABELS[confidence]}</span>
 			</div>
 			<div class="aes-card-body">${escapeHtml(s.evidence)}</div>
 			${renderEvidenceListHtml(evidence, stock)}
 		</div>`;
 	}).join('');
 	return `<div class="aes-grid">${rows}</div>`;
+}
+
+function renderDecisionHtml(report: AesWorkflowReport): string {
+	const { decision } = report.assessment;
+	const actions = decision.topActions.map(action => `<li>${escapeHtml(action)}</li>`).join('');
+	return `<div class="aes-decision">
+		<div class="aes-decision-row"><strong>Delegate now:</strong> ${escapeHtml(decision.delegateNow)}</div>
+		<div class="aes-decision-row"><strong>Deferred:</strong> ${escapeHtml(decision.deferred)}</div>
+		<div class="aes-decision-row"><strong>Top actions:</strong><ul class="aes-decision-actions">${actions}</ul></div>
+		<div class="aes-decision-row"><strong>Evidence to reconsider:</strong> ${escapeHtml(decision.evidenceToReconsider)}</div>
+	</div>`;
 }
 
 function renderActivitiesHtml(report: AesWorkflowReport): string {
@@ -226,6 +261,12 @@ const AES_REPORT_CSS = `
 	.aes-posture-stretched { background: #ffe0b3; }
 	.aes-posture-unclear { background: #eaeef2; }
 	.aes-posture-guidance { font-weight: 400; margin-top: 0.35rem; }
+	.aes-confidence-unverified { background: #fff2cc; }
+	.aes-confidence-verified { background: #d1f0d1; }
+	.aes-decision { border: 1px solid #d0d7de; border-radius: 8px; padding: 0.75rem 1rem; margin-top: 0.75rem; background: #f6f8fa; }
+	.aes-decision-row { margin-bottom: 0.5rem; }
+	.aes-decision-row:last-child { margin-bottom: 0; }
+	.aes-decision-actions { margin: 0.25rem 0 0; padding-left: 1.25rem; }
 	.aes-footer { margin-top: 2rem; color: #57606a; font-size: 0.85em; }
 `;
 
@@ -258,9 +299,12 @@ export function renderAesReportHtml(report: AesWorkflowReport): string {
 
 	<h2 class="aes-section-title">Posture</h2>
 	<div class="aes-posture-banner ${POSTURE_CSS_CLASS[report.posture]}">
-		${escapeHtml(POSTURE_LABELS[report.posture])}
+		${escapeHtml(formatPostureLabel(report.posture, report.postureConfidence))}
 		<div class="aes-posture-guidance">${escapeHtml(report.postureGuidance)}</div>
 	</div>
+
+	<h2 class="aes-section-title">Decision and next experiment</h2>
+	${renderDecisionHtml(report)}
 
 	<h2 class="aes-section-title">Stocks</h2>
 	${renderStocksHtml(report)}

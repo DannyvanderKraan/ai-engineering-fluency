@@ -25,9 +25,30 @@ describe('buildAesSectionHtml', () => {
 		const report = buildAesWorkflowReport(BASE_ASSESSMENT);
 		const html = buildAesSectionHtml(report);
 		assert.equal(report.posture, 'stretched-agent-native');
-		assert.match(html, /Stretched agent-native/);
+		assert.match(html, /Possible stretched agent-native — confirmation needed/);
 		assert.match(html, /aes-posture-stretched/);
 		assert.match(html, new RegExp(report.postureGuidance.slice(0, 20)));
+	});
+
+	test('renders the decision and next experiment section prominently, before the stocks', () => {
+		const report = buildAesWorkflowReport(BASE_ASSESSMENT);
+		const html = buildAesSectionHtml(report);
+		assert.match(html, /Decision and next experiment/);
+		assert.match(html, /aes-decision/);
+		assert.match(html, /Delegate now/);
+		assert.match(html, /Deferred/);
+		assert.match(html, /Top actions/);
+		assert.match(html, /Evidence to reconsider/);
+		assert.ok(html.indexOf('Decision and next experiment') < html.indexOf('Stocks'));
+		assert.ok(html.indexOf('aes-posture-banner') < html.indexOf('Decision and next experiment'));
+	});
+
+	test('marks each stock rating with whether it was actually verified', () => {
+		const html = buildAesSectionHtml(buildAesWorkflowReport(BASE_ASSESSMENT));
+		assert.match(html, /aes-confidence-unverified/);
+		assert.match(html, /aes-confidence-verified/);
+		assert.match(html, />Unverified</);
+		assert.match(html, />Verified</);
 	});
 
 	test('keeps supporting evidence states honest — present, absent and unknown are all shown distinctly', () => {

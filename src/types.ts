@@ -1738,7 +1738,7 @@ export interface ServerMemoriesAnalysisView {
 //   a team's answer, but they never become the answer themselves.
 
 /** Bumped whenever the shape of {@link AesWorkflowAssessment} changes incompatibly. */
-export const AES_ASSESSMENT_SCHEMA_VERSION = 1;
+export const AES_ASSESSMENT_SCHEMA_VERSION = 2;
 
 /** The three activities the AES framework says work moves through. */
 export type AesActivity = 'define' | 'deliver' | 'detect';
@@ -1757,6 +1757,17 @@ export type AesStock = 'governance' | 'sharedKnowledge' | 'customerValue';
  */
 export type AesMaturityRating = 'strong' | 'developing' | 'weak' | 'unknown';
 
+/**
+ * Whether a stock rating reflects something the team actually checked
+ * (a documentation audit, a review of deployment logs, a look at the
+ * support-ticket trend) versus an impression nobody has verified yet — e.g.
+ * "code scanning is probably fine" without having looked. A `weak` rating
+ * reached without verification is a lead to check, not a confirmed finding,
+ * and the posture derived from it is labelled accordingly. Absent is treated
+ * as `unverified`: confidence must be claimed, never assumed.
+ */
+export type AesConfidence = 'verified' | 'unverified';
+
 /** How much of this activity or mode agents currently carry versus people. */
 export type AesDelegationLevel =
   /** A person does the work; no agent is involved. */
@@ -1773,6 +1784,12 @@ export interface AesStockAssessment {
   rating: AesMaturityRating;
   /** Why the team rated it this way — the evidence, not just the label. */
   evidence: string;
+  /**
+   * Whether `rating` reflects something the team actually verified, as
+   * opposed to an unverified impression. Defaults to `unverified` when
+   * omitted — see {@link AesConfidence}.
+   */
+  confidence?: AesConfidence;
   /** Which of the framework's own suggested signals the team actually looked at, if any. */
   signalsConsidered?: string[];
 }
@@ -1823,6 +1840,24 @@ export interface AesWorkflowIdentity {
 }
 
 /**
+ * The concrete outcome of an AES assessment: what the team decided, not just
+ * what it observed. Without this, an assessment describes the workflow but
+ * never says what happens next — the gap GitHub's own matrix guidance warns
+ * against, since the matrix exists to choose a next move, not to produce a
+ * maturity rating to file away.
+ */
+export interface AesWorkflowDecision {
+  /** What agents may do on this workflow today, with the current evidence. */
+  delegateNow: string;
+  /** What is deliberately not being delegated yet, and why. */
+  deferred: string;
+  /** The concrete next steps the team committed to, ordered by priority. */
+  topActions: string[];
+  /** What evidence, once gathered, would justify expanding delegation. */
+  evidenceToReconsider: string;
+}
+
+/**
  * One team's self-assessment of one workflow against the AES framework.
  *
  * This is team-authored data, not a scan result: `schemaVersion` exists so a
@@ -1844,6 +1879,12 @@ export interface AesWorkflowAssessment {
   activities: Record<AesActivity, AesActivityAssessment>;
   modes: Record<AesMode, AesModeAssessment>;
   stocks: Record<AesStock, AesStockAssessment>;
+  /**
+   * What the team decided to do about it. Required from schema v2 onward: an
+   * assessment that only describes stocks/activities/modes without a
+   * decision is incomplete — see {@link AesWorkflowDecision}.
+   */
+  decision: AesWorkflowDecision;
   supportingEvidence?: AesSupportingEvidence[];
   notes?: string;
 }
@@ -1867,6 +1908,14 @@ export interface AesWorkflowReport {
   posture: AesPosture;
   /** One-line explanation of why this posture was derived, and what to do next. */
   postureGuidance: string;
+  /**
+   * `verified` only when every stock rating that produced `posture` was
+   * itself marked {@link AesConfidence}-`verified`. A posture reached from
+   * unverified ratings is a lead worth checking, not a confirmed
+   * conclusion — see `classifyAesPosture()` and the "Possible ..." label it
+   * produces for the `unverified` case.
+   */
+  postureConfidence: AesConfidence;
   /** True when every stock rating is `strong` or `developing` (i.e. none are `weak`/`unknown`). */
   foundationsSolid: boolean;
   /** Highest delegation level observed across all activities and modes. */

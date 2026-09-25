@@ -28,6 +28,7 @@
  */
 import type {
 	AesActivity,
+	AesConfidence,
 	AesDelegationLevel,
 	AesMode,
 	AesPosture,
@@ -95,6 +96,17 @@ function hasUnknownStock(assessment: AesWorkflowAssessment): boolean {
 	return STOCKS.some(stock => assessment.stocks[stock].rating === 'unknown');
 }
 
+/**
+ * `verified` only when every stock's rating was itself marked
+ * {@link AesConfidence}-`verified`. A rating with no `confidence` field is
+ * treated as `unverified` — confidence must be claimed, never assumed — so
+ * older assessments written before this field existed are conservatively
+ * flagged for confirmation rather than silently trusted.
+ */
+export function derivePostureConfidence(assessment: AesWorkflowAssessment): AesConfidence {
+	return STOCKS.every(stock => assessment.stocks[stock].confidence === 'verified') ? 'verified' : 'unverified';
+}
+
 const POSTURE_GUIDANCE: Record<AesPosture, string> = {
 	'healthy-agent-native':
 		'Governance and shared knowledge are reported strong, and agent delegation already reaches reviewed or autonomous ' +
@@ -141,12 +153,29 @@ export function classifyAesPosture(assessment: AesWorkflowAssessment): AesPostur
  * the assessment — that is the caller's responsibility when accepting
  * team input from an untrusted source.
  */
+const NEEDS_CONFIRMATION_NOTE =
+	' This has not been confirmed: at least one stock rating behind it is unverified — an impression, not something the ' +
+	'team has checked. Treat this as a lead worth confirming, not a firm conclusion, until it is.';
+
+/**
+ * Build the computed, read-only view of an assessment: posture, guidance and
+ * the summary figures the report renderer needs. Does not mutate or validate
+ * the assessment — that is the caller's responsibility when accepting
+ * team input from an untrusted source.
+ */
 export function buildAesWorkflowReport(assessment: AesWorkflowAssessment): AesWorkflowReport {
 	const posture = classifyAesPosture(assessment);
+	const postureConfidence = derivePostureConfidence(assessment);
+	const guidance = POSTURE_GUIDANCE[posture];
 	return {
 		assessment,
 		posture,
-		postureGuidance: POSTURE_GUIDANCE[posture],
+		postureConfidence,
+		// 'unclear' already means "a rating is missing" — appending the confirmation
+		// note there would conflate two different reasons a conclusion isn't possible.
+		postureGuidance: (posture !== 'unclear' && postureConfidence === 'unverified')
+			? `${guidance}${NEEDS_CONFIRMATION_NOTE}`
+			: guidance,
 		foundationsSolid: foundationsAreSolid(assessment),
 		deepestDelegation: deepestDelegation(assessment),
 	};

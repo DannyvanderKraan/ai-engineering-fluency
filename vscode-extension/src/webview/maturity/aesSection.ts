@@ -22,10 +22,11 @@ import { escapeHtml } from '../shared/formatUtils';
 import { ACTIVITIES, AES_ASSESSMENT_DISCLAIMER, MODES, STOCKS } from '../../../../src/aesWorkflowAssessment';
 import {
 	ACTIVITY_LABELS,
+	CONFIDENCE_LABELS,
 	DELEGATION_LABELS,
 	EVIDENCE_STATE_ICON,
+	formatPostureLabel,
 	MODE_LABELS,
-	POSTURE_LABELS,
 	RATING_LABELS,
 	STOCK_LABELS,
 } from '../../../../src/aesLabels';
@@ -60,10 +61,12 @@ function buildStocksHtml(report: AesWorkflowReport): string {
 	const evidence = report.assessment.supportingEvidence ?? [];
 	const cards = STOCKS.map(stock => {
 		const s = report.assessment.stocks[stock];
+		const confidence = s.confidence ?? 'unverified';
 		return `<div class="aes-card">
 			<div class="aes-card-title">
 				<span>${escapeHtml(STOCK_LABELS[stock])}</span>
 				<span class="aes-badge aes-rating-${s.rating}">${escapeHtml(RATING_LABELS[s.rating])}</span>
+				<span class="aes-badge aes-confidence-${confidence}" title="Whether this rating was actually verified">${escapeHtml(CONFIDENCE_LABELS[confidence])}</span>
 			</div>
 			<div class="aes-card-body">${escapeHtml(s.evidence)}</div>
 			${buildEvidenceListHtml(evidence, stock)}
@@ -109,8 +112,23 @@ function buildModesHtml(report: AesWorkflowReport): string {
 
 function buildPostureBannerHtml(report: AesWorkflowReport): string {
 	return `<div class="aes-posture-banner ${POSTURE_CSS_CLASS[report.posture]}">
-		<div class="aes-posture-label">${escapeHtml(POSTURE_LABELS[report.posture])}</div>
+		<div class="aes-posture-label">${escapeHtml(formatPostureLabel(report.posture, report.postureConfidence))}</div>
 		<div class="aes-posture-guidance">${escapeHtml(report.postureGuidance)}</div>
+	</div>`;
+}
+
+/** The decision a team reached: what to delegate now, what to defer, and what would change that. */
+function buildDecisionHtml(report: AesWorkflowReport): string {
+	const { decision } = report.assessment;
+	const actions = decision.topActions.map(action => `<li>${escapeHtml(action)}</li>`).join('');
+	return `<div class="aes-decision">
+		<div class="aes-decision-row"><span class="aes-decision-label">Delegate now</span>${escapeHtml(decision.delegateNow)}</div>
+		<div class="aes-decision-row"><span class="aes-decision-label">Deferred</span>${escapeHtml(decision.deferred)}</div>
+		<div class="aes-decision-row">
+			<span class="aes-decision-label">Top actions</span>
+			<ul class="aes-decision-actions">${actions}</ul>
+		</div>
+		<div class="aes-decision-row"><span class="aes-decision-label">Evidence to reconsider</span>${escapeHtml(decision.evidenceToReconsider)}</div>
 	</div>`;
 }
 
@@ -167,6 +185,8 @@ export function buildAesSectionHtml(report: AesWorkflowReport | undefined): stri
 			</div>
 			<div class="aes-block-title">Posture</div>
 			${buildPostureBannerHtml(report)}
+			<div class="aes-block-title">Decision and next experiment</div>
+			${buildDecisionHtml(report)}
 			<div class="aes-block-title">Stocks</div>
 			${buildStocksHtml(report)}
 			<div class="aes-block-title">Activities (define &rarr; deliver &rarr; detect)</div>
