@@ -16,16 +16,23 @@ import chalk from 'chalk';
 import { buildAesWorkflowReport } from '../../../src/aesWorkflowAssessment';
 import { renderAesReportHtml, renderAesReportText } from '../../../src/aesWorkflowReportRenderer';
 import { FABLECART_AES_ASSESSMENT } from '../../../src/aesFableCartFixture';
+import { validateAesWorkflowAssessment } from '../../../src/aesWorkflowValidation';
 import type { AesWorkflowAssessment } from '../../../src/types';
 import { shouldOutputJson } from '../commandUtils';
 
-/** Load an assessment from `--file`, or fall back to the FableCart fixture. */
+/**
+ * Load an assessment from `--file`, or fall back to the FableCart fixture.
+ * `--file` content is untrusted team-authored JSON, so it is validated
+ * against the {@link AesWorkflowAssessment} shape (and the current
+ * `schemaVersion`) before it can reach the report generator — see
+ * `validateAesWorkflowAssessment()`.
+ */
 export function loadAesAssessment(filePath: string | undefined): { assessment: AesWorkflowAssessment; isFixture: boolean } {
 	if (!filePath) {
 		return { assessment: FABLECART_AES_ASSESSMENT, isFixture: true };
 	}
 	const raw = fs.readFileSync(path.resolve(filePath), 'utf8');
-	return { assessment: JSON.parse(raw) as AesWorkflowAssessment, isFixture: false };
+	return { assessment: validateAesWorkflowAssessment(JSON.parse(raw)), isFixture: false };
 }
 
 export const aesCommand = new Command('aes')
@@ -38,7 +45,7 @@ export const aesCommand = new Command('aes')
 		try {
 			loaded = loadAesAssessment(options.file);
 		} catch (error) {
-			console.error(chalk.red(`Could not read assessment file: ${error instanceof Error ? error.message : String(error)}`));
+			console.error(chalk.red(`Could not load assessment file: ${error instanceof Error ? error.message : String(error)}`));
 			process.exitCode = 1;
 			return;
 		}

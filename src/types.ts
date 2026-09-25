@@ -1916,7 +1916,7 @@ export interface AesWorkflowReport {
    * produces for the `unverified` case.
    */
   postureConfidence: AesConfidence;
-  /** True when every stock rating is `strong` or `developing` (i.e. none are `weak`/`unknown`). */
+  /** True when both foundation stocks (governance, shared knowledge) are rated `strong` or `developing`. */
   foundationsSolid: boolean;
   /** Highest delegation level observed across all activities and modes. */
   deepestDelegation: AesDelegationLevel;

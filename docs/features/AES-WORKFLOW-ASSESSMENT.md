@@ -111,6 +111,13 @@ ai-engineering-fluency aes --json
 ai-engineering-fluency aes --html ./aes-report.html
 ```
 
+`--file` content is untrusted, team-authored JSON. `loadAesAssessment()` validates it against the
+`AesWorkflowAssessment` shape — including rejecting any `schemaVersion` other than the one this
+version of the tool understands — before it reaches the report generator, via
+`validateAesWorkflowAssessment()` in `src/aesWorkflowValidation.ts`. A malformed file or one written
+against a different schema version produces a clear CLI error instead of a crash or a silently
+wrong report.
+
 ## In the VS Code Fluency Score view
 
 The Fluency Score view (`AI Engineering Fluency: Show Fluency Score`) now renders an **AES Workflow
@@ -132,16 +139,18 @@ is usable inside the extension while the guided authoring view (see below) is de
 ("Order status API") that deliberately spans two fictional repositories
 (`fablecart/order-service` and `fablecart/storefront-web`) — illustrating why AES assesses a
 *workflow*, not a repository. It reads as `stretched-agent-native`: agent-performed, reviewed
-delivery already exists, but the customer-value stock is weak (support-ticket impact is never
-closed back to the fix), and no independent evaluator agent exists to assess agent-authored
-changes. Its governance stock is deliberately marked `confidence: 'unverified'`, since that rating
-rests partly on a deployment-approval process and a code-scanning status nobody actually checked —
-so the fixture's displayed posture reads as **"Possible stretched agent-native — confirmation
-needed"**, not a confirmed verdict. It also carries a `decision`: continue small, bounded
-agent-drafted fixes with human review; defer broader autonomous responsibility until the storefront
-contract is documented, the unverified controls are checked, and releases are connected to the
-support-ticket trend. It exists purely to prove the data model and rendering end-to-end; no such
-company exists.
+delivery already exists, but the governance stock is rated `weak` (deployment approval for
+storefront-web is still a manual Slack message, and code scanning status is unverified), and no
+independent evaluator agent exists to assess agent-authored changes. That weak, unverified
+governance rating is what drives the posture — the separately-reported customer-value stock (also
+rated `weak` here, since support-ticket impact is never closed back to the fix) never changes where
+a workflow lands on the governance/shared-knowledge posture axis; it is the framework's outcome
+stock, not a foundation. Because governance's rating is unverified, the fixture's displayed posture
+reads as **"Possible stretched agent-native — confirmation needed"**, not a confirmed verdict. It
+also carries a `decision`: continue small, bounded agent-drafted fixes with human review; defer
+broader autonomous responsibility until the storefront contract is documented, the unverified
+controls are checked, and releases are connected to the support-ticket trend. It exists purely to
+prove the data model and rendering end-to-end; no such company exists.
 
 ## Current limitation
 

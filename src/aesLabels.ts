@@ -6,8 +6,19 @@
  * Kept in one place so the wording a team sees in the CLI's `--html` export
  * matches what they see in the Fluency Score view — divergent copy for the
  * same rating would read as two different assessments.
+ *
+ * These enum-label constants are intentionally NOT routed through the
+ * webview's `localize()` pipeline, even though `aesSection.ts`'s own static
+ * UI chrome (headings, notices, footer) is. The CLI has no localization
+ * infrastructure at all — it is TypeScript run under Node, with no
+ * `package.nls.*.json`/`webviewStrings.generated.json` equivalent — so
+ * localizing this module only for the webview half would immediately
+ * reintroduce the divergent-copy problem described above: a `weak` rating
+ * would read "Weak" in the CLI's `--html` export but a translated string in
+ * the webview. Fully localizing the CLI is a larger, separate change and out
+ * of scope here.
  */
-import type { AesActivity, AesConfidence, AesMode, AesPosture, AesStock, AesSupportingEvidence } from './types';
+import type { AesActivity, AesConfidence, AesMaturityRating, AesMode, AesPosture, AesStock, AesSupportingEvidence } from './types';
 
 export const ACTIVITY_LABELS: Record<AesActivity, string> = {
 	define: 'Define — decide what should happen',
@@ -40,6 +51,44 @@ export const RATING_LABELS: Record<string, string> = {
 	weak: 'Weak',
 	unknown: 'Unknown',
 };
+
+/**
+ * Fixed allowlists from a rating/evidence-state enum to its CSS class name.
+ *
+ * Both the CLI's HTML renderer and the VS Code webview section interpolate a
+ * class name built from team-authored `--file` JSON (`AesStockAssessment.rating`,
+ * `AesSupportingEvidence.state`). Deriving the class from a map instead of the
+ * raw enum value means a malformed or unrecognised value can only ever
+ * produce one of these fixed strings, never break out of the `class`
+ * attribute into markup or another attribute.
+ */
+export const RATING_CSS_CLASS: Record<AesMaturityRating, string> = {
+	strong: 'aes-rating-strong',
+	developing: 'aes-rating-developing',
+	weak: 'aes-rating-weak',
+	unknown: 'aes-rating-unknown',
+};
+
+export const EVIDENCE_STATE_CSS_CLASS: Record<AesSupportingEvidence['state'], string> = {
+	present: 'aes-evidence-present',
+	absent: 'aes-evidence-absent',
+	unknown: 'aes-evidence-unknown',
+};
+
+export const CONFIDENCE_CSS_CLASS: Record<AesConfidence, string> = {
+	verified: 'aes-confidence-verified',
+	unverified: 'aes-confidence-unverified',
+};
+
+/**
+ * Safe lookup into one of the allowlists above: a value that is not a
+ * recognised key (e.g. an untrusted `--file` JSON with a stray or malformed
+ * enum value) falls back to `fallback` instead of producing `undefined` in a
+ * `class` attribute.
+ */
+export function safeCssClass<T extends string>(map: Record<T, string>, value: T, fallback: string): string {
+	return Object.prototype.hasOwnProperty.call(map, value) ? map[value] : fallback;
+}
 
 export const CONFIDENCE_LABELS: Record<AesConfidence, string> = {
 	verified: 'Verified',

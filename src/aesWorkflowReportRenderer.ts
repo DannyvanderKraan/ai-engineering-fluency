@@ -22,12 +22,16 @@ import type {
 import { ACTIVITIES, AES_ASSESSMENT_DISCLAIMER, MODES, STOCKS } from './aesWorkflowAssessment';
 import {
 	ACTIVITY_LABELS,
+	CONFIDENCE_CSS_CLASS,
 	CONFIDENCE_LABELS,
 	DELEGATION_LABELS,
+	EVIDENCE_STATE_CSS_CLASS,
 	EVIDENCE_STATE_ICON,
 	formatPostureLabel,
 	MODE_LABELS,
+	RATING_CSS_CLASS,
 	RATING_LABELS,
+	safeCssClass,
 	STOCK_LABELS,
 } from './aesLabels';
 
@@ -114,6 +118,9 @@ export function renderAesReportText(report: AesWorkflowReport): string {
 		lines.push(`    Delegation: ${DELEGATION_LABELS[activityAssessment.delegation]}`);
 		lines.push(`    ${activityAssessment.description}`);
 		lines.push(`    Signal: ${activityAssessment.signal}`);
+		if (activityAssessment.notes) {
+			lines.push(`    Notes: ${activityAssessment.notes}`);
+		}
 		lines.push(...renderEvidenceLinesText(assessment.supportingEvidence ?? [], activity));
 	}
 	lines.push('');
@@ -166,9 +173,10 @@ function renderEvidenceListHtml(evidence: readonly AesSupportingEvidence[], info
 	const matches = evidence.filter(item => item.informs === informs);
 	if (matches.length === 0) { return ''; }
 	const items = matches.map(item => {
-		const icon = EVIDENCE_STATE_ICON[item.state];
+		const icon = EVIDENCE_STATE_ICON[item.state] ?? '?';
+		const stateClass = safeCssClass(EVIDENCE_STATE_CSS_CLASS, item.state, 'aes-evidence-unknown');
 		const detail = item.detail ? ` &mdash; ${escapeHtml(item.detail)}` : '';
-		return `<li class="aes-evidence aes-evidence-${item.state}">[${icon}] <strong>${escapeHtml(item.repo)}</strong>: ${escapeHtml(item.controlLabel)}${detail}</li>`;
+		return `<li class="aes-evidence ${stateClass}">[${escapeHtml(icon)}] <strong>${escapeHtml(item.repo)}</strong>: ${escapeHtml(item.controlLabel)}${detail}</li>`;
 	}).join('');
 	return `<ul class="aes-evidence-list">${items}</ul>`;
 }
@@ -178,10 +186,12 @@ function renderStocksHtml(report: AesWorkflowReport): string {
 	const rows = STOCKS.map(stock => {
 		const s = report.assessment.stocks[stock];
 		const confidence = s.confidence ?? 'unverified';
+		const ratingClass = safeCssClass(RATING_CSS_CLASS, s.rating, 'aes-rating-unknown');
+		const confidenceClass = safeCssClass(CONFIDENCE_CSS_CLASS, confidence, 'aes-confidence-unverified');
 		return `<div class="aes-card">
 			<div class="aes-card-title">${escapeHtml(STOCK_LABELS[stock])}
-				<span class="aes-badge aes-rating-${s.rating}">${RATING_LABELS[s.rating]}</span>
-				<span class="aes-badge aes-confidence-${confidence}">${CONFIDENCE_LABELS[confidence]}</span>
+				<span class="aes-badge ${ratingClass}">${escapeHtml(RATING_LABELS[s.rating] ?? s.rating)}</span>
+				<span class="aes-badge ${confidenceClass}">${escapeHtml(CONFIDENCE_LABELS[confidence] ?? confidence)}</span>
 			</div>
 			<div class="aes-card-body">${escapeHtml(s.evidence)}</div>
 			${renderEvidenceListHtml(evidence, stock)}

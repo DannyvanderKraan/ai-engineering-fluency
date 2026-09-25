@@ -88,12 +88,26 @@ test('classifyAesPosture: a weak stock + agent-performed delegation is stretched
 	assert.equal(classifyAesPosture(assessment), 'stretched-agent-native');
 });
 
-test('classifyAesPosture: any unknown stock is unclear, even with otherwise-solid ratings', () => {
+test('classifyAesPosture: any unknown foundation stock is unclear, even with otherwise-solid ratings', () => {
 	const assessment = makeAssessment({
-		stockRatings: { customerValue: 'unknown' },
+		stockRatings: { governance: 'unknown' },
 		activityDelegation: 'agent-performed-autonomous',
 	});
 	assert.equal(classifyAesPosture(assessment), 'unclear');
+});
+
+test('classifyAesPosture: a weak or unknown customerValue alone does not change posture', () => {
+	const weakCustomerValue = makeAssessment({
+		stockRatings: { customerValue: 'weak' },
+		activityDelegation: 'agent-performed-autonomous',
+	});
+	assert.equal(classifyAesPosture(weakCustomerValue), 'healthy-agent-native');
+
+	const unknownCustomerValue = makeAssessment({
+		stockRatings: { customerValue: 'unknown' },
+		activityDelegation: 'agent-performed-autonomous',
+	});
+	assert.equal(classifyAesPosture(unknownCustomerValue), 'healthy-agent-native');
 });
 
 test('classifyAesPosture: developing stocks count as solid, same as strong', () => {
@@ -125,6 +139,11 @@ test('foundationsAreSolid is false when any stock is weak or unknown', () => {
 	assert.equal(foundationsAreSolid(makeAssessment({ stockRatings: { governance: 'unknown' } })), false);
 });
 
+test('foundationsAreSolid stays true when only customerValue is weak or unknown', () => {
+	assert.equal(foundationsAreSolid(makeAssessment({ stockRatings: { customerValue: 'weak' } })), true);
+	assert.equal(foundationsAreSolid(makeAssessment({ stockRatings: { customerValue: 'unknown' } })), true);
+});
+
 // ---------------------------------------------------------------------------
 // Report assembly
 // ---------------------------------------------------------------------------
@@ -141,9 +160,10 @@ test('buildAesWorkflowReport carries the assessment through unchanged and attach
 
 test('FableCart fixture is internally consistent and reads as stretched-agent-native, unconfirmed', () => {
 	// The fixture is written to demonstrate the "no independent evaluator" anti-pattern
-	// alongside agent-performed-reviewed delivery and a weak customer-value stock —
-	// exactly the misaligned posture the framework calls out. Its governance rating is
-	// deliberately unverified, so the posture itself should read as needing confirmation.
+	// alongside agent-performed-reviewed delivery and a weak, unverified governance rating —
+	// exactly the misaligned posture the framework calls out. Its weak customerValue rating
+	// must not, by itself, be what drives this: only the foundation stocks (governance,
+	// sharedKnowledge) determine posture.
 	const report = buildAesWorkflowReport(FABLECART_AES_ASSESSMENT);
 	assert.equal(report.posture, 'stretched-agent-native');
 	assert.equal(report.postureConfidence, 'unverified');
@@ -155,7 +175,7 @@ test('FableCart fixture is internally consistent and reads as stretched-agent-na
 // Posture confidence
 // ---------------------------------------------------------------------------
 
-test('derivePostureConfidence is verified only when every stock is explicitly verified', () => {
+test('derivePostureConfidence is verified only when both foundation stocks are explicitly verified', () => {
 	const allVerified = makeAssessment({
 		stockConfidence: { governance: 'verified', sharedKnowledge: 'verified', customerValue: 'verified' },
 	});
@@ -165,6 +185,13 @@ test('derivePostureConfidence is verified only when every stock is explicitly ve
 		stockConfidence: { governance: 'unverified', sharedKnowledge: 'verified', customerValue: 'verified' },
 	});
 	assert.equal(derivePostureConfidence(oneUnverified), 'unverified');
+});
+
+test('derivePostureConfidence ignores customerValue confidence', () => {
+	const assessment = makeAssessment({
+		stockConfidence: { governance: 'verified', sharedKnowledge: 'verified', customerValue: 'unverified' },
+	});
+	assert.equal(derivePostureConfidence(assessment), 'verified');
 });
 
 test('derivePostureConfidence treats a missing confidence field as unverified', () => {

@@ -19,15 +19,20 @@
  * tested directly, mirroring `darkFactorySection.ts`.
  */
 import { escapeHtml } from '../shared/formatUtils';
+import { localize, localizeFormat } from '../shared/localization';
 import { ACTIVITIES, AES_ASSESSMENT_DISCLAIMER, MODES, STOCKS } from '../../../../src/aesWorkflowAssessment';
 import {
 	ACTIVITY_LABELS,
+	CONFIDENCE_CSS_CLASS,
 	CONFIDENCE_LABELS,
 	DELEGATION_LABELS,
+	EVIDENCE_STATE_CSS_CLASS,
 	EVIDENCE_STATE_ICON,
 	formatPostureLabel,
 	MODE_LABELS,
+	RATING_CSS_CLASS,
 	RATING_LABELS,
+	safeCssClass,
 	STOCK_LABELS,
 } from '../../../../src/aesLabels';
 import type {
@@ -50,9 +55,10 @@ function buildEvidenceListHtml(evidence: readonly AesSupportingEvidence[], infor
 	const matches = evidence.filter(item => item.informs === informs);
 	if (matches.length === 0) { return ''; }
 	const items = matches.map(item => {
-		const icon = EVIDENCE_STATE_ICON[item.state];
+		const icon = EVIDENCE_STATE_ICON[item.state] ?? '?';
+		const stateClass = safeCssClass(EVIDENCE_STATE_CSS_CLASS, item.state, 'aes-evidence-unknown');
 		const detail = item.detail ? ` &mdash; ${escapeHtml(item.detail)}` : '';
-		return `<li class="aes-evidence aes-evidence-${item.state}">[${icon}] <strong>${escapeHtml(item.repo)}</strong>: ${escapeHtml(item.controlLabel)}${detail}</li>`;
+		return `<li class="aes-evidence ${stateClass}">[${escapeHtml(icon)}] <strong>${escapeHtml(item.repo)}</strong>: ${escapeHtml(item.controlLabel)}${detail}</li>`;
 	}).join('');
 	return `<ul class="aes-evidence-list">${items}</ul>`;
 }
@@ -62,11 +68,13 @@ function buildStocksHtml(report: AesWorkflowReport): string {
 	const cards = STOCKS.map(stock => {
 		const s = report.assessment.stocks[stock];
 		const confidence = s.confidence ?? 'unverified';
+		const ratingClass = safeCssClass(RATING_CSS_CLASS, s.rating, 'aes-rating-unknown');
+		const confidenceClass = safeCssClass(CONFIDENCE_CSS_CLASS, confidence, 'aes-confidence-unverified');
 		return `<div class="aes-card">
 			<div class="aes-card-title">
 				<span>${escapeHtml(STOCK_LABELS[stock])}</span>
-				<span class="aes-badge aes-rating-${s.rating}">${escapeHtml(RATING_LABELS[s.rating])}</span>
-				<span class="aes-badge aes-confidence-${confidence}" title="Whether this rating was actually verified">${escapeHtml(CONFIDENCE_LABELS[confidence])}</span>
+				<span class="aes-badge ${ratingClass}">${escapeHtml(RATING_LABELS[s.rating] ?? s.rating)}</span>
+				<span class="aes-badge ${confidenceClass}" title="${escapeHtml(localize('maturity.aes.confidenceTooltip'))}">${escapeHtml(CONFIDENCE_LABELS[confidence] ?? confidence)}</span>
 			</div>
 			<div class="aes-card-body">${escapeHtml(s.evidence)}</div>
 			${buildEvidenceListHtml(evidence, stock)}
@@ -85,7 +93,8 @@ function buildActivitiesHtml(report: AesWorkflowReport): string {
 				<span class="aes-badge aes-delegation">${escapeHtml(DELEGATION_LABELS[a.delegation])}</span>
 			</div>
 			<div class="aes-card-body">${escapeHtml(a.description)}</div>
-			<div class="aes-card-signal">Signal: ${escapeHtml(a.signal)}</div>
+			<div class="aes-card-signal">${escapeHtml(localize('maturity.aes.signalLabel'))} ${escapeHtml(a.signal)}</div>
+			${a.notes ? `<div class="aes-card-notes">${escapeHtml(a.notes)}</div>` : ''}
 			${buildEvidenceListHtml(evidence, activity)}
 		</div>`;
 	}).join('');
@@ -122,13 +131,13 @@ function buildDecisionHtml(report: AesWorkflowReport): string {
 	const { decision } = report.assessment;
 	const actions = decision.topActions.map(action => `<li>${escapeHtml(action)}</li>`).join('');
 	return `<div class="aes-decision">
-		<div class="aes-decision-row"><span class="aes-decision-label">Delegate now</span>${escapeHtml(decision.delegateNow)}</div>
-		<div class="aes-decision-row"><span class="aes-decision-label">Deferred</span>${escapeHtml(decision.deferred)}</div>
+		<div class="aes-decision-row"><span class="aes-decision-label">${escapeHtml(localize('maturity.aes.decisionDelegateNow'))}</span>${escapeHtml(decision.delegateNow)}</div>
+		<div class="aes-decision-row"><span class="aes-decision-label">${escapeHtml(localize('maturity.aes.decisionDeferred'))}</span>${escapeHtml(decision.deferred)}</div>
 		<div class="aes-decision-row">
-			<span class="aes-decision-label">Top actions</span>
+			<span class="aes-decision-label">${escapeHtml(localize('maturity.aes.decisionTopActions'))}</span>
 			<ul class="aes-decision-actions">${actions}</ul>
 		</div>
-		<div class="aes-decision-row"><span class="aes-decision-label">Evidence to reconsider</span>${escapeHtml(decision.evidenceToReconsider)}</div>
+		<div class="aes-decision-row"><span class="aes-decision-label">${escapeHtml(localize('maturity.aes.decisionEvidenceToReconsider'))}</span>${escapeHtml(decision.evidenceToReconsider)}</div>
 	</div>`;
 }
 
@@ -143,30 +152,28 @@ export function buildAesSectionHtml(report: AesWorkflowReport | undefined): stri
 	const { assessment } = report;
 	const repos = assessment.workflow.repositories.length > 0
 		? assessment.workflow.repositories.map(escapeHtml).join(', ')
-		: '(none listed)';
+		: escapeHtml(localize('maturity.aes.reposEmpty'));
+	const assessedMeta = localizeFormat('maturity.aes.assessedMeta', escapeHtml(new Date(assessment.assessedAt).toLocaleString()))
+		+ (assessment.assessedBy ? localizeFormat('maturity.aes.assessedByMeta', escapeHtml(assessment.assessedBy)) : '');
 
 	return `
 		<div class="aes-section">
 			<div class="aes-section-head">
 				<span class="aes-section-icon">🧭</span>
-				<span class="aes-section-title">AES Workflow Assessment</span>
-				<span class="aes-section-badge">per workflow</span>
+				<span class="aes-section-title">${escapeHtml(localize('maturity.aes.title'))}</span>
+				<span class="aes-section-badge">${escapeHtml(localize('maturity.aes.badge'))}</span>
 			</div>
 			<div class="info-box">
-				<div class="info-box-title">📋 What this measures</div>
+				<div class="info-box-title">${escapeHtml(localize('maturity.aes.whatThisMeasuresTitle'))}</div>
 				<div>
-					GitHub's Agentic Engineering System (AES) asks what outcome a delivery workflow serves, who directs, performs
-					and assesses each step, and what a team's governance and shared-knowledge foundations look like. Unlike the
-					sections above, this is <strong>team-reported</strong>, not scanned, and it can span several repositories
-					instead of reporting on just one.
+					${escapeHtml(localize('maturity.aes.whatThisMeasuresBody'))}
 					<br><br>
 					${escapeHtml(AES_ASSESSMENT_DISCLAIMER)}
 				</div>
 			</div>
 			<div class="aes-notice">
-				There is no in-product way to author an AES assessment yet, so this is a fictional example
-				(&ldquo;FableCart&rdquo;) shown to demonstrate the report format. Run <code>aes --file &lt;path&gt;</code> in the
-				CLI to render a real one.
+				${escapeHtml(localize('maturity.aes.noticeText'))}
+				${localizeFormat('maturity.aes.noticeRunCli', '<code>aes --file &lt;path&gt;</code>')}
 			</div>
 			<div class="aes-workflow-card">
 				<div class="aes-workflow-head">
@@ -174,27 +181,25 @@ export function buildAesSectionHtml(report: AesWorkflowReport | undefined): stri
 					<span class="aes-workflow-repos">${repos}</span>
 				</div>
 				<div class="aes-workflow-description">${escapeHtml(assessment.workflow.description)}</div>
-				<div class="aes-workflow-meta">
-					Assessed ${escapeHtml(new Date(assessment.assessedAt).toLocaleString())}${assessment.assessedBy ? ` by ${escapeHtml(assessment.assessedBy)}` : ''}
-				</div>
+				<div class="aes-workflow-meta">${assessedMeta}</div>
 			</div>
 			<div class="aes-block">
-				<div class="aes-block-title">Outcome</div>
-				<div class="aes-outcome"><strong>Customer value:</strong> ${escapeHtml(assessment.outcome.customerValue)}</div>
-				<div class="aes-outcome"><strong>Customers:</strong> ${escapeHtml(assessment.outcome.customers)}</div>
+				<div class="aes-block-title">${escapeHtml(localize('maturity.aes.outcomeBlockTitle'))}</div>
+				<div class="aes-outcome"><strong>${escapeHtml(localize('maturity.aes.outcomeCustomerValue'))}</strong> ${escapeHtml(assessment.outcome.customerValue)}</div>
+				<div class="aes-outcome"><strong>${escapeHtml(localize('maturity.aes.outcomeCustomers'))}</strong> ${escapeHtml(assessment.outcome.customers)}</div>
 			</div>
-			<div class="aes-block-title">Posture</div>
+			<div class="aes-block-title">${escapeHtml(localize('maturity.aes.postureBlockTitle'))}</div>
 			${buildPostureBannerHtml(report)}
-			<div class="aes-block-title">Decision and next experiment</div>
+			<div class="aes-block-title">${escapeHtml(localize('maturity.aes.decisionBlockTitle'))}</div>
 			${buildDecisionHtml(report)}
-			<div class="aes-block-title">Stocks</div>
+			<div class="aes-block-title">${escapeHtml(localize('maturity.aes.stocksBlockTitle'))}</div>
 			${buildStocksHtml(report)}
-			<div class="aes-block-title">Activities (define &rarr; deliver &rarr; detect)</div>
+			<div class="aes-block-title">${escapeHtml(localize('maturity.aes.activitiesBlockTitle'))}</div>
 			${buildActivitiesHtml(report)}
-			<div class="aes-block-title">Modes (director / performer / assessor)</div>
+			<div class="aes-block-title">${escapeHtml(localize('maturity.aes.modesBlockTitle'))}</div>
 			${buildModesHtml(report)}
-			${assessment.notes ? `<div class="aes-block-title">Notes</div><div class="aes-outcome">${escapeHtml(assessment.notes)}</div>` : ''}
-			<div class="aes-footer">Schema v${assessment.schemaVersion}</div>
+			${assessment.notes ? `<div class="aes-block-title">${escapeHtml(localize('maturity.aes.notesBlockTitle'))}</div><div class="aes-outcome">${escapeHtml(assessment.notes)}</div>` : ''}
+			<div class="aes-footer">${escapeHtml(localizeFormat('maturity.aes.footerSchema', assessment.schemaVersion))}</div>
 		</div>
 	`;
 }

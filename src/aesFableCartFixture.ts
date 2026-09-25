@@ -13,11 +13,15 @@
  * `fablecart/storefront-web` separately, but the workflow that actually
  * delivers customer value crosses both.
  *
- * The governance stock is deliberately marked `confidence: 'unverified'` —
- * its rating rests partly on an unconfirmed deployment-approval process and
- * an unchecked code-scanning status. That is enough, on its own, to mark the
- * derived posture "needs confirmation": a `weak`/`developing` rating nobody
- * has actually checked is a lead to verify, not a finding to act on.
+ * The governance stock is deliberately rated `weak` with `confidence:
+ * 'unverified'` — its rating rests partly on an unconfirmed deployment-
+ * approval process and an unchecked code-scanning status. That single weak,
+ * unverified foundation stock is what drives the "stretched agent-native"
+ * posture and the "needs confirmation" wording: a `weak` rating nobody has
+ * actually checked is a lead to verify, not a finding to act on. The
+ * separately-reported `customerValue` stock is also rated `weak` here, but
+ * — per the AES framework — it never changes where a workflow lands on the
+ * governance/shared-knowledge posture axis; it only reports the outcome.
  */
 import type { AesSupportingEvidence, AesWorkflowAssessment } from './types';
 import { AES_ASSESSMENT_SCHEMA_VERSION } from './aesWorkflowAssessment';
@@ -127,10 +131,10 @@ export const FABLECART_AES_ASSESSMENT: AesWorkflowAssessment = {
 	},
 	stocks: {
 		governance: {
-			rating: 'developing',
+			rating: 'weak',
 			confidence: 'unverified',
 			evidence:
-				'CI and required review are in place for both repositories. Deployment approval for storefront-web is ' +
+				'CI and required review are in place for both repositories, but deployment approval for storefront-web is ' +
 				'still a manual Slack message rather than an environment protection rule, and code scanning status is unverified.',
 			signalsConsidered: [
 				'The share of low-risk work that still queues for manual review',

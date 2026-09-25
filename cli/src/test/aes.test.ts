@@ -39,3 +39,58 @@ test('the CLI can build and render a report from the loaded assessment (text and
 	assert.ok(text.includes(assessment.workflow.name));
 	assert.ok(html.includes(assessment.workflow.name));
 });
+
+// ---------------------------------------------------------------------------
+// Validation of untrusted --file input
+// ---------------------------------------------------------------------------
+
+function writeTempJson(value: unknown): string {
+	const tmpFile = path.join(os.tmpdir(), `aes-test-invalid-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+	fs.writeFileSync(tmpFile, JSON.stringify(value), 'utf8');
+	return tmpFile;
+}
+
+test('loadAesAssessment rejects a file with the wrong schemaVersion', () => {
+	const tmpFile = writeTempJson({ ...FABLECART_AES_ASSESSMENT, schemaVersion: 1 });
+	try {
+		assert.throws(() => loadAesAssessment(tmpFile), /schemaVersion.*must be 2/s);
+	} finally {
+		fs.unlinkSync(tmpFile);
+	}
+});
+
+test('loadAesAssessment rejects a file missing a required field', () => {
+	const { decision, ...withoutDecision } = FABLECART_AES_ASSESSMENT;
+	void decision;
+	const tmpFile = writeTempJson(withoutDecision);
+	try {
+		assert.throws(() => loadAesAssessment(tmpFile), /`decision` must be an object/);
+	} finally {
+		fs.unlinkSync(tmpFile);
+	}
+});
+
+test('loadAesAssessment rejects a file with an invalid enum value', () => {
+	const invalid = {
+		...FABLECART_AES_ASSESSMENT,
+		stocks: {
+			...FABLECART_AES_ASSESSMENT.stocks,
+			governance: { ...FABLECART_AES_ASSESSMENT.stocks.governance, rating: 'excellent' },
+		},
+	};
+	const tmpFile = writeTempJson(invalid);
+	try {
+		assert.throws(() => loadAesAssessment(tmpFile), /stocks\.governance\.rating.*must be one of/s);
+	} finally {
+		fs.unlinkSync(tmpFile);
+	}
+});
+
+test('loadAesAssessment rejects a non-object file', () => {
+	const tmpFile = writeTempJson(['not', 'an', 'object']);
+	try {
+		assert.throws(() => loadAesAssessment(tmpFile), /expected a JSON object/);
+	} finally {
+		fs.unlinkSync(tmpFile);
+	}
+});
