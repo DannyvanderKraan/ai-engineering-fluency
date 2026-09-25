@@ -897,6 +897,93 @@ test('l10n: Copilot Repository Memories section strings resolve in English and z
 	}
 });
 
+// AES Workflow Assessment webview section keys. `buildWebviewLocalization()`
+// resolves these with the same `t()` under test here, so a bundle regression
+// (a key dropped from one locale, or a placeholder index that stops matching)
+// would otherwise only surface as raw keys or a broken sentence in the
+// running webview, not as a failing test.
+test('l10n: AES Workflow Assessment keys resolve in English', () => {
+	mock.setLanguage('en');
+	const english: Record<string, string> = {
+		'maturity.aes.title': 'AES Workflow Assessment',
+		'maturity.aes.badge': 'per workflow',
+		'maturity.aes.whatThisMeasuresTitle': '📋 What this measures',
+		'maturity.aes.whatThisMeasuresBody': 'GitHub\'s Agentic Engineering System (AES) asks what outcome a delivery workflow serves, who directs, performs and assesses each step, and what a team\'s governance and shared-knowledge foundations look like. Unlike the sections above, this is team-reported, not scanned, and it can span several repositories instead of reporting on just one.',
+		'maturity.aes.disclaimer': 'This is a team-reported self-assessment of one workflow against GitHub\'s Agentic Engineering System (AES) framework — not a repository scan, not a certification, and never a score for a person. The matrix below shows direction, not a threshold to pass.',
+		'maturity.aes.noticeText': 'There is no in-product way to author an AES assessment yet, so this is a fictional example (“FableCart”) shown to demonstrate the report format.',
+		'maturity.aes.noticeRunCli': 'Run {0} in the CLI to render a real one.',
+		'maturity.aes.outcomeBlockTitle': 'Outcome',
+		'maturity.aes.outcomeCustomerValue': 'Customer value:',
+		'maturity.aes.outcomeCustomers': 'Customers:',
+		'maturity.aes.postureBlockTitle': 'Posture',
+		'maturity.aes.decisionBlockTitle': 'Decision and next experiment',
+		'maturity.aes.stocksBlockTitle': 'Stocks',
+		'maturity.aes.activitiesBlockTitle': 'Activities (define → deliver → detect)',
+		'maturity.aes.modesBlockTitle': 'Modes (director / performer / assessor)',
+		'maturity.aes.notesBlockTitle': 'Notes',
+		'maturity.aes.footerSchema': 'Schema v{0}',
+		'maturity.aes.signalLabel': 'Signal:',
+		'maturity.aes.confidenceTooltip': 'Whether this rating was actually verified',
+		'maturity.aes.decisionDelegateNow': 'Delegate now',
+		'maturity.aes.decisionDeferred': 'Deferred',
+		'maturity.aes.decisionTopActions': 'Top actions',
+		'maturity.aes.decisionEvidenceToReconsider': 'Evidence to reconsider',
+		'maturity.aes.reposEmpty': '(none listed)',
+		'maturity.aes.assessedMeta': 'Assessed {0}',
+		'maturity.aes.assessedByMeta': ' by {0}',
+	};
+	for (const [key, value] of Object.entries(english)) {
+		assert.equal(t(key), value, `English value for ${key}`);
+	}
+	// Placeholder-bearing keys: a wrong index leaves a literal "{0}" visible
+	// in the rendered section instead of failing anywhere obvious.
+	assert.equal(t('maturity.aes.noticeRunCli', '<code>aes --file &lt;path&gt;</code>'), 'Run <code>aes --file &lt;path&gt;</code> in the CLI to render a real one.');
+	assert.equal(t('maturity.aes.footerSchema', '2'), 'Schema v2');
+	assert.equal(t('maturity.aes.assessedMeta', '2024-01-01'), 'Assessed 2024-01-01');
+	assert.equal(t('maturity.aes.assessedByMeta', 'FableCart'), ' by FableCart');
+});
+
+test('l10n: AES Workflow Assessment keys resolve in zh-cn', () => {
+	mock.setLanguage('zh-cn');
+	try {
+		const chinese: Record<string, string> = {
+			'maturity.aes.title': 'AES 工作流评估',
+			'maturity.aes.badge': '按工作流',
+			'maturity.aes.whatThisMeasuresTitle': '📋 此项衡量的内容',
+			'maturity.aes.whatThisMeasuresBody': 'GitHub 的敏捷工程系统（AES）关注交付工作流服务于什么结果、谁在指导、执行和评估每个环节，以及团队的治理和共享知识基础状况。与上面的部分不同，这是由团队自行报告的内容，而非扫描得出，并且可以跨越多个代码仓库，而不仅限于单个仓库。',
+			'maturity.aes.disclaimer': '这是团队针对一个工作流对照 GitHub 敏捷工程系统（AES）框架所做的自我评估——不是代码仓库扫描，不是认证，也绝不是对个人的评分。下方的矩阵展示的是方向，而非需要通过的门槛。',
+			'maturity.aes.noticeText': '目前尚无产品内方式来创建 AES 评估，因此这是一个虚构示例（“FableCart”），用于演示报告格式。',
+			'maturity.aes.noticeRunCli': '在 CLI 中运行 {0} 以生成真实的评估报告。',
+			'maturity.aes.outcomeBlockTitle': '结果',
+			'maturity.aes.outcomeCustomerValue': '客户价值：',
+			'maturity.aes.outcomeCustomers': '客户：',
+			'maturity.aes.postureBlockTitle': '姿态',
+			'maturity.aes.decisionBlockTitle': '决策与下一步试验',
+			'maturity.aes.stocksBlockTitle': '存量',
+			'maturity.aes.activitiesBlockTitle': '活动（定义 → 交付 → 检测）',
+			'maturity.aes.modesBlockTitle': '模式（指导者 / 执行者 / 评估者）',
+			'maturity.aes.notesBlockTitle': '备注',
+			'maturity.aes.footerSchema': '架构版本 v{0}',
+			'maturity.aes.signalLabel': '信号：',
+			'maturity.aes.confidenceTooltip': '此评级是否已实际核实',
+			'maturity.aes.decisionDelegateNow': '现在可委派',
+			'maturity.aes.decisionDeferred': '暂缓委派',
+			'maturity.aes.decisionTopActions': '优先行动',
+			'maturity.aes.decisionEvidenceToReconsider': '需要重新考虑的证据',
+			'maturity.aes.reposEmpty': '（未列出）',
+			'maturity.aes.assessedMeta': '评估于 {0}',
+			'maturity.aes.assessedByMeta': '，评估人：{0}',
+		};
+		for (const [key, value] of Object.entries(chinese)) {
+			assert.equal(t(key), value, `zh-cn value for ${key}`);
+		}
+		assert.equal(t('maturity.aes.footerSchema', '2'), '架构版本 v2');
+		assert.equal(t('maturity.aes.assessedMeta', '2024-01-01'), '评估于 2024-01-01');
+	} finally {
+		mock.setLanguage('en');
+	}
+});
+
 test('l10n: Copilot Budget gauge keys resolve in English', () => {
 	// Back the "🎯 Copilot Budget" tooltip row, which folds untracked (other
 	// devices/cloud) usage into the headline total so it agrees with the bar's

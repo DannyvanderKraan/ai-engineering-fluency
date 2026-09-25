@@ -33,6 +33,7 @@ const DELEGATION_LEVELS: readonly AesDelegationLevel[] = [
 	'agent-performed-autonomous',
 ];
 const EVIDENCE_STATES: readonly DarkFactoryControlState[] = ['present', 'absent', 'unknown'];
+const EVIDENCE_INFORMS_TARGETS: readonly string[] = [...ACTIVITIES, ...STOCKS];
 
 function fail(message: string): never {
 	throw new Error(`Invalid AES workflow assessment: ${message}`);
@@ -99,7 +100,7 @@ function validateSupportingEvidence(value: unknown, index: number): void {
 	requireString(value.controlLabel, `${path}.controlLabel`);
 	requireEnum(value.state, EVIDENCE_STATES, `${path}.state`);
 	requireOptionalString(value.detail, `${path}.detail`);
-	requireString(value.informs, `${path}.informs`);
+	requireEnum(value.informs, EVIDENCE_INFORMS_TARGETS, `${path}.informs`);
 }
 
 /**

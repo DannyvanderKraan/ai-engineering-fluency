@@ -77,11 +77,14 @@ All defined in `src/types.ts` (`AES_ASSESSMENT_SCHEMA_VERSION` and `Aes*` types)
 - `AesStockAssessment.confidence` (`AesConfidence`, optional) distinguishes a rating a team actually
   checked (`verified`) from one carried forward without confirming it (`unverified`, the default
   when the field is absent). `buildAesWorkflowReport()` derives `postureConfidence` from this: the
-  posture reads as confirmed only when **every** stock is `verified`. Otherwise the displayed label
-  is prefixed — e.g. `"Possible stretched agent-native — confirmation needed"` — rather than stating
-  a posture more confidently than the evidence behind it supports. This keeps the same honesty rule
-  the feature already applies to Dark Factory's `unknown` evidence: a rating nobody checked is a
-  lead to verify, not a finding to act on.
+  posture reads as confirmed only when **every foundation stock** (`governance` and
+  `sharedKnowledge` — the two stocks posture classification itself gates on) is `verified`.
+  `customerValue`'s confidence does not affect this, matching how an unverified `customerValue`
+  alone does not change the posture either. Otherwise the displayed label is prefixed — e.g.
+  `"Possible stretched agent-native — confirmation needed"` — rather than stating a posture more
+  confidently than the evidence behind it supports. This keeps the same honesty rule the feature
+  already applies to Dark Factory's `unknown` evidence: a rating nobody checked is a lead to
+  verify, not a finding to act on.
 
 ## Where the code lives
 

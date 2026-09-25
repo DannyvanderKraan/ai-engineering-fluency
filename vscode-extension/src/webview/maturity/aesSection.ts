@@ -20,7 +20,7 @@
  */
 import { escapeHtml } from '../shared/formatUtils';
 import { localize, localizeFormat } from '../shared/localization';
-import { ACTIVITIES, AES_ASSESSMENT_DISCLAIMER, MODES, STOCKS } from '../../../../src/aesWorkflowAssessment';
+import { ACTIVITIES, MODES, STOCKS } from '../../../../src/aesWorkflowAssessment';
 import {
 	ACTIVITY_LABELS,
 	CONFIDENCE_CSS_CLASS,
@@ -168,7 +168,7 @@ export function buildAesSectionHtml(report: AesWorkflowReport | undefined): stri
 				<div>
 					${escapeHtml(localize('maturity.aes.whatThisMeasuresBody'))}
 					<br><br>
-					${escapeHtml(AES_ASSESSMENT_DISCLAIMER)}
+					${escapeHtml(localize('maturity.aes.disclaimer'))}
 				</div>
 			</div>
 			<div class="aes-notice">

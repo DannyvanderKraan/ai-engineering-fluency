@@ -221,6 +221,7 @@ function renderActivitiesHtml(report: AesWorkflowReport): string {
 			</div>
 			<div class="aes-card-body">${escapeHtml(a.description)}</div>
 			<div class="aes-card-signal">Signal: ${escapeHtml(a.signal)}</div>
+			${a.notes ? `<div class="aes-card-notes">Notes: ${escapeHtml(a.notes)}</div>` : ''}
 			${renderEvidenceListHtml(evidence, activity)}
 		</div>`;
 	}).join('');

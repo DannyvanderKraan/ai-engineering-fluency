@@ -116,6 +116,7 @@
   "maturity.aes.badge": "per workflow",
   "maturity.aes.whatThisMeasuresTitle": "📋 What this measures",
   "maturity.aes.whatThisMeasuresBody": "GitHub's Agentic Engineering System (AES) asks what outcome a delivery workflow serves, who directs, performs and assesses each step, and what a team's governance and shared-knowledge foundations look like. Unlike the sections above, this is team-reported, not scanned, and it can span several repositories instead of reporting on just one.",
+  "maturity.aes.disclaimer": "This is a team-reported self-assessment of one workflow against GitHub's Agentic Engineering System (AES) framework — not a repository scan, not a certification, and never a score for a person. The matrix below shows direction, not a threshold to pass.",
   "maturity.aes.noticeText": "There is no in-product way to author an AES assessment yet, so this is a fictional example (“FableCart”) shown to demonstrate the report format.",
   "maturity.aes.noticeRunCli": "Run {0} in the CLI to render a real one.",
   "maturity.aes.outcomeBlockTitle": "Outcome",
