@@ -76,6 +76,44 @@ test('a missing version is inserted in version order without touching its neighb
   ].join('\n'));
 });
 
+test('a CRLF changelog keeps its existing sections byte-for-byte and gets the new one in CRLF', () => {
+  const crlf = CHANGELOG.replace(/\n/g, '\r\n');
+  const releases = [release('vscode/v0.18.1', 'Fixed a thing')];
+  const { text, added } = mergeReleases(crlf, releases);
+  assert.deepEqual(added, ['0.18.1']);
+  assert.ok(!/[^\r]\n/.test(text), 'every line ending is CRLF');
+  assert.equal(text, mergeReleases(CHANGELOG, releases).text.replace(/\n/g, '\r\n'));
+  // Everything before the inserted section, and everything after it, is the original bytes.
+  const insertAt = crlf.indexOf('## [0.18.0]');
+  assert.ok(text.startsWith(crlf.slice(0, insertAt)));
+  assert.ok(text.endsWith(crlf.slice(insertAt)));
+});
+
+test('a CRLF changelog with nothing to add comes back unchanged', () => {
+  const crlf = CHANGELOG.replace(/\n/g, '\r\n');
+  const { text, added } = mergeReleases(crlf, [release('vscode/v0.18.2', 'Different body')]);
+  assert.deepEqual(added, []);
+  assert.equal(text, crlf);
+});
+
+test('a mixed CRLF/LF changelog keeps every existing line byte-for-byte', () => {
+  // CRLF preamble and first sections, LF last section: CRLF is the majority.
+  const split = CHANGELOG.indexOf('## [0.18.0]');
+  const mixed = CHANGELOG.slice(0, split).replace(/\n/g, '\r\n') + CHANGELOG.slice(split);
+  const { text, added } = mergeReleases(mixed, [release('vscode/v0.18.1', 'Fixed a thing'), release('v0.0.1', '')]);
+  assert.deepEqual(added, ['0.18.1', '0.0.1']);
+  assert.ok(text.startsWith(mixed.slice(0, split)), 'CRLF part unchanged');
+  assert.ok(text.includes(CHANGELOG.slice(split)), 'LF part unchanged');
+  // New lines use the majority ending.
+  assert.ok(text.includes('## [0.18.1]\r\n\r\n- Fixed a thing\r\n\r\n## [0.18.0]'));
+  assert.ok(text.endsWith('- Curated fix\n\r\n## [0.0.1]\r\n\r\n- Release 0.0.1\r\n'));
+});
+
+test('appending to a changelog whose last line is unterminated terminates it first', () => {
+  const { text } = mergeReleases('# Log\n\n## [Unreleased]\n\n## [1.0.0]\n\n- Only', [release('v0.9.0', '- Older')]);
+  assert.equal(text, '# Log\n\n## [Unreleased]\n\n## [1.0.0]\n\n- Only\n\n## [0.9.0]\n\n- Older\n');
+});
+
 test('a version older than every section is appended at the end, pre-release marked', () => {
   const { text, added } = mergeReleases(CHANGELOG, [release('v0.0.1', '', true)]);
   assert.deepEqual(added, ['0.0.1']);
