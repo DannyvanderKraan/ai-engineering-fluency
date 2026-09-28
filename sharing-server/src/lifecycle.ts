@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import type { Hono } from 'hono';
 import { getDb, closeDb, restoreFromBackup, backupToAzureFiles, syncAdminLogins } from './db.js';
 import { BACKUP_INTERVAL_MS } from './config.js';
+import { pruneExpiredCoachingSnapshots, resumeCoachingJobs } from './coaching.js';
 
 export interface StartServerOptions {
 	/** Port to listen on. Defaults to `PORT` env var, then 3000. */
@@ -40,6 +41,7 @@ export async function initDbWithRetry(maxAttempts = 20): Promise<void> {
  * leak listeners (`MaxListenersExceededWarning`) across multiple servers in a test run.
  */
 let shutdownHandlersRegistered = false;
+let coachingRetentionTimer: NodeJS.Timeout | undefined;
 
 export function registerShutdownHandlers(): void {
 	if (shutdownHandlersRegistered) {
@@ -72,6 +74,17 @@ export async function startServer(app: Hono, options: StartServerOptions = {}): 
 	restoreFromBackup();
 	await initDbWithRetry();
 	syncAdminLogins();
+	resumeCoachingJobs();
+	if (!coachingRetentionTimer) {
+		coachingRetentionTimer = setInterval(() => {
+			try {
+				pruneExpiredCoachingSnapshots();
+			} catch (err) {
+				console.error('[coaching] Transcript retention cleanup failed:', err);
+			}
+		}, 60 * 1000);
+		coachingRetentionTimer.unref();
+	}
 
 	const backupIntervalMs = options.backupIntervalMs ?? BACKUP_INTERVAL_MS;
 	if (backupIntervalMs > 0) {

@@ -115,6 +115,7 @@ export function getDb(): DatabaseSync {
 			db.exec('PRAGMA busy_timeout = 5000');
 			// WAL mode is safe on local disk and gives better concurrency than DELETE.
 			db.exec('PRAGMA journal_mode = WAL');
+			db.exec('PRAGMA secure_delete = ON');
 			db.exec('PRAGMA foreign_keys = ON');
 			initSchema(db);
 			// Publish the handle *before* running downstream extensions. An extension is
@@ -132,6 +133,41 @@ export function getDb(): DatabaseSync {
 		}
 	}
 	return _db;
+}
+
+/**
+ * Reclaim WAL copies created by sensitive-row deletion without waiting for readers.
+ * A passive checkpoint does not block; truncate is attempted only when it reports
+ * all frames checkpointed, with the busy timeout disabled to avoid request stalls.
+ */
+export function checkpointAfterSensitiveDeletes(): void {
+	if (!_db) return;
+	try {
+		const checkpoint = _db.prepare('PRAGMA wal_checkpoint(PASSIVE)').get() as unknown as {
+			busy: number;
+			log: number;
+			checkpointed: number;
+		} | undefined;
+		if (!checkpoint || checkpoint.busy !== 0 || checkpoint.log < 0
+			|| checkpoint.checkpointed !== checkpoint.log) {
+			console.warn('[db] Sensitive-delete WAL checkpoint incomplete; deleted bytes may remain in WAL until a later checkpoint or close.');
+			return;
+		}
+
+		_db.exec('PRAGMA busy_timeout = 0');
+		try {
+			const truncated = _db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get() as unknown as {
+				busy: number;
+			} | undefined;
+			if (!truncated || truncated.busy !== 0) {
+				console.warn('[db] Sensitive-delete WAL truncation deferred because the database is busy.');
+			}
+		} finally {
+			_db.exec('PRAGMA busy_timeout = 5000');
+		}
+	} catch {
+		console.warn('[db] Sensitive-delete WAL checkpoint failed; deleted bytes may remain until a later checkpoint or close.');
+	}
 }
 
 const UPLOADS_TABLE_DDL = `

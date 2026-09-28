@@ -4,6 +4,7 @@ import { upsertUpload, deleteUploadsForDays, getUploadsForUser, getDb, upsertUse
 import { MAX_ENTRIES_PER_UPLOAD } from '../config.js';
 import { validateEntry } from '../validation/uploadSchema.js';
 import { getTeamInsights, parseTeamDays } from '../teamInsights.js';
+import { coachingApi } from './coachingApi.js';
 
 // Fluency score payload limits
 const MAX_FLUENCY_LABEL_LENGTH = 128;
@@ -15,6 +16,9 @@ const MAX_FLUENCY_TIP_LENGTH = 512;
 const MAX_FLUENCY_SCORE_JSON_BYTES = 100_000; // 100 KB
 
 export const api = new Hono<{ Variables: AuthVariables }>();
+api.route('/coaching', coachingApi);
+// Backwards-compatible compact paths used by the extension's opt-in session uploader.
+api.route('/', coachingApi);
 
 // GET /health — no auth required (mounted at root level, not here)
 

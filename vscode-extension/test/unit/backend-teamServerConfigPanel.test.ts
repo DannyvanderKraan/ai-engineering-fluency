@@ -493,7 +493,9 @@ test('TeamServerConfigPanel - renderHtml includes the data-sharing info column',
 	assert.ok(html.includes('workspaceId, machineId'), 'Should list workspace/machine IDs');
 	assert.ok(html.includes('workspaceName, machineName'), 'Should list optional workspace/machine names');
 	assert.ok(html.includes('datasetId, fluencyMetrics'), 'Should list dataset ID and fluency metrics');
-	assert.ok(html.includes('Prompt and response content is never uploaded'), 'Should include the no-content callout');
+	assert.ok(html.includes('Metrics sharing never uploads prompts or responses'), 'Should distinguish metrics from separately consented session sharing');
+	assert.ok(html.includes('id="chk-coaching"'), 'Should offer an independent full-session opt-in');
+	assert.ok(html.includes('id="btn-backfill"'), 'Should offer an explicit historical backfill action');
 
 	// Illustrative dashboard preview
 	assert.ok(html.includes("What you'll get"), 'Should include the dashboard preview heading');
@@ -614,4 +616,27 @@ test('TeamServerConfigPanel - the settings-change sync is deferred until the who
 	assert.equal(syncedStates.length, 1, 'one sync after the save, none per intermediate write');
 	assert.equal(syncedStates[0]['backend.sharingProfile'], 'off');
 	assert.equal(syncedStates[0]['backend.sharingServer.enabled'], true);
+});
+
+test('TeamServerConfigPanel - successful deletion clears the open panel consent control', async () => {
+	(vscode as any).__mock.reset();
+	const messages: any[] = [];
+	const commands: string[] = [];
+	const originalExecuteCommand = vscode.commands.executeCommand;
+	(vscode.commands as any).executeCommand = async (command: string) => {
+		commands.push(command);
+		return true;
+	};
+	const { TeamServerConfigPanel } = require('../../src/backend/teamServerConfigPanel');
+	const panel = new TeamServerConfigPanel(vscode.Uri.parse('file:///extension'));
+	(panel as any).panel = createMockPanel({
+		webview: { ...createMockPanel().webview, postMessage: async (message: any) => { messages.push(message); } },
+	});
+	try {
+		await (panel as any).handleMessage({ command: 'deleteSessions' });
+		assert.deepEqual(commands, ['aiEngineeringFluency.deleteCoachingSessions']);
+		assert.deepEqual(messages, [{ command: 'coachingDeleted' }]);
+	} finally {
+		(vscode.commands as any).executeCommand = originalExecuteCommand;
+	}
 });

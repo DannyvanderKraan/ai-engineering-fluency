@@ -208,6 +208,7 @@ import type { IEcosystemAdapter } from '../../src/ecosystemAdapter';
 import { WindsurfDataAccess } from '../../src/windsurf';
 import { getEcosystemDisplayName } from '../../src/ecosystemAdapter';
 import { buildAdapterRegistry, createDataAccessInstances } from '../../src/adapters';
+import type { DataAccessInstances } from '../../src/adapters/adapterRegistry';
 import { CopilotAppDataAccess, type SessionContextWindow } from './copilotAppData';
 import { PiDataAccess } from '../../src/pi';
 import { HermesDataAccess } from '../../src/hermes';
@@ -415,6 +416,7 @@ import { deferWhileApplyingSettings } from './backend/settingsBatch';
 import { BackendFacade } from './backend/facade';
 import { BackendCommandHandler } from './backend/commands';
 import { TeamServerConfigPanel } from './backend/teamServerConfigPanel';
+import { SessionCoachingUploadService } from './backend/services/sessionCoachingUploadService';
 import { getModelDisplayName } from '../../src/webview/shared/modelUtils';
 import { ConfirmationMessages } from './backend/ui/messages';
 
@@ -1080,6 +1082,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 	private logViewerCurrentData?: SessionLogData;
 	public openCode!: OpenCodeDataAccess;
 	public crush!: CrushDataAccess;
+	public coachingSources!: Pick<DataAccessInstances, 'kilo' | 'hermes' | 'devinCli'>;
 	public visualStudio!: VisualStudioDataAccess;
 	private continue_!: ContinueDataAccess;
 	private claudeCode!: ClaudeCodeDataAccess;
@@ -2391,6 +2394,7 @@ class CopilotTokenTracker implements vscode.Disposable {
 		const dataAccess = createDataAccessInstances(extensionUri);
 		this.openCode = dataAccess.openCode;
 		this.crush = dataAccess.crush;
+		this.coachingSources = dataAccess;
 		this.continue_ = dataAccess.continue_;
 		this.visualStudio = dataAccess.visualStudio;
 		this.claudeCode = dataAccess.claudeCode;
@@ -15772,6 +15776,20 @@ function createBackendFacade(context: vscode.ExtensionContext, tokenTracker: Cop
 function setupBackend(context: vscode.ExtensionContext, tokenTracker: CopilotTokenTracker): void {
   try {
     const backendFacade = createBackendFacade(context, tokenTracker);
+    const coaching = new SessionCoachingUploadService(context, {
+      discovery: tokenTracker.sessionDiscovery,
+      openCode: tokenTracker.openCode,
+      crush: tokenTracker.crush,
+      ...tokenTracker.coachingSources,
+      getToken: () => tokenTracker.githubSession?.accessToken,
+      getAccountId: () => tokenTracker.githubSession?.account.id,
+      warn: message => tokenTracker.warn(message),
+      log: message => tokenTracker.log(message),
+    });
+    coaching.start();
+    context.subscriptions.push(coaching, vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration('aiEngineeringFluency.backend.sharingServer')) { coaching.start(); }
+    }));
 
     const backendHandler = new BackendCommandHandler({
       facade: backendFacade as any,
@@ -15801,6 +15819,32 @@ function setupBackend(context: vscode.ExtensionContext, tokenTracker: CopilotTok
     );
 
     context.subscriptions.push(configureTeamServerCommand);
+    context.subscriptions.push(
+      vscode.commands.registerCommand('aiEngineeringFluency.setCoachingConsent', async (enabled: boolean) => {
+        if (enabled && !coaching.isEnabled()) {
+          const confirm = l10n.t('coaching.consent.confirm');
+          if (await vscode.window.showWarningMessage(l10n.t('coaching.consent.warning'), { modal: true }, confirm) !== confirm) {
+            return false;
+          }
+        }
+        await coaching.setEnabled(enabled);
+        return true;
+      }),
+      vscode.commands.registerCommand('aiEngineeringFluency.backfillCoachingSessions', async () => {
+        const confirm = l10n.t('coaching.backfill.confirm');
+        if (await vscode.window.showWarningMessage(l10n.t('coaching.backfill.warning'), { modal: true }, confirm) !== confirm) { return; }
+        try { await coaching.backfill(); } catch (error) { vscode.window.showErrorMessage(String(error)); }
+      }),
+      vscode.commands.registerCommand('aiEngineeringFluency.deleteCoachingSessions', async () => {
+        const confirm = l10n.t('coaching.delete.confirm');
+        if (await vscode.window.showWarningMessage(l10n.t('coaching.delete.warning'), { modal: true }, confirm) !== confirm) { return false; }
+        try { await coaching.deleteOwnData(); return true; } catch (error) { vscode.window.showErrorMessage(String(error)); return false; }
+      }),
+      vscode.commands.registerCommand('aiEngineeringFluency.openCoaching', async () => {
+        const server = vscode.workspace.getConfiguration('aiEngineeringFluency').get<string>('backend.sharingServer.endpointUrl', '').trim();
+        if (server) { await vscode.env.openExternal(vscode.Uri.parse(`${server.replace(/\/$/, '')}/coaching`)); }
+      }),
+    );
   } catch (err) {
     // If backend wiring fails for any reason, don't block activation - fall back to settings behavior.
     tokenTracker.warn(

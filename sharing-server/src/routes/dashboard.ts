@@ -16,6 +16,7 @@ import { OAUTH_STATE_MAX_AGE_SECONDS } from '../config.js';
 import { getTeamInsights, parseTeamDays } from '../teamInsights.js';
 import { renderTeamInsights, teamInsightsCsv } from './teamPage.js';
 import { renderNavExtra } from '../nav.js';
+import { coachingPage } from './coachingPage.js';
 export const dashboard = new Hono();
 
 dashboard.use('*', async (c, next) => {
@@ -307,6 +308,8 @@ dashboard.get('/team/export', (c) => {
 	if (format === 'json') return c.json(data);
 	return c.body(teamInsightsCsv(data), 200, { 'Content-Type': 'text/csv; charset=utf-8' });
 });
+
+dashboard.route('/', coachingPage);
 
 // ── HTML Rendering ────────────────────────────────────────────────────────────
 
@@ -1113,6 +1116,7 @@ function dashboardPage(c: Context, user: UserRow, uploads: UploadRow[], isAdmin:
   ${fluencyBadgeHtml}
   ${isAdmin ? `<a href="/admin" style="margin-left:8px;color:#e3b341">Admin Dashboard</a><span style="margin-left:8px;color:#e6edf3;font-size:0.875rem;font-weight:600">My Dashboard</span>` : ''}
   <a href="/team">Team Insights</a>
+  <a href="/coaching">Private Coaching</a>
   ${renderNavExtra(c, '/dashboard')}
   ${avatarUrl ? `<img src="${avatarUrl}" class="avatar-sm" alt="${login}" style="margin-left:8px">` : ''}
   <span style="color:#c9d1d9;font-size:0.875rem">${displayName}</span>

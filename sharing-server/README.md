@@ -180,6 +180,10 @@ stubbed GitHub access, never production data or live GitHub; see the
 | `DB_PATH` | ❌ | SQLite database path (default: `/data/sharing.db`) |
 | `ALLOWED_GITHUB_ORG` | ❌ | If set, only members of this GitHub org can upload data |
 | `ADMIN_GITHUB_LOGINS` | ❌ | Comma-separated GitHub logins to auto-grant admin access (e.g. `alice,bob`). When set, this list is authoritative: listed users get admin, all others do not. Leave unset to manage admins manually via SQLite. |
+| `COACHING_MODEL_ENDPOINT` | ❌ | Complete HTTPS OpenAI-compatible chat-completions URL; HTTP is allowed only for localhost/loopback (`127.0.0.0/8`, `::1`). No transcript is sent unless this, `COACHING_MODEL_API_KEY` and `COACHING_MODEL_NAME` are all configured. |
+| `COACHING_MODEL_API_KEY` | ❌ | Secret used only by the server for the configured private coaching provider. Never returned to clients or logged. |
+| `COACHING_MODEL_NAME` | ❌ | Model identifier sent to the configured OpenAI-compatible provider. |
+| `COACHING_UPLOAD_RATE_MAX` | ❌ | Full-session POSTs accepted per user per one-hour window (default `100`, allowed `1`–`1000`). |
 
 ## REST API
 
@@ -298,6 +302,165 @@ Each `members`/`self` row contains only `isSelf`, `inputTokens`, `outputTokens`,
 uploader count; `daily.ownTokens` belongs only to the authenticated viewer.
 There are no stable member aliases or peer-specific daily rows.
 
+### Private full-session coaching
+
+Private coaching is a separate, explicit full-transcript upload feature. It uses
+separate `coaching_sessions`, `coaching_snapshots` and `coaching_proposals` tables;
+it never widens or writes to `usage_uploads`. All routes use the existing GitHub
+bearer authentication or signed dashboard cookie, and every response is
+`Cache-Control: private, no-store`. Session IDs are scoped by authenticated
+`users.id`; request query parameters can never select another owner.
+
+The version-1 upload contract is:
+
+```http
+POST /api/coaching/sessions
+Authorization: Bearer <GitHub OAuth token>
+Content-Type: application/json
+
+{
+  "schemaVersion": 1,
+  "sessionId": "client-generated-stable-id",
+  "contentHash": "<lowercase-or-uppercase SHA-256 hex of UTF-8 content>",
+  "content": "<full session transcript as a string, commonly JSONL>"
+}
+```
+
+`sessionId` accepts 1–128 ASCII letters, digits, `.`, `_`, `:` or `-`.
+`contentHash` is required and checked against the UTF-8 `content`; request fields
+not in this schema are rejected. The raw transcript is limited to 2,000,000
+UTF-8 bytes. A new or changed hash creates the next server-assigned integer
+`version`; re-uploading the current hash while its snapshot is retained is
+idempotent and does not enqueue another analysis. The response is
+`202 Accepted` for a new snapshot or `200 OK` for an unchanged one. Both response
+shapes contain `"ok": true`, as well as:
+
+```json
+{
+  "sessionId": "client-generated-stable-id",
+  "contentHash": "…",
+  "version": 1,
+  "analysisStatus": "queued",
+  "unchanged": false,
+  "contentRetainedUntil": "2026-10-28 13:00:00"
+}
+```
+
+Analysis states are `queued`, `processing`, `complete`, `failed` and
+`not_configured`. If any of the three `COACHING_MODEL_*` values is unset or
+invalid, the upload is still stored but its status is `not_configured`: the
+server does not send transcript content to any provider and the client can
+distinguish this state in the upload response and status routes. Such a snapshot
+is not queued for later automatic analysis if configuration changes; submit a
+new snapshot after configuring the provider to request analysis. When configured,
+the server requires an HTTPS endpoint (or HTTP to localhost/loopback only) before
+making an asynchronous OpenAI-compatible chat-completions request, with
+no tools enabled. The prompt explicitly treats the transcript as untrusted
+input; provider output must be JSON containing 1–5 actionable recommendations,
+each with `title`, `recommendation`, `rationale` and a verbatim `evidence`
+excerpt found in the transcript. Recommendations are expected to be thorough:
+include concrete next steps, why they matter, and a way to verify the outcome;
+the provider response is bounded at 64 KB, with per-field limits of 160
+characters for titles, 4,000 for recommendations, 3,000 for rationales and
+1,000 for evidence. Each replacement snapshot immediately deletes older raw
+snapshots for that session, while already generated proposals remain available
+until the owner deletes the session. If a replaced snapshot is being analyzed,
+its request is aborted and stale results cannot create proposals or change the
+new snapshot's status. The worker allows at most 100 queued/active analyses
+globally, 3 per user, 2 concurrent requests and 3 total attempts per analysis.
+Provider errors are reduced to stable error codes and raw content or provider
+response bodies are never logged.
+
+Other bearer-authenticated owner routes:
+
+| Method | Path | Result |
+|---|---|---|
+| `GET` | `/api/coaching/sessions` | This owner's snapshot metadata and statuses only |
+| `GET` | `/api/coaching/sessions/{sessionId}` | One owned snapshot's status and retention metadata |
+| `GET` | `/api/coaching/sessions/{sessionId}/proposals` | Structured proposals for owned snapshots |
+| `DELETE` | `/api/coaching/sessions/{sessionId}` | Delete the owner's transcript snapshots, status and proposals |
+
+For the opt-in extension uploader, equivalent compact routes are mounted at
+`/api/sessions` (collection) and `/api/sessions/{sessionId}`. Its accepted
+payload is `{ "sessionId": "...", "format": "<supported source format>", "contentHash":
+"...", "sourceUpdatedAt": "<ISO timestamp>", "content": "..." }`; `sessionId`
+must be a 64-character SHA-256 hex digest of the source path, and `format` must
+be one of `json`, `jsonl`, `opencode`, `crush`, `kilo`, `hermes`, `devin-cli` or
+`copilot-cli-store`. `sourceUpdatedAt` must be a canonical UTC ISO timestamp.
+The server verifies the content hash and enforces a 2,000,000-byte UTF-8 content
+limit. Format is retained per snapshot and supplied to analysis as untrusted
+metadata; the server does not parse or transform these source formats. For
+`copilot-cli-store`, the extension exports the stored session metadata and turns;
+that database may not contain the original tool events or all context, so its
+export cannot restore information the source did not retain. Oversized sessions
+are skipped rather than truncated and count as upload failures in the extension.
+The upload response includes
+`"ok": true`. `DELETE /api/sessions` deletes all coaching sessions owned by the
+authenticated user and returns `{ "ok": true, "deletedSessions": N }`.
+`GET /api/sessions/status` returns only owner-scoped counts:
+`{ "ok": true, "sessions", "retainedTranscripts", "proposals", "queued",
+"processing", "complete", "failed", "notConfigured" }`.
+Each session upload request counts against `COACHING_UPLOAD_RATE_MAX`, including
+unchanged retries. The default is 100 requests per authenticated user in a
+rolling one-hour window (starting with that user's first accepted upload); configure
+1–1000 via the server environment. Further requests receive HTTP 429 with
+`code: "coaching_upload_rate_limit"` and a `Retry-After` header indicating the
+remaining time in the one-hour window started by that user's first accepted
+upload. Because the extension sends one request per session, the
+default rate allows up to 100 backfill POSTs per user in one window, while the
+separate storage cap allows at most 100 distinct retained sessions per user.
+Retries or changed snapshots also count as POSTs; if they push a batch over the
+rate limit, pace the remaining requests across windows or temporarily raise the
+configured limit (up to 1000). Deleting sessions frees distinct-session slots.
+The rate limiter is in-memory and applies per server process, so multi-instance
+deployments should enforce a shared edge limit if a single aggregate per-user
+limit is required.
+
+`GET /coaching` is the equivalent cookie-authenticated private page, with a
+same-origin POST action to delete one session and all its proposals. Other
+owners, admins, Team Insights and team exports do not receive raw transcripts or
+proposals. An administrator's membership does not grant access to another
+person's private coaching data.
+
+`GET /api/coaching/sessions/{sessionId}` returns the same safe metadata object
+used in each `sessions` list row:
+
+```json
+{
+  "sessionId": "client-generated-stable-id",
+  "version": 1,
+  "contentHash": "…",
+  "analysisStatus": "complete",
+  "errorCode": null,
+  "createdAt": "2026-09-28 13:00:00",
+  "updatedAt": "2026-09-28 13:01:00",
+  "contentRetainedUntil": "2026-10-28 13:00:00",
+  "contentRetained": true,
+  "proposalCount": 1
+}
+```
+
+`GET /api/coaching/sessions` wraps these rows in `{ "sessions": [...] }`.
+The proposal endpoint wraps versioned groups in `{ "sessionId": "...",
+"proposals": [...] }`; each proposal has `version`, `createdAt` and a
+`recommendations` array. A recommendation has exactly `title`, `recommendation`,
+`rationale` and `evidence` string fields. Errors are returned as safe generic
+messages/codes; unknown or non-owned session IDs both return 404.
+
+Raw snapshot content expires after 30 days; metadata and proposals remain until
+the owner deletes the session. The application deletes expired raw rows during
+coaching requests and worker activity. SQLite `secure_delete` is enabled for the
+live database, and after coaching-row deletion the server attempts a passive WAL
+checkpoint followed by a non-waiting truncation when all frames are checkpointed.
+This reduces residual bytes in the live database/WAL without waiting on readers;
+if another reader prevents checkpointing, a generic warning is logged and
+residual WAL bytes may remain until a later checkpoint or database close. This
+is not a forensic secure-erase guarantee for filesystem/storage media. When the
+server uses a SQLite backing file/periodic backup (for example Azure Files),
+prior backup copies can still contain expired or deleted transcript bytes until
+those backups are rotated or deleted. Operators must apply an appropriate backup
+retention policy; SQLite row expiry cannot erase historical copies.
+
 ## Rate limits
 
 | Scope | Limit |
@@ -406,8 +569,9 @@ await startServer(app);
 - **Signed session cookies** — dashboard sessions use HMAC-SHA256-signed cookies
   storing only `{sub, iat, exp}`. User data is re-read from SQLite on each request.
 - **XSS prevention** — all user-supplied strings are HTML-escaped before rendering.
-- **No API keys** — authentication is fully managed by GitHub OAuth; there are no
-  API keys to issue, rotate, or leak.
+- **No user API keys** — authentication is fully managed by GitHub OAuth. An optional
+  model-provider API key is configured server-side for private coaching and is never
+  returned to or handled by the extension.
 
 ## Privacy note
 

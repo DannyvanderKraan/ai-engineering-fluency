@@ -31,6 +31,38 @@ export const UPLOAD_RATE_MAX = 100;
 /** Duration (ms) of the per-user upload rate limit window. */
 export const UPLOAD_RATE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
+/** Default maximum coaching-session snapshots accepted from one user per hour. */
+export const DEFAULT_COACHING_UPLOAD_RATE_MAX = 100;
+
+/** Upper bound for the configurable per-user coaching upload limit. */
+export const MAX_COACHING_UPLOAD_RATE_MAX = 1_000;
+
+export function parseCoachingUploadRateMax(value: string | undefined): number {
+	if (value === undefined || value.trim() === '') return DEFAULT_COACHING_UPLOAD_RATE_MAX;
+	const normalized = value.trim();
+	const parsed = Number(normalized);
+	if (!/^\d+$/.test(normalized) || !Number.isSafeInteger(parsed)
+		|| parsed < 1 || parsed > MAX_COACHING_UPLOAD_RATE_MAX) {
+		throw new Error(`COACHING_UPLOAD_RATE_MAX must be an integer between 1 and ${MAX_COACHING_UPLOAD_RATE_MAX}.`);
+	}
+	return parsed;
+}
+
+/** Maximum coaching-session snapshots accepted from one user per hour. */
+export const COACHING_UPLOAD_RATE_MAX = parseCoachingUploadRateMax(process.env.COACHING_UPLOAD_RATE_MAX);
+
+/** Maximum bytes in a single raw coaching-session upload. */
+export const MAX_COACHING_SESSION_BYTES = 2_000_000; // 2 MB
+
+/** Maximum number of distinct coaching sessions retained per user. */
+export const MAX_COACHING_SESSIONS_PER_USER = 100;
+
+/** Maximum queued or active coaching analyses across the server. */
+export const MAX_COACHING_PENDING_JOBS = 100;
+
+/** Maximum queued or active coaching analyses for a single user. */
+export const MAX_COACHING_PENDING_JOBS_PER_USER = 3;
+
 /** Maximum requests allowed per IP per IP_RATE_WINDOW_MS (pre-auth). */
 export const IP_RATE_MAX = 200;
 

@@ -12,6 +12,34 @@ import { WHATS_NEW_RELEASES } from '../../src/whatsNew/catalog';
 
 const mock = (vscode as any).__mock;
 
+test('l10n: private session coaching consent resolves in English and Chinese', () => {
+	const values: Array<[string, string, string]> = [
+		['coaching.consent.label', 'Share full sessions for private AI coaching', '共享完整会话以获取私人 AI 指导'],
+		['coaching.consent.description', 'Separate from metrics sync. Only future sessions upload by default, including conversations, code, context, tool arguments/results and possible secrets. Your team server sends them to its configured AI provider. Only you can view the proposals. Raw sessions are deleted after 30 days; proposals remain until you delete them.', '与指标同步分开。默认仅上传未来的会话，包括对话、代码、上下文、工具参数和结果，以及可能的密钥。团队服务器会将其发送给配置的 AI 服务提供商。只有您可以查看建议。原始会话在 30 天后删除；建议保留至您删除。'],
+		['coaching.consent.confirm', 'I consent to share future sessions', '我同意共享未来的会话'],
+		['coaching.consent.warning', 'Full sessions can contain private code, credentials and conversations. The team server sends them to its configured model provider. Only sessions created after this opt-in upload automatically. Continue?', '完整会话可能包含私人代码、凭据和对话。团队服务器会将其发送给配置的模型服务提供商。只有选择加入后创建的会话才会自动上传。继续吗？'],
+		['coaching.backfill', 'Upload earlier sessions', '上传较早的会话'],
+		['coaching.backfill.confirm', 'Upload earlier sessions', '上传较早的会话'],
+		['coaching.backfill.warning', 'This will upload existing full sessions, including their code, conversations, context and tool outputs, to the team server and its configured model provider. Continue?', '这将把现有完整会话（包括代码、对话、上下文和工具输出）上传到团队服务器及其配置的模型服务提供商。继续吗？'],
+		['coaching.open', 'View private proposals', '查看私人建议'],
+		['coaching.delete', 'Delete my sessions and proposals', '删除我的会话和建议'],
+		['coaching.delete.confirm', 'Delete my coaching data', '删除我的指导数据'],
+		['coaching.delete.warning', 'Disable full-session sharing and permanently delete your raw sessions and proposals from the team server?', '关闭完整会话共享，并从团队服务器永久删除您的原始会话和建议？'],
+		['coaching.status', 'Last session scan: {0} checked, {1} uploaded, {2} failed. Analysis progress and proposals are available on the private server page.', '上次会话扫描：检查 {0} 个，上传 {1} 个，失败 {2} 个。分析进度和建议可在私人服务器页面查看。'],
+		['coaching.status.never', 'No session upload scan has completed yet. Analysis progress and proposals are available on the private server page.', '尚未完成会话上传扫描。分析进度和建议可在私人服务器页面查看。'],
+		['coaching.metrics.description', 'The extension reuses your existing GitHub sign-in — no new credentials are created. Metrics sync sends only aggregated usage rollups; full-session coaching is a separate opt-in.', '扩展复用您现有的 GitHub 登录，无需创建新凭据。指标同步仅发送汇总使用数据；完整会话指导需要单独选择加入。'],
+		['coaching.metrics.callout', 'Metrics sharing never uploads prompts or responses. Full-session coaching uploads them only after separate consent.', '指标共享绝不会上传提示词或回复。完整会话指导仅在您单独同意后上传这些内容。'],
+		['config.backend.sharingServer.sessionCoachingEnabled.description', 'Private full-session coaching upload switch. Requires separate consent in Configure Team Server; turning this off stops all session uploads, independently of metrics sync.', '私人完整会话指导上传开关。需要在配置团队服务器中单独同意；关闭此开关将停止所有会话上传，不影响指标同步。'],
+	];
+	for (const [key, english] of values) { assert.equal(t(key), english, key); }
+	mock.setLanguage('zh-cn');
+	try {
+		for (const [key, , chinese] of values) { assert.equal(t(key), chinese, key); }
+	} finally {
+		mock.setLanguage('en');
+	}
+});
+
 // The shim's default l10n.t returns the raw key — exactly what real VS Code
 // does for key-based calls on the default (English) display language.
 

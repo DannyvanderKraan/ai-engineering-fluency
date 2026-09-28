@@ -6,6 +6,7 @@ import {
 	NEGATIVE_CACHE_TTL_MS,
 	UPLOAD_RATE_MAX,
 	UPLOAD_RATE_WINDOW_MS,
+	COACHING_UPLOAD_RATE_MAX,
 	IP_RATE_MAX,
 	IP_RATE_WINDOW_MS,
 	AUTH_MAP_MAX_ENTRIES,
@@ -52,6 +53,7 @@ const negativeCache = new Map<string, NegativeCacheEntry>();
 
 // Upload rate limiter: github_id → { count, resetAt }
 const uploadRateMap = new Map<number, { count: number; resetAt: number }>();
+const coachingUploadRateMap = new Map<number, { count: number; resetAt: number }>();
 
 // Pre-auth IP rate limiter: IP → { count, resetAt }
 const ipRateMap = new Map<string, { count: number; resetAt: number }>();
@@ -61,6 +63,7 @@ export function sweepExpiredAuthEntries(now: number = Date.now()): void {
 	for (const [key, value] of tokenCache) if (value.expiresAt <= now) tokenCache.delete(key);
 	for (const [key, value] of negativeCache) if (value.bannedUntil <= now) negativeCache.delete(key);
 	for (const [key, value] of uploadRateMap) if (value.resetAt <= now) uploadRateMap.delete(key);
+	for (const [key, value] of coachingUploadRateMap) if (value.resetAt <= now) coachingUploadRateMap.delete(key);
 	for (const [key, value] of ipRateMap) if (value.resetAt <= now) ipRateMap.delete(key);
 }
 
@@ -243,9 +246,29 @@ export function checkUploadRateLimit(userId: number): boolean {
 		uploadRateMap.set(userId, { count: 1, resetAt: now + UPLOAD_RATE_WINDOW_MS });
 		return true;
 	}
+
 	if (entry.count >= UPLOAD_RATE_MAX) return false;
 	entry.count++;
 	return true;
+}
+
+/** Returns true if the user is within the private coaching upload rate limit. */
+export function checkCoachingUploadRateLimit(userId: number): boolean {
+	const now = Date.now();
+	const entry = coachingUploadRateMap.get(userId);
+	if (!entry || entry.resetAt <= now) {
+		ensureMapCapacity(coachingUploadRateMap);
+		coachingUploadRateMap.set(userId, { count: 1, resetAt: now + UPLOAD_RATE_WINDOW_MS });
+		return true;
+	}
+	if (entry.count >= COACHING_UPLOAD_RATE_MAX) return false;
+	entry.count++;
+	return true;
+}
+
+export function getCoachingUploadRateLimitRetryAfterSeconds(userId: number): number {
+	const entry = coachingUploadRateMap.get(userId);
+	return entry ? Math.max(1, Math.ceil((entry.resetAt - Date.now()) / 1000)) : 0;
 }
 
 export type AuthVariables = { user: UserRow };

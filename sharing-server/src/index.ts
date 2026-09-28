@@ -25,6 +25,16 @@ export {
 // Built-in route apps, so a downstream server can remount them under a different path.
 export { api } from './routes/api.js';
 export { dashboard } from './routes/dashboard.js';
+export { coachingApi } from './routes/coachingApi.js';
+export { coachingPage } from './routes/coachingPage.js';
+export {
+	COACHING_RETENTION_DAYS,
+	COACHING_SCHEMA_VERSION,
+	hashCoachingContent,
+	type CoachingAnalysisStatus,
+	type CoachingRecommendation,
+	type CoachingSessionSummary,
+} from './coaching.js';
 
 // Reuse the member-safe projection rather than exposing admin queries to team members.
 export {
@@ -42,6 +52,7 @@ export {
 	validateGitHubToken,
 	checkIpRateLimit,
 	checkUploadRateLimit,
+	checkCoachingUploadRateLimit,
 	type AuthVariables,
 } from './auth.js';
 

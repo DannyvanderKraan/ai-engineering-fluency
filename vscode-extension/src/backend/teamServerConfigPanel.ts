@@ -4,6 +4,8 @@ import { readExplicitSharingProfile } from './settings';
 import { applySettingsAtomically } from './settingsBatch';
 import { inferSharingProfile } from './settingsValidation';
 import type { BackendUserIdentityMode } from './identity';
+import { t } from '../l10n';
+import type { CoachingSyncStatus } from './services/sessionCoachingUploadService';
 
 export class TeamServerConfigPanel implements vscode.Disposable {
 	private static current: TeamServerConfigPanel | undefined;
@@ -17,12 +19,12 @@ export class TeamServerConfigPanel implements vscode.Disposable {
 			TeamServerConfigPanel.current.panel?.reveal();
 			return;
 		}
-		const instance = new TeamServerConfigPanel(context.extensionUri);
+		const instance = new TeamServerConfigPanel(context.extensionUri, context);
 		TeamServerConfigPanel.current = instance;
 		instance.open();
 	}
 
-	constructor(private readonly extensionUri: vscode.Uri) {}
+	constructor(private readonly extensionUri: vscode.Uri, private readonly context?: vscode.ExtensionContext) {}
 
 	public isDisposed(): boolean {
 		return this.disposed;
@@ -47,6 +49,12 @@ export class TeamServerConfigPanel implements vscode.Disposable {
 		const config = vscode.workspace.getConfiguration('aiEngineeringFluency');
 		const enabled: boolean = config.get<boolean>('backend.sharingServer.enabled', false);
 		const endpointUrl: string = config.get<string>('backend.sharingServer.endpointUrl', '');
+		const coachingEnabled = !!this.context?.globalState?.get('sessionCoaching.consent')
+			&& config.get<boolean>('backend.sharingServer.sessionCoachingEnabled', false);
+		const status = this.context?.globalState?.get<CoachingSyncStatus>('sessionCoaching.lastStatus');
+		const statusText = status && [status.checked, status.uploaded, status.failed].every(Number.isSafeInteger)
+			? t('coaching.status', status.checked, status.uploaded, status.failed)
+			: t('coaching.status.never');
 		// Preselect the explicit profile, or — when none is set — what an enabled Team Server infers
 		// (the same inference getBackendSettings applies, including legacy shareWithTeam). Reading
 		// get()'s 'off' default here would make an unchanged save persist an explicit 'off' and
@@ -65,7 +73,7 @@ export class TeamServerConfigPanel implements vscode.Disposable {
 			{ enableScripts: true, retainContextWhenHidden: false }
 		);
 
-		this.panel.webview.html = this.renderHtml(this.panel.webview, enabled, endpointUrl, sharingProfile);
+		this.panel.webview.html = this.renderHtml(this.panel.webview, enabled, endpointUrl, sharingProfile, coachingEnabled, statusText);
 
 		this.disposables.push(
 			this.panel.onDidDispose(() => this.dispose()),
@@ -74,26 +82,28 @@ export class TeamServerConfigPanel implements vscode.Disposable {
 	}
 
 	private async handleMessage(message: any): Promise<void> {
-		if (message?.command !== 'save') {
-			return;
+		const actions: Record<string, string> = {
+			backfillSessions: 'backfillCoachingSessions',
+			deleteSessions: 'deleteCoachingSessions',
+			openCoaching: 'openCoaching',
+		};
+		if (typeof message?.command === 'string' && Object.prototype.hasOwnProperty.call(actions, message.command)) {
+			const result = await vscode.commands.executeCommand<boolean>(`aiEngineeringFluency.${actions[message.command]}`);
+			if (message.command === 'deleteSessions' && result === true) {
+				await this.panel?.webview.postMessage({ command: 'coachingDeleted' });
+			}
+		} else if (message?.command === 'save') {
+			await this.saveSettings(message);
 		}
+	}
+
+	private async saveSettings(message: any): Promise<void> {
 		const enabled: boolean = Boolean(message.enabled);
 		const endpointUrl: string = String(message.endpointUrl ?? '').trim();
 		const sharingProfile: string = String(message.sharingProfile ?? 'off');
+		const coachingEnabled: boolean = message.coachingEnabled === true;
 
-		if (enabled && !endpointUrl) {
-			this.panel?.webview.postMessage({ command: 'validationError', field: 'endpointUrl', text: 'Endpoint URL is required when Team Server is enabled.' });
-			return;
-		}
-
-		try {
-			new URL(endpointUrl || 'http://placeholder'); // validate URL only when non-empty
-		} catch {
-			if (endpointUrl) {
-				this.panel?.webview.postMessage({ command: 'validationError', field: 'endpointUrl', text: 'Endpoint URL must be a valid URL (e.g. https://your-server.example.com).' });
-				return;
-			}
-		}
+		if (!this.validateEndpoint(endpointUrl, enabled || coachingEnabled)) { return; }
 
 		const validProfiles = ['off', 'soloFull', 'teamAnonymized', 'teamPseudonymous', 'teamIdentified'];
 		const safeProfile = validProfiles.includes(sharingProfile) ? sharingProfile : 'off';
@@ -115,11 +125,37 @@ export class TeamServerConfigPanel implements vscode.Disposable {
 			}
 		});
 
+		if (this.context) {
+			try {
+				const consentSaved = await vscode.commands.executeCommand<boolean>('aiEngineeringFluency.setCoachingConsent', coachingEnabled);
+				if (consentSaved !== true) { return; }
+			} catch (error) {
+				vscode.window.showErrorMessage(`Session coaching consent could not be saved: ${String(error)}`);
+				return;
+			}
+		}
 		vscode.window.showInformationMessage('Team Server configuration saved.');
 		this.panel?.dispose();
 	}
 
-	private renderHtml(_webview: vscode.Webview, enabled: boolean, endpointUrl: string, sharingProfile: string): string {
+	private validateEndpoint(endpointUrl: string, required: boolean): boolean {
+		if (required && !endpointUrl) {
+			this.panel?.webview.postMessage({ command: 'validationError', field: 'endpointUrl', text: 'Endpoint URL is required when Team Server is enabled.' });
+			return false;
+		}
+
+		try {
+			new URL(endpointUrl || 'http://placeholder'); // validate URL only when non-empty
+		} catch {
+			if (endpointUrl) {
+				this.panel?.webview.postMessage({ command: 'validationError', field: 'endpointUrl', text: 'Endpoint URL must be a valid URL (e.g. https://your-server.example.com).' });
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private renderHtml(_webview: vscode.Webview, enabled: boolean, endpointUrl: string, sharingProfile: string, coachingEnabled = false, statusText = ''): string {
 		const nonce = getNonce();
 		const csp = `default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';`;
 		const enabledChecked = enabled ? 'checked' : '';
@@ -140,7 +176,7 @@ export class TeamServerConfigPanel implements vscode.Disposable {
   <title>Configure Team Server</title>
   ${renderTeamPanelStyle(nonce)}
 </head>
-${renderTeamPanelBody(nonce, enabledChecked, safeEndpoint, profileOptions)}
+${renderTeamPanelBody(nonce, enabledChecked, safeEndpoint, profileOptions, coachingEnabled, statusText)}
 </html>`;
 	}
 }
@@ -254,7 +290,7 @@ function renderTeamPanelInteractiveStyles(): string {
     .dp-trend-bar { flex: 1; background: var(--vscode-charts-purple, #c586c0); border-radius: 2px 2px 0 0; }`;
 }
 
-function renderTeamPanelBody(nonce: string, enabledChecked: string, safeEndpoint: string, profileOptions: string): string {
+function renderTeamPanelBody(nonce: string, enabledChecked: string, safeEndpoint: string, profileOptions: string, coachingEnabled: boolean, statusText: string): string {
 	return `<body>
   <h1>Configure Team Server</h1>
   <div class="layout">
@@ -279,6 +315,17 @@ function renderTeamPanelBody(nonce: string, enabledChecked: string, safeEndpoint
         </select>
         <p class="field-hint">See "What data is shared" on the right for what each profile sends.</p>
       </div>
+      <div class="field">
+        <div class="toggle-row">
+          <input type="checkbox" id="chk-coaching" ${coachingEnabled ? 'checked' : ''}>
+          <label for="chk-coaching">${t('coaching.consent.label')}</label>
+        </div>
+        <p class="field-hint">${t('coaching.consent.description')}</p>
+        <p class="field-hint" id="coaching-status" role="status">${statusText}</p>
+        <button class="secondary" id="btn-backfill">${t('coaching.backfill')}</button>
+        <button class="secondary" id="btn-open-coaching">${t('coaching.open')}</button>
+        <button class="secondary" id="btn-delete-sessions">${t('coaching.delete')}</button>
+      </div>
       <div class="actions">
         <button class="primary" id="btn-save">Save</button>
         <button class="secondary" id="btn-cancel">Cancel</button>
@@ -293,7 +340,7 @@ function renderTeamPanelBody(nonce: string, enabledChecked: string, safeEndpoint
 function renderTeamInfoColumn(): string {
 	return `<div class="info-col">
       <h2>What data is shared</h2>
-      <p class="info-lead">The extension reuses your existing GitHub sign-in — no new credentials are created. On a periodic timer (at most every 5 minutes) it sends aggregated usage rollups (never raw prompts or completions) to the server URL above.</p>
+      <p class="info-lead">${t('coaching.metrics.description')}</p>
       <div class="info-card">
         <div class="row"><strong>Your identity:</strong> every upload is authenticated with your GitHub token, so the server always knows which GitHub account sent it. Unlike the Azure Storage backend, the Team Server has no anonymous mode — the sharing profile below controls whether readable workspace/machine <em>names</em> are included (together with the "share readable names" setting) and whether a per-user dimension is added, not whether you're identifiable.</div>
       </div>
@@ -308,7 +355,7 @@ function renderTeamInfoColumn(): string {
         <tr><td>editor</td><td>Copilot CLI, VS Code, Claude Desktop, ...</td></tr>
         <tr><td>datasetId, fluencyMetrics</td><td>your configured dataset tag; fluency score breakdown</td></tr>
       </table>
-      <div class="callout">Prompt and response content is never uploaded — only the aggregate counts above.</div>
+      <div class="callout">${t('coaching.metrics.callout')}</div>
       <h2>What you'll get</h2>
       <div class="dashboard-preview">
         <p class="dp-note">Illustrative preview of the team dashboard members sign into with GitHub — not live data.</p>
@@ -356,9 +403,13 @@ function renderTeamPanelScript(nonce: string): string {
       const enabled = document.getElementById('chk-enabled').checked;
       const endpointUrl = document.getElementById('txt-endpoint').value.trim();
       const sharingProfile = document.getElementById('sel-profile').value;
+      const coachingEnabled = document.getElementById('chk-coaching').checked;
       clearErrors();
-      vscode.postMessage({ command: 'save', enabled, endpointUrl, sharingProfile });
+      vscode.postMessage({ command: 'save', enabled, endpointUrl, sharingProfile, coachingEnabled });
     });
+    document.getElementById('btn-backfill').addEventListener('click', () => vscode.postMessage({ command: 'backfillSessions' }));
+    document.getElementById('btn-open-coaching').addEventListener('click', () => vscode.postMessage({ command: 'openCoaching' }));
+    document.getElementById('btn-delete-sessions').addEventListener('click', () => vscode.postMessage({ command: 'deleteSessions' }));
     document.getElementById('btn-cancel').addEventListener('click', () => {
       vscode.postMessage({ command: 'cancel' });
     });
@@ -371,6 +422,10 @@ function renderTeamPanelScript(nonce: string): string {
         errEl.textContent = msg.text;
         errEl.style.display = 'block';
         input.focus();
+      }
+      if (msg.command === 'coachingDeleted') {
+        document.getElementById('chk-coaching').checked = false;
+        document.getElementById('coaching-status').textContent = ${JSON.stringify(t('coaching.status.never'))};
       }
     });
     function clearErrors() {
