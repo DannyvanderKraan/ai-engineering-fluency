@@ -138,11 +138,11 @@ export class SessionCoachingUploadService implements vscode.Disposable {
 		if (this.consent() && this.consent()?.accountId !== this.source.getAccountId()) {
 			throw new Error('Sign in to the GitHub account that enabled session sharing before deleting its data.');
 		}
-		await this.setEnabled(false);
 		const response = await fetch(`${server}/api/sessions`, {
 			method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
 		});
 		if (!response.ok) { throw new Error(`Server deletion failed: HTTP ${response.status}`); }
+		await this.setEnabled(false);
 		await this.context.globalState.update('sessionCoaching.lastStatus', undefined);
 	}
 
